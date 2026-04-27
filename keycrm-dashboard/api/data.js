@@ -57,7 +57,7 @@ module.exports = async function(req, res) {
     // Параллельно загружаем товары и заказы
     var results = await Promise.all([
       // GET /products?include=category — товары с категориями
-      fetchPages("/products", { include: "category" }, apiKey, 20),
+      fetchPages("/products", {}, apiKey, 20),
       // GET /order?include=products,buyer,status,manager — заказы (SINGULAR /order!)
       fetchPages("/order", {
         include: "products,buyer,status,manager",
