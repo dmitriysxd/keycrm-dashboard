@@ -1,41 +1,53 @@
 // KEYCRM API — https://docs.keycrm.app
 // Base: https://openapi.keycrm.app/v1
+// Rate limit: 60 req/min — додаємо затримку між запитами
 
 const BASE = "https://openapi.keycrm.app/v1";
 
-async function fetchAll(path, params, apiKey) {
-  var headers = { "Authorization": "Bearer " + apiKey, "Accept": "application/json" };
+function sleep(ms) {
+  return new Promise(function(r) { setTimeout(r, ms); });
+}
+
+async function get(path, params, apiKey) {
+  var qs = Object.keys(params).map(function(k) {
+    return encodeURIComponent(k) + "=" + encodeURIComponent(params[k]);
+  }).join("&");
+  var res = await fetch(BASE + path + (qs ? "?" + qs : ""), {
+    headers: { "Authorization": "Bearer " + apiKey, "Accept": "application/json" }
+  });
+  if (res.status === 401) throw new Error("UNAUTHORIZED: невірний API ключ");
+  if (res.status === 429) throw new Error("Занадто багато запитів — спробуйте через хвилину");
+  if (!res.ok) {
+    var body = ""; try { body = await res.text(); } catch(e) {}
+    throw new Error("HTTP " + res.status + " [" + path + "]: " + body.substring(0, 150));
+  }
+  return res.json();
+}
+
+// Завантажує всі сторінки з паузою між запитами (щоб не словити 429)
+async function fetchAll(path, params, apiKey, maxPages, delayMs) {
+  delayMs = delayMs || 1100;
+  maxPages = maxPages || 10;
   var all = [];
   var page = 1;
 
-  while (true) {
+  while (page <= maxPages) {
     var p = Object.assign({}, params, { page: page, limit: 50 });
-    var qs = Object.keys(p).map(function(k) {
-      return encodeURIComponent(k) + "=" + encodeURIComponent(p[k]);
-    }).join("&");
-
-    var res = await fetch(BASE + path + "?" + qs, { headers: headers });
-    if (res.status === 401) throw new Error("UNAUTHORIZED: невірний API ключ");
-    if (!res.ok) {
-      var body = ""; try { body = await res.text(); } catch(e) {}
-      throw new Error("HTTP " + res.status + " [" + path + "]: " + body.substring(0, 200));
-    }
-
-    var json = await res.json();
-    var items = json.data || [];
+    var data = await get(path, p, apiKey);
+    var items = data.data || [];
     all = all.concat(items);
 
-    // KEYCRM може повертати пагінацію в meta або в корені відповіді
-    var meta = json.meta || json;
-    var total = meta.total || 0;
-    var lastPage = meta.last_page || (total > 0 ? Math.ceil(total / 50) : 1);
-    var currentPage = meta.current_page || page;
+    // Читаємо пагінацію — KEYCRM може класти її в meta або в корінь
+    var src = data.meta || data;
+    var total = parseInt(src.total || 0);
+    var lastPage = parseInt(src.last_page || 0) || (total > 0 ? Math.ceil(total / 50) : 1);
 
-    // Зупиняємось якщо дійшли до останньої сторінки або немає даних
-    if (items.length === 0 || currentPage >= lastPage || all.length >= (total || all.length + 1)) break;
+    if (items.length === 0 || page >= lastPage) break;
     page++;
-  }
 
+    // Пауза між запитами щоб не перевищити 60 req/min
+    await sleep(delayMs);
+  }
   return all;
 }
 
@@ -60,63 +72,71 @@ module.exports = async function handler(req, res) {
   var sinceStr = since.toISOString().split("T")[0];
 
   try {
-    // Завантажуємо категорії (зазвичай мало — 1-2 сторінки)
-    var categories = await fetchAll("/products/categories", {}, apiKey);
+    // 1. Отримуємо загальну кількість товарів (1 запит)
+    var productsPage1 = await get("/products", { page: 1, limit: 50 }, apiKey);
+    var productsMeta = productsPage1.meta || productsPage1;
+    var totalProducts = parseInt(productsMeta.total || (productsPage1.data || []).length);
+    await sleep(1100);
 
-    // Завантажуємо офери (всі SKU з цінами та залишками)
-    var offers = await fetchAll("/offers", {}, apiKey);
+    // 2. Категорії (зазвичай 1-2 сторінки)
+    var categories = await fetchAll("/products/categories", {}, apiKey, 5, 1100);
+    var catNames = {};
+    categories.forEach(function(c) { catNames[String(c.id)] = c.name; });
+    await sleep(1100);
 
-    // Завантажуємо замовлення за вибраний період
+    // 3. Перша сторінка офферів для розподілу цін (тільки 1 запит — без 429)
+    var offersPage = await get("/offers", { page: 1, limit: 50 }, apiKey);
+    var offersData = offersPage.data || [];
+    var offersMeta = offersPage.meta || offersPage;
+    var totalOffers = parseInt(offersMeta.total || offersData.length);
+    await sleep(1100);
+
+    // 4. Замовлення за вибраний період (з паузами)
     var orders = await fetchAll("/order", {
       include: "products,buyer,status,manager",
       created_at_min: sinceStr,
-    }, apiKey);
+    }, apiKey, 30, 1100);
 
-    // Карта категорій
-    var catNames = {};
-    categories.forEach(function(c) { catNames[String(c.id)] = c.name; });
+    // --- Аналітика ---
 
-    // Аналітика по офферам (всі SKU)
+    // Категорії з першої сторінки продуктів
     var catMap = {};
-    var totalInStock = 0;
-    offers.forEach(function(o) {
-      var qty = parseFloat(o.quantity || o.in_stock || 0);
-      if (qty > 0) totalInStock++;
-
+    var inStockCount = 0;
+    (productsPage1.data || []).forEach(function(p) {
+      var qty = parseFloat(p.quantity || p.in_stock || 0);
+      if (qty > 0) inStockCount++;
       var cat = "Без категорії";
-      var prod = o.product || {};
-      var catId = prod.category_id || o.category_id;
-      if (catId && catNames[String(catId)]) {
-        cat = catNames[String(catId)];
-      } else if (prod.category && prod.category.name) {
-        cat = prod.category.name;
-      }
+      var cid = p.category_id;
+      if (cid && catNames[String(cid)]) cat = catNames[String(cid)];
+      else if (p.category && p.category.name) cat = p.category.name;
       if (!catMap[cat]) catMap[cat] = { count: 0, inStock: 0 };
       catMap[cat].count++;
       if (qty > 0) catMap[cat].inStock++;
     });
+    // Масштабуємо inStock на весь каталог
+    var inStockEstimate = Math.round(inStockCount / 50 * totalProducts);
 
     var catList = Object.entries(catMap)
       .sort(function(a, b) { return b[1].count - a[1].count; })
       .slice(0, 10)
       .map(function(e) { return { name: e[0], count: e[1].count, inStock: e[1].inStock }; });
 
-    // Ціновий розподіл
+    // Ціновий розподіл (з першої сторінки офферів)
     var ranges = [
       { label: "< 50",    min: 0,    max: 50 },
       { label: "50–200",  min: 50,   max: 200 },
       { label: "200–500", min: 200,  max: 500 },
-      { label: "500–1k",  min: 500,  max: 1000 },
+      { label: "500–1к",  min: 500,  max: 1000 },
       { label: "> 1000",  min: 1000, max: Infinity },
     ];
     ranges.forEach(function(r) {
-      r.count = offers.filter(function(o) {
+      r.count = offersData.filter(function(o) {
         var p = parseFloat(o.price || 0);
         return p > 0 && p >= r.min && p < r.max;
       }).length;
     });
 
-    // Топ продажів за період
+    // Топ продажів
     var salesMap = {};
     orders.forEach(function(o) {
       (o.products || []).forEach(function(item) {
@@ -161,9 +181,10 @@ module.exports = async function handler(req, res) {
       updatedAt: new Date().toISOString(),
       days: days,
       kpi: {
-        totalProducts: offers.length,
-        inStock: totalInStock,
-        outOfStock: offers.length - totalInStock,
+        totalProducts: totalProducts,   // реальна кількість з meta.total
+        totalOffers: totalOffers,       // кількість варіантів
+        inStock: inStockEstimate,
+        outOfStock: totalProducts - inStockEstimate,
         totalOrders: orders.length,
         totalRevenue: Math.round(totalRevenue * 100) / 100,
         avgOrder: orders.length ? Math.round(totalRevenue / orders.length * 100) / 100 : 0,
