@@ -361,7 +361,7 @@ async function loadData(days = currentDays) {
     if (!res.ok) throw new Error(json.error || 'Помилка сервера');
     DATA = json;
     document.getElementById('updated-at').textContent =
-      new Date(json.updatedAt).toLocaleString('uk-UA', {hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'});
+      (function(d){ return ('0'+d.getDate()).slice(-2)+'.'+('0'+(d.getMonth()+1)).slice(-2)+' '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); })(new Date(json.updatedAt));
     renderCurrentPage();
   } catch(e) {
     showError(e.message);
