@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KEYCRM · Аналітика</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;700&family=Inter:wght@300;400;500;600&display=swap');
+
+  :root {
+    --bg:       #07070f;
+    --s1:       #0f0f1a;
+    --s2:       #16162a;
+    --s3:       #1e1e35;
+    --border:   rgba(255,255,255,0.06);
+    --gold:     #c9a96e;
+    --gold2:    rgba(201,169,110,0.15);
+    --purple:   #7c6ef5;
+    --purple2:  rgba(124,110,245,0.15);
+    --green:    #5cb88a;
+    --red:      #e06060;
+    --text:     #e8e4dc;
+    --muted:    rgba(232,228,220,0.45);
+    --muted2:   rgba(232,228,220,0.2);
+  }
+
+  *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    min-height: 100vh;
+  }
+
+  /* ── Sidebar ── */
+  .layout { display: flex; min-height: 100vh; }
+
+  .sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    background: var(--s1);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 28px 0 20px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+  }
+
+  .logo {
+    padding: 0 24px 28px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 20px;
+  }
+  .logo-mark {
+    font-family: 'Unbounded', sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--gold);
+    letter-spacing: -0.3px;
+  }
+  .logo-mark span { color: var(--text); }
+  .logo-sub { font-size: 10px; color: var(--muted); margin-top: 3px; letter-spacing: 0.5px; }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 24px;
+    color: var(--muted);
+    font-size: 12px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: all 0.15s;
+  }
+  .nav-item:hover { color: var(--text); background: var(--s2); }
+  .nav-item.active { color: var(--gold); border-left-color: var(--gold); background: var(--gold2); }
+  .nav-icon { font-size: 14px; width: 18px; text-align: center; }
+
+  .sidebar-bottom {
+    margin-top: auto;
+    padding: 16px 24px 0;
+    border-top: 1px solid var(--border);
+  }
+  .update-info { font-size: 10px; color: var(--muted); line-height: 1.6; }
+  .update-info span { color: var(--gold); }
+
+  /* ── Main ── */
+  .main {
+    flex: 1;
+    padding: 32px 36px;
+    overflow: auto;
+  }
+
+  .page { display: none; }
+  .page.active { display: block; }
+
+  .page-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 28px;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .page-title {
+    font-family: 'Unbounded', sans-serif;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.5px;
+  }
+  .page-sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+
+  /* Period selector */
+  .period-group { display: flex; gap: 4px; }
+  .pbtn {
+    padding: 7px 14px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .pbtn:hover { color: var(--text); border-color: rgba(255,255,255,0.15); }
+  .pbtn.active { background: var(--gold2); border-color: rgba(201,169,110,0.35); color: var(--gold); }
+
+  /* Refresh btn */
+  .refresh-btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 16px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .refresh-btn:hover { color: var(--gold); border-color: rgba(201,169,110,0.3); }
+  .refresh-btn.loading .ri { animation: spin 0.7s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── KPI ── */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 14px;
+    margin-bottom: 28px;
+  }
+  .kpi {
+    background: var(--s1);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px 22px;
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.2s;
+  }
+  .kpi:hover { transform: translateY(-2px); }
+  .kpi-accent { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--gold); }
+  .kpi-accent.purple { background: var(--purple); }
+  .kpi-accent.green  { background: var(--green); }
+  .kpi-accent.red    { background: var(--red); }
+  .kpi-label { font-size: 10px; letter-spacing: 0.8px; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  .kpi-val { font-family: 'Unbounded', sans-serif; font-size: 26px; font-weight: 700; line-height: 1; }
+  .kpi-sub { font-size: 11px; color: var(--muted); margin-top: 6px; }
+
+  /* ── Charts grid ── */
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .grid-1 { margin-bottom: 16px; }
+
+  @media (max-width: 900px) {
+    .grid-2 { grid-template-columns: 1fr; }
+    .sidebar { display: none; }
+    .main { padding: 20px 16px; }
+  }
+
+  /* ── Card ── */
+  .card {
+    background: var(--s1);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 22px 24px;
+  }
+  .card-title {
+    font-family: 'Unbounded', sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .card-title .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--gold); flex-shrink: 0;
+  }
+  .card-title .dot.p { background: var(--purple); }
+  .card-title .dot.g { background: var(--green); }
+
+  .chart-wrap { position: relative; }
+  .chart-wrap canvas { max-height: 260px; }
+
+  /* ── Bar rows ── */
+  .bar-list { display: flex; flex-direction: column; gap: 11px; }
+  .bar-row { display: flex; align-items: center; gap: 10px; }
+  .bar-name { width: 120px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+  .bar-track { flex: 1; height: 5px; background: var(--s3); border-radius: 10px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 10px; transition: width 0.8s cubic-bezier(0.4,0,0.2,1); }
+  .bar-fill.gold   { background: linear-gradient(90deg, var(--gold), rgba(201,169,110,0.4)); }
+  .bar-fill.purple { background: linear-gradient(90deg, var(--purple), rgba(124,110,245,0.4)); }
+  .bar-fill.green  { background: linear-gradient(90deg, var(--green), rgba(92,184,138,0.4)); }
+  .bar-val { font-size: 11px; color: var(--muted); width: 44px; text-align: right; flex-shrink: 0; }
+
+  /* ── Price boxes ── */
+  .price-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 10px;
+  }
+  @media (max-width: 700px) { .price-grid { grid-template-columns: repeat(3,1fr); } }
+  .price-box {
+    background: var(--s2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 10px;
+    text-align: center;
+    transition: transform 0.2s;
+  }
+  .price-box:hover { transform: scale(1.03); }
+  .price-range { font-size: 10px; color: var(--muted); margin-bottom: 6px; }
+  .price-count { font-family: 'Unbounded', sans-serif; font-size: 20px; font-weight: 700; }
+  .price-pct   { font-size: 10px; color: var(--gold); margin-top: 3px; }
+
+  /* ── Stock table ── */
+  .tbl { width: 100%; border-collapse: collapse; }
+  .tbl th {
+    font-size: 10px; letter-spacing: 0.7px; text-transform: uppercase;
+    color: var(--muted); text-align: left;
+    padding: 0 12px 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .tbl td {
+    padding: 9px 12px 9px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    font-size: 12px;
+    vertical-align: middle;
+  }
+  .tbl tr:last-child td { border-bottom: none; }
+  .pill {
+    display: inline-block; padding: 2px 8px;
+    border-radius: 20px; font-size: 10px; font-weight: 500;
+  }
+  .pill.r { background: rgba(224,96,96,0.12); color: var(--red); }
+  .pill.g { background: rgba(92,184,138,0.12); color: var(--green); }
+  .pill.y { background: rgba(201,169,110,0.12); color: var(--gold); }
+
+  /* ── Loading/Error ── */
+  .state-wrap {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    min-height: 60vh; gap: 16px;
+  }
+  .spinner {
+    width: 40px; height: 40px;
+    border: 2px solid var(--border);
+    border-top-color: var(--gold);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  .state-title { font-family: 'Unbounded', sans-serif; font-size: 16px; color: var(--text); }
+  .state-sub { color: var(--muted); font-size: 12px; text-align: center; max-width: 360px; line-height: 1.7; }
+  .error-card {
+    background: rgba(224,96,96,0.08); border: 1px solid rgba(224,96,96,0.2);
+    border-radius: 12px; padding: 20px 24px; max-width: 400px; text-align: center;
+  }
+  .error-title { color: var(--red); font-weight: 600; margin-bottom: 8px; }
+
+  .no-data { color: var(--muted); font-size: 12px; text-align: center; padding: 24px 0; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-mark">KEY<span>CRM</span></div>
+      <div class="logo-sub">АНАЛІТИКА · БІЗНЕС</div>
+    </div>
+
+    <nav>
+      <div class="nav-item active" onclick="navigate('overview')">
+        <span class="nav-icon">◈</span> Огляд
+      </div>
+      <div class="nav-item" onclick="navigate('products')">
+        <span class="nav-icon">◇</span> Товари
+      </div>
+      <div class="nav-item" onclick="navigate('orders')">
+        <span class="nav-icon">◆</span> Замовлення
+      </div>
+    </nav>
+
+    <div class="sidebar-bottom">
+      <div class="update-info" id="update-info">
+        Дані оновлено<br><span id="updated-at">—</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main" id="main-area">
+    <div class="state-wrap" id="loading-state">
+      <div class="spinner"></div>
+      <div class="state-title">Завантажуємо дані</div>
+      <div class="state-sub">Підключаємось до KEYCRM та збираємо аналітику...</div>
+    </div>
+  </main>
+
+</div>
+
+<script>
+let DATA = null;
+let currentDays = 30;
+let charts = {};
+
+// ── Chart defaults ───────────────────
+Chart.defaults.color = 'rgba(232,228,220,0.5)';
+Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
+Chart.defaults.font.family = 'Inter';
+Chart.defaults.font.size = 11;
+
+// ── Fetch data ───────────────────────
+async function loadData(days = currentDays) {
+  currentDays = days;
+  showLoading();
+  try {
+    const res = await fetch(`/api/data?days=${days}`);
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Помилка сервера');
+    DATA = json;
+    document.getElementById('updated-at').textContent =
+      new Date(json.updatedAt).toLocaleString('uk-UA', {hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'});
+    renderCurrentPage();
+  } catch(e) {
+    showError(e.message);
+  }
+}
+
+function showLoading() {
+  document.getElementById('main-area').innerHTML = `
+    <div class="state-wrap">
+      <div class="spinner"></div>
+      <div class="state-title">Завантажуємо дані</div>
+      <div class="state-sub">Підключаємось до KEYCRM...</div>
+    </div>`;
+}
+
+function showError(msg) {
+  document.getElementById('main-area').innerHTML = `
+    <div class="state-wrap">
+      <div class="error-card">
+        <div class="error-title">⚠ Помилка підключення</div>
+        <div class="state-sub">${msg}</div>
+      </div>
+    </div>`;
+}
+
+// ── Navigation ───────────────────────
+let currentPage = 'overview';
+function navigate(page) {
+  currentPage = page;
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  event.currentTarget.classList.add('active');
+  if (DATA) renderCurrentPage();
+}
+
+function renderCurrentPage() {
+  destroyCharts();
+  if (currentPage === 'overview') renderOverview();
+  else if (currentPage === 'products') renderProducts();
+  else if (currentPage === 'orders') renderOrders();
+}
+
+function destroyCharts() {
+  Object.values(charts).forEach(c => c.destroy());
+  charts = {};
+}
+
+// ── Helpers ──────────────────────────
+const fmt = n => n >= 1e6 ? `${(n/1e6).toFixed(1)}М` : n >= 1e3 ? `${(n/1e3).toFixed(1)}к` : Math.round(n).toString();
+const fmtMoney = n => `${fmt(n)} ₴`;
+
+function pageHeader(title, sub) {
+  return `
+    <div class="page-header">
+      <div>
+        <div class="page-title">${title}</div>
+        <div class="page-sub">${sub}</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div class="period-group">
+          ${[7,30,90].map(d => `
+            <button class="pbtn ${currentDays===d?'active':''}" onclick="loadData(${d})">
+              ${d===7?'7 днів':d===30?'30 днів':'3 міс.'}
+            </button>`).join('')}
+        </div>
+        <button class="refresh-btn" onclick="loadData(${currentDays})">
+          <span class="ri">↺</span> Оновити
+        </button>
+      </div>
+    </div>`;
+}
+
+// ── Overview page ────────────────────
+function renderOverview() {
+  const d = DATA;
+  const k = d.kpi;
+  document.getElementById('main-area').innerHTML = `
+    ${pageHeader('Огляд бізнесу', `Дані за ${currentDays} днів · ${k.totalProducts} товарів · ${k.totalOrders} замовлень`)}
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-accent"></div>
+        <div class="kpi-label">Товарів</div>
+        <div class="kpi-val">${fmt(k.totalProducts)}</div>
+        <div class="kpi-sub">${k.inStock} в наявності</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent green"></div>
+        <div class="kpi-label">Виручка</div>
+        <div class="kpi-val">${fmtMoney(k.totalRevenue)}</div>
+        <div class="kpi-sub">за ${currentDays} днів</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent purple"></div>
+        <div class="kpi-label">Замовлень</div>
+        <div class="kpi-val">${fmt(k.totalOrders)}</div>
+        <div class="kpi-sub">Серед. чек: ${fmtMoney(k.avgOrder)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent ${k.inStock/k.totalProducts > 0.6 ? 'green':'red'}"></div>
+        <div class="kpi-label">Заповненість складу</div>
+        <div class="kpi-val">${k.totalProducts ? Math.round(k.inStock/k.totalProducts*100) : 0}%</div>
+        <div class="kpi-sub">${k.outOfStock} поз. без залишку</div>
+      </div>
+    </div>
+
+    <div class="grid-1 card">
+      <div class="card-title"><span class="dot g"></span>Виручка по днях</div>
+      <div class="chart-wrap"><canvas id="revChart"></canvas></div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><span class="dot"></span>Категорії (кількість товарів)</div>
+        <div class="bar-list" id="cat-bars"></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="dot p"></span>Статуси замовлень</div>
+        <div class="chart-wrap"><canvas id="statusChart"></canvas></div>
+      </div>
+    </div>
+  `;
+
+  // Revenue chart
+  const days = d.salesByDay;
+  charts.rev = new Chart(document.getElementById('revChart'), {
+    type: 'line',
+    data: {
+      labels: days.map(d => d.date.substring(5)),
+      datasets: [{
+        label: 'Виручка',
+        data: days.map(d => d.revenue),
+        borderColor: '#5cb88a',
+        backgroundColor: 'rgba(92,184,138,0.08)',
+        borderWidth: 2,
+        fill: true,
+        tension: 0.4,
+        pointRadius: 2,
+        pointHoverRadius: 5,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: 'rgba(255,255,255,0.04)' } },
+        y: {
+          grid: { color: 'rgba(255,255,255,0.04)' },
+          ticks: { callback: v => fmtMoney(v) }
+        }
+      }
+    }
+  });
+
+  // Category bars
+  const maxCat = d.categories[0]?.count || 1;
+  document.getElementById('cat-bars').innerHTML = d.categories.map(c => `
+    <div class="bar-row">
+      <div class="bar-name" title="${c.name}">${c.name}</div>
+      <div class="bar-track"><div class="bar-fill gold" style="width:${Math.round(c.count/maxCat*100)}%"></div></div>
+      <div class="bar-val">${c.count}</div>
+    </div>`).join('') || '<div class="no-data">Немає даних</div>';
+
+  // Status donut
+  const statuses = d.orderStatuses;
+  const COLORS = ['#c9a96e','#7c6ef5','#5cb88a','#e06060','#60a8e0','#e0a060','#a060e0'];
+  charts.status = new Chart(document.getElementById('statusChart'), {
+    type: 'doughnut',
+    data: {
+      labels: statuses.map(s => s.name),
+      datasets: [{
+        data: statuses.map(s => s.count),
+        backgroundColor: COLORS,
+        borderColor: '#0f0f1a',
+        borderWidth: 2,
+        hoverOffset: 6,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { position: 'right', labels: { boxWidth: 10, padding: 14 } }
+      },
+      cutout: '65%',
+    }
+  });
+}
+
+// ── Products page ────────────────────
+function renderProducts() {
+  const d = DATA;
+  document.getElementById('main-area').innerHTML = `
+    ${pageHeader('Товари', `${d.kpi.totalProducts} позицій у каталозі`)}
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><span class="dot"></span>Топ категорій</div>
+        <div class="bar-list" id="cat-bars2"></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="dot p"></span>Розподіл за ціною</div>
+        <div class="chart-wrap"><canvas id="priceChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="card grid-1">
+      <div class="card-title"><span class="dot" style="background:var(--red)"></span>Товари без залишку (перші 15)</div>
+      ${d.kpi.outOfStock === 0
+        ? '<div class="no-data">✓ Всі товари в наявності</div>'
+        : `<table class="tbl">
+            <thead><tr><th>Назва</th><th>SKU</th><th>Ціна</th><th>Статус</th></tr></thead>
+            <tbody id="stock-table"></tbody>
+          </table>`
+      }
+    </div>
+  `;
+
+  // Cat bars
+  const maxCat = d.categories[0]?.count || 1;
+  document.getElementById('cat-bars2').innerHTML = d.categories.map(c => `
+    <div class="bar-row">
+      <div class="bar-name" title="${c.name}">${c.name}</div>
+      <div class="bar-track"><div class="bar-fill gold" style="width:${Math.round(c.count/maxCat*100)}%"></div></div>
+      <div class="bar-val">${c.count}</div>
+    </div>`).join('') || '<div class="no-data">Немає даних</div>';
+
+  // Price chart
+  charts.price = new Chart(document.getElementById('priceChart'), {
+    type: 'bar',
+    data: {
+      labels: d.priceRanges.map(r => r.label),
+      datasets: [{
+        data: d.priceRanges.map(r => r.count),
+        backgroundColor: ['rgba(201,169,110,0.7)','rgba(124,110,245,0.7)','rgba(92,184,138,0.7)','rgba(96,168,224,0.7)','rgba(224,96,96,0.7)'],
+        borderRadius: 5,
+        borderSkipped: false,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false } },
+        y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { stepSize: 1 } }
+      }
+    }
+  });
+
+  // Stock table (we don't have raw products here, show a placeholder note)
+  const tbody = document.getElementById('stock-table');
+  if (tbody) {
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted);font-size:12px;padding-top:12px">
+      Детальний список товарів без залишку доступний у повному звіті (Excel-файл).</td></tr>`;
+  }
+}
+
+// ── Orders page ──────────────────────
+function renderOrders() {
+  const d = DATA;
+  document.getElementById('main-area').innerHTML = `
+    ${pageHeader('Замовлення', `${d.kpi.totalOrders} замовлень за ${currentDays} днів`)}
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-accent green"></div>
+        <div class="kpi-label">Виручка</div>
+        <div class="kpi-val">${fmtMoney(d.kpi.totalRevenue)}</div>
+        <div class="kpi-sub">за ${currentDays} днів</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent"></div>
+        <div class="kpi-label">Замовлень</div>
+        <div class="kpi-val">${fmt(d.kpi.totalOrders)}</div>
+        <div class="kpi-sub">в середньому ${d.salesByDay.length > 0 ? (d.kpi.totalOrders/d.salesByDay.length).toFixed(1) : 0}/день</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent purple"></div>
+        <div class="kpi-label">Середній чек</div>
+        <div class="kpi-val">${fmtMoney(d.kpi.avgOrder)}</div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><span class="dot g"></span>Замовлень по днях</div>
+        <div class="chart-wrap"><canvas id="ordersChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="dot p"></span>Топ товарів (продажі)</div>
+        <div class="bar-list" id="top-bars"></div>
+      </div>
+    </div>
+  `;
+
+  // Orders by day chart
+  const days = d.salesByDay;
+  charts.orders = new Chart(document.getElementById('ordersChart'), {
+    type: 'bar',
+    data: {
+      labels: days.map(d => d.date.substring(5)),
+      datasets: [{
+        label: 'Замовлень',
+        data: days.map(d => d.orders),
+        backgroundColor: 'rgba(124,110,245,0.6)',
+        borderRadius: 4,
+        borderSkipped: false,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false } },
+        y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { stepSize: 1 } }
+      }
+    }
+  });
+
+  // Top products bars
+  const maxQ = d.topProducts[0]?.qty || 1;
+  document.getElementById('top-bars').innerHTML = d.topProducts.map(p => `
+    <div class="bar-row">
+      <div class="bar-name" title="${p.name}">${p.name}</div>
+      <div class="bar-track"><div class="bar-fill purple" style="width:${Math.round(p.qty/maxQ*100)}%"></div></div>
+      <div class="bar-val">${p.qty} шт</div>
+    </div>`).join('') || '<div class="no-data">Немає даних за цей період</div>';
+}
+
+// ── Init ─────────────────────────────
+loadData(30);
+
+// Auto-refresh every 30 min
+setInterval(() => loadData(currentDays), 30 * 60 * 1000);
+</script>
+</body>
+</html>
