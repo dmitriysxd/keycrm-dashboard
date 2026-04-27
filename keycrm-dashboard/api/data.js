@@ -1,16 +1,10 @@
 // KEYCRM API: https://docs.keycrm.app
-// Base URL: https://openapi.keycrm.app/v1
-// Endpoints (из официальной документации):
-//   GET /products          — список товарів
-//   GET /products/categories — категорії
-//   GET /offers            — варіанти товарів (SKU)
-//   GET /offers/stocks     — залишки на складі
-//   GET /order             — список замовлень (НЕ /orders!)
+// Base: https://openapi.keycrm.app/v1
 
 const BASE = "https://openapi.keycrm.app/v1";
 
 async function fetchPages(endpoint, params, apiKey, maxPages) {
-  maxPages = maxPages || 15;
+  maxPages = maxPages || 20;
   var headers = {
     "Authorization": "Bearer " + apiKey,
     "Accept": "application/json",
@@ -31,7 +25,8 @@ async function fetchPages(endpoint, params, apiKey, maxPages) {
     var json = await res.json();
     var items = json.data || [];
     all = all.concat(items);
-    var lastPage = (json.meta && json.meta.last_page) ? json.meta.last_page : 1;
+    var total = json.meta && json.meta.total ? json.meta.total : items.length;
+    var lastPage = json.meta && json.meta.last_page ? json.meta.last_page : 1;
     if (page >= lastPage || items.length === 0) break;
     page++;
   }
@@ -45,7 +40,7 @@ module.exports = async function(req, res) {
 
   var apiKey = process.env.KEYCRM_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: "KEYCRM_API_KEY не налаштовано в Vercel Environment Variables" });
+    return res.status(500).json({ error: "KEYCRM_API_KEY не налаштовано" });
   }
 
   var days = parseInt(req.query.days || "30");
@@ -53,49 +48,81 @@ module.exports = async function(req, res) {
   since.setDate(since.getDate() - days);
   var sinceStr = since.toISOString().split("T")[0];
 
+  // Для истории берём заказы за 2 года
+  var historyDate = new Date();
+  historyDate.setFullYear(historyDate.getFullYear() - 2);
+  var historyStr = historyDate.toISOString().split("T")[0];
+
   try {
-    // Параллельно загружаем товары и заказы
     var results = await Promise.all([
-      // GET /products?include=category — товары с категориями
-      fetchPages("/products", {}, apiKey, 20),
-      // GET /order?include=products,buyer,status,manager — заказы (SINGULAR /order!)
+      // Активные товары
+      fetchPages("/products", {}, apiKey, 30),
+      // Заказы за выбранный период (для графиков)
       fetchPages("/order", {
         include: "products,buyer,status,manager",
         created_at_min: sinceStr,
-      }, apiKey, 20),
+      }, apiKey, 30),
+      // Все заказы за 2 года (для исторического анализа товаров)
+      fetchPages("/order", {
+        include: "products",
+        created_at_min: historyStr,
+      }, apiKey, 50),
     ]);
-    var products = results[0];
-    var orders = results[1];
 
-    // ── Категории ────────────────────────────
+    var products = results[0];
+    var periodOrders = results[1];
+    var allOrders = results[2];
+
+    // ── Собираем ВСЕ товары из истории заказов ──────
+    // Это включает товары которых уже нет в каталоге
+    var historyMap = {};
+    allOrders.forEach(function(o) {
+      (o.products || []).forEach(function(item) {
+        var name = item.name || (item.offer && item.offer.name) || "—";
+        var key = String(item.offer_id || name);
+        if (!historyMap[key]) {
+          historyMap[key] = {
+            name: name,
+            offer_id: item.offer_id,
+            totalQtySold: 0,
+            totalRevenue: 0,
+            lastSeen: "",
+            price: parseFloat(item.price || 0),
+          };
+        }
+        historyMap[key].totalQtySold += parseInt(item.quantity || 1);
+        historyMap[key].totalRevenue += parseFloat(item.price || 0) * parseInt(item.quantity || 1);
+        var d = (o.created_at || "").substring(0, 10);
+        if (d > historyMap[key].lastSeen) historyMap[key].lastSeen = d;
+      });
+    });
+    var allTimeProducts = Object.values(historyMap)
+      .sort(function(a, b) { return b.totalQtySold - a.totalQtySold; });
+
+    // ── Категории (по активным товарам) ─────────────
     var catMap = {};
     products.forEach(function(p) {
       var cat;
       if (p.category && typeof p.category === "object") {
         cat = p.category.name || "Без категорії";
-      } else if (typeof p.category === "string") {
-        cat = p.category || "Без категорії";
+      } else if (p.category_id) {
+        cat = "Категорія #" + p.category_id;
       } else {
         cat = "Без категорії";
       }
       if (!catMap[cat]) catMap[cat] = { count: 0, inStock: 0 };
       catMap[cat].count++;
-      // Остаток берём из quantity или количества офферов
-      var qty = parseFloat(p.quantity || p.in_stock || p.quantity_in_stock || 0);
-      if (qty > 0) catMap[cat].inStock++;
+      if (parseFloat(p.quantity || p.in_stock || p.quantity_in_stock || 0) > 0) catMap[cat].inStock++;
     });
     var categories = Object.entries(catMap)
       .sort(function(a, b) { return b[1].count - a[1].count; })
       .slice(0, 10)
       .map(function(e) { return { name: e[0], count: e[1].count, inStock: e[1].inStock }; });
 
-    // ── Топ товаров по продажам ───────────────
+    // ── Топ продаж за ПЕРИОД ─────────────────────────
     var salesMap = {};
-    orders.forEach(function(o) {
-      // В order API товары лежат в o.products[]
-      var items = o.products || [];
-      items.forEach(function(item) {
-        // Каждый item: { offer_id, name, quantity, price, offer: {...} }
+    periodOrders.forEach(function(o) {
+      (o.products || []).forEach(function(item) {
         var name = item.name || (item.offer && item.offer.name) || "—";
         var key = String(item.offer_id || name);
         if (!salesMap[key]) salesMap[key] = { name: name, qty: 0, revenue: 0 };
@@ -107,21 +134,20 @@ module.exports = async function(req, res) {
       .sort(function(a, b) { return b.qty - a.qty; })
       .slice(0, 10);
 
-    // ── Продажи по дням ───────────────────────
+    // ── Продажи по дням ───────────────────────────────
     var dayMap = {};
-    orders.forEach(function(o) {
+    periodOrders.forEach(function(o) {
       var d = (o.created_at || "").substring(0, 10);
       if (!d) return;
       if (!dayMap[d]) dayMap[d] = { orders: 0, revenue: 0 };
       dayMap[d].orders++;
-      // total_price — сумма заказа в KEYCRM
       dayMap[d].revenue += parseFloat(o.total_price || 0);
     });
     var salesByDay = Object.entries(dayMap)
       .sort(function(a, b) { return a[0].localeCompare(b[0]); })
       .map(function(e) { return { date: e[0], orders: e[1].orders, revenue: e[1].revenue }; });
 
-    // ── Ценовые диапазоны ─────────────────────
+    // ── Ценовые диапазоны ─────────────────────────────
     var ranges = [
       { label: "< 50",    min: 0,    max: 50 },
       { label: "50–200",  min: 50,   max: 200 },
@@ -136,43 +162,43 @@ module.exports = async function(req, res) {
       }).length;
     });
 
-    // ── Статусы заказов ───────────────────────
+    // ── Статусы заказов ───────────────────────────────
     var statusMap = {};
-    orders.forEach(function(o) {
-      var s;
-      if (o.status && typeof o.status === "object") {
-        s = o.status.name || "Невідомо";
-      } else {
-        s = o.status_id ? "Статус #" + o.status_id : "Невідомо";
-      }
+    periodOrders.forEach(function(o) {
+      var s = (o.status && typeof o.status === "object")
+        ? (o.status.name || "Невідомо")
+        : ("Статус #" + (o.status_id || "?"));
       statusMap[s] = (statusMap[s] || 0) + 1;
     });
     var orderStatuses = Object.entries(statusMap)
       .sort(function(a, b) { return b[1] - a[1]; })
       .map(function(e) { return { name: e[0], count: e[1] }; });
 
-    // ── KPI ───────────────────────────────────
+    // ── KPI ───────────────────────────────────────────
     var inStock = products.filter(function(p) {
       return parseFloat(p.quantity || p.in_stock || p.quantity_in_stock || 0) > 0;
     }).length;
-    var totalRevenue = orders.reduce(function(s, o) {
+    var totalRevenue = periodOrders.reduce(function(s, o) {
       return s + parseFloat(o.total_price || 0);
     }, 0);
-    var avgOrder = orders.length ? totalRevenue / orders.length : 0;
+    var avgOrder = periodOrders.length ? totalRevenue / periodOrders.length : 0;
 
     return res.status(200).json({
       updatedAt: new Date().toISOString(),
       days: days,
       kpi: {
-        totalProducts: products.length,
+        totalProducts: products.length,         // активные в каталоге
+        allTimeProducts: allTimeProducts.length, // все что когда-либо продавались
         inStock: inStock,
         outOfStock: products.length - inStock,
-        totalOrders: orders.length,
+        totalOrders: periodOrders.length,
+        allTimeOrders: allOrders.length,
         totalRevenue: totalRevenue,
         avgOrder: avgOrder,
       },
       categories: categories,
       topProducts: topProducts,
+      allTimeProducts: allTimeProducts.slice(0, 50), // топ-50 за всё время
       salesByDay: salesByDay,
       priceRanges: ranges,
       orderStatuses: orderStatuses,
