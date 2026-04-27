@@ -1,12 +1,7 @@
 // KEYCRM API — https://docs.keycrm.app
-// Base: https://openapi.keycrm.app/v1
-// Rate limit: 60 req/min — додаємо затримку між запитами
+// Стратегія: мінімум запитів (~6-8 всього) щоб не словити 429 і не таймаутитись
 
 const BASE = "https://openapi.keycrm.app/v1";
-
-function sleep(ms) {
-  return new Promise(function(r) { setTimeout(r, ms); });
-}
 
 async function get(path, params, apiKey) {
   var qs = Object.keys(params).map(function(k) {
@@ -16,47 +11,19 @@ async function get(path, params, apiKey) {
     headers: { "Authorization": "Bearer " + apiKey, "Accept": "application/json" }
   });
   if (res.status === 401) throw new Error("UNAUTHORIZED: невірний API ключ");
-  if (res.status === 429) throw new Error("Занадто багато запитів — спробуйте через хвилину");
+  if (res.status === 429) throw new Error("Ліміт запитів KEYCRM — зачекайте хвилину та оновіть");
   if (!res.ok) {
-    var body = ""; try { body = await res.text(); } catch(e) {}
-    throw new Error("HTTP " + res.status + " [" + path + "]: " + body.substring(0, 150));
+    var t = ""; try { t = await res.text(); } catch(e) {}
+    throw new Error("HTTP " + res.status + " [" + path + "]: " + t.substring(0, 150));
   }
   return res.json();
 }
 
-// Завантажує всі сторінки з паузою між запитами (щоб не словити 429)
-async function fetchAll(path, params, apiKey, maxPages, delayMs) {
-  delayMs = delayMs || 1100;
-  maxPages = maxPages || 10;
-  var all = [];
-  var page = 1;
-
-  while (page <= maxPages) {
-    var p = Object.assign({}, params, { page: page, limit: 50 });
-    var data = await get(path, p, apiKey);
-    var items = data.data || [];
-    all = all.concat(items);
-
-    // Читаємо пагінацію — KEYCRM може класти її в meta або в корінь
-    var src = data.meta || data;
-    var total = parseInt(src.total || 0);
-    var lastPage = parseInt(src.last_page || 0) || (total > 0 ? Math.ceil(total / 50) : 1);
-
-    if (items.length === 0 || page >= lastPage) break;
-    page++;
-
-    // Пауза між запитами щоб не перевищити 60 req/min
-    await sleep(delayMs);
-  }
-  return all;
-}
-
 function calcRevenue(order) {
-  var fromItems = (order.products || []).reduce(function(s, item) {
-    return s + parseFloat(item.price || 0) * parseInt(item.quantity || 1);
+  var fromItems = (order.products || []).reduce(function(s, i) {
+    return s + parseFloat(i.price || 0) * parseInt(i.quantity || 1);
   }, 0);
-  if (fromItems > 0) return fromItems;
-  return parseFloat(order.total_price || order.sum || 0);
+  return fromItems > 0 ? fromItems : parseFloat(order.total_price || order.sum || 0);
 }
 
 module.exports = async function handler(req, res) {
@@ -72,56 +39,54 @@ module.exports = async function handler(req, res) {
   var sinceStr = since.toISOString().split("T")[0];
 
   try {
-    // 1. Отримуємо загальну кількість товарів (1 запит)
-    var productsPage1 = await get("/products", { page: 1, limit: 50 }, apiKey);
-    var productsMeta = productsPage1.meta || productsPage1;
-    var totalProducts = parseInt(productsMeta.total || (productsPage1.data || []).length);
-    await sleep(1100);
+    // Всі запити паралельно — швидко і в межах 60 req/min
+    // Максимум ~6 запитів одночасно — добре вписується в ліміт
+    var results = await Promise.all([
+      get("/products", { page: 1, limit: 50 }, apiKey),           // 1 запит: кількість товарів
+      get("/products/categories", { page: 1, limit: 50 }, apiKey), // 1 запит: категорії
+      get("/order", { include: "products,buyer,status,manager", created_at_min: sinceStr, page: 1, limit: 50 }, apiKey), // 1 запит: замовлення стор.1
+      get("/order", { include: "products,buyer,status,manager", created_at_min: sinceStr, page: 2, limit: 50 }, apiKey), // стор.2
+      get("/order", { include: "products,buyer,status,manager", created_at_min: sinceStr, page: 3, limit: 50 }, apiKey), // стор.3
+      get("/offers", { page: 1, limit: 50 }, apiKey),              // 1 запит: ціни
+    ]);
 
-    // 2. Категорії (зазвичай 1-2 сторінки)
-    var categories = await fetchAll("/products/categories", {}, apiKey, 5, 1100);
+    var productsResp  = results[0];
+    var catsResp      = results[1];
+    var orders1       = (results[2].data || []);
+    var orders2       = (results[3].data || []);
+    var orders3       = (results[4].data || []);
+    var offersResp    = results[5];
+
+    // Реальна кількість товарів з meta
+    var pMeta = productsResp.meta || productsResp;
+    var totalProducts = parseInt(pMeta.total || (productsResp.data || []).length);
+
+    // Категорії
     var catNames = {};
-    categories.forEach(function(c) { catNames[String(c.id)] = c.name; });
-    await sleep(1100);
+    (catsResp.data || []).forEach(function(c) { catNames[String(c.id)] = c.name; });
 
-    // 3. Перша сторінка офферів для розподілу цін (тільки 1 запит — без 429)
-    var offersPage = await get("/offers", { page: 1, limit: 50 }, apiKey);
-    var offersData = offersPage.data || [];
-    var offersMeta = offersPage.meta || offersPage;
-    var totalOffers = parseInt(offersMeta.total || offersData.length);
-    await sleep(1100);
+    // Всі замовлення (до 150)
+    var orders = orders1.concat(orders2).concat(orders3);
 
-    // 4. Замовлення за вибраний період (з паузами)
-    var orders = await fetchAll("/order", {
-      include: "products,buyer,status,manager",
-      created_at_min: sinceStr,
-    }, apiKey, 30, 1100);
-
-    // --- Аналітика ---
-
-    // Категорії з першої сторінки продуктів
+    // Категорії товарів
     var catMap = {};
-    var inStockCount = 0;
-    (productsPage1.data || []).forEach(function(p) {
+    var inStock = 0;
+    (productsResp.data || []).forEach(function(p) {
       var qty = parseFloat(p.quantity || p.in_stock || 0);
-      if (qty > 0) inStockCount++;
+      if (qty > 0) inStock++;
       var cat = "Без категорії";
-      var cid = p.category_id;
-      if (cid && catNames[String(cid)]) cat = catNames[String(cid)];
+      if (p.category_id && catNames[String(p.category_id)]) cat = catNames[String(p.category_id)];
       else if (p.category && p.category.name) cat = p.category.name;
       if (!catMap[cat]) catMap[cat] = { count: 0, inStock: 0 };
       catMap[cat].count++;
       if (qty > 0) catMap[cat].inStock++;
     });
-    // Масштабуємо inStock на весь каталог
-    var inStockEstimate = Math.round(inStockCount / 50 * totalProducts);
-
     var catList = Object.entries(catMap)
       .sort(function(a, b) { return b[1].count - a[1].count; })
       .slice(0, 10)
       .map(function(e) { return { name: e[0], count: e[1].count, inStock: e[1].inStock }; });
 
-    // Ціновий розподіл (з першої сторінки офферів)
+    // Ціни з офферів
     var ranges = [
       { label: "< 50",    min: 0,    max: 50 },
       { label: "50–200",  min: 50,   max: 200 },
@@ -129,11 +94,10 @@ module.exports = async function handler(req, res) {
       { label: "500–1к",  min: 500,  max: 1000 },
       { label: "> 1000",  min: 1000, max: Infinity },
     ];
-    ranges.forEach(function(r) {
-      r.count = offersData.filter(function(o) {
-        var p = parseFloat(o.price || 0);
-        return p > 0 && p >= r.min && p < r.max;
-      }).length;
+    (offersResp.data || []).forEach(function(o) {
+      var p = parseFloat(o.price || 0);
+      if (p <= 0) return;
+      ranges.forEach(function(r) { if (p >= r.min && p < r.max) r.count++; });
     });
 
     // Топ продажів
@@ -166,8 +130,7 @@ module.exports = async function handler(req, res) {
     // Статуси
     var statusMap = {};
     orders.forEach(function(o) {
-      var s = (o.status && typeof o.status === "object")
-        ? (o.status.name || "Невідомо") : ("id:" + (o.status_id || "?"));
+      var s = (o.status && typeof o.status === "object") ? (o.status.name || "?") : ("id:" + (o.status_id || "?"));
       statusMap[s] = (statusMap[s] || 0) + 1;
     });
     var orderStatuses = Object.entries(statusMap)
@@ -181,10 +144,9 @@ module.exports = async function handler(req, res) {
       updatedAt: new Date().toISOString(),
       days: days,
       kpi: {
-        totalProducts: totalProducts,   // реальна кількість з meta.total
-        totalOffers: totalOffers,       // кількість варіантів
-        inStock: inStockEstimate,
-        outOfStock: totalProducts - inStockEstimate,
+        totalProducts: totalProducts,
+        inStock: inStock,
+        outOfStock: (productsResp.data || []).length - inStock,
         totalOrders: orders.length,
         totalRevenue: Math.round(totalRevenue * 100) / 100,
         avgOrder: orders.length ? Math.round(totalRevenue / orders.length * 100) / 100 : 0,
