@@ -270,6 +270,84 @@
   .pill.r { background: rgba(224,96,96,0.12); color: var(--red); }
   .pill.g { background: rgba(92,184,138,0.12); color: var(--green); }
   .pill.y { background: rgba(201,169,110,0.12); color: var(--gold); }
+  .pill.b { background: rgba(124,110,245,0.15); color: var(--purple); }
+
+  /* ── SKU table (sortable, sticky header, filters) ── */
+  .filter-bar {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    margin-bottom: 14px;
+  }
+  .filter-bar input[type="search"],
+  .filter-bar select {
+    background: var(--s2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-family: 'Inter', sans-serif;
+    outline: none;
+    min-width: 160px;
+  }
+  .filter-bar input[type="search"]:focus,
+  .filter-bar select:focus { border-color: rgba(201,169,110,0.4); }
+  .filter-bar .spacer { flex: 1; }
+  .filter-bar button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 11px;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+  }
+  .filter-bar button:hover { color: var(--gold); border-color: rgba(201,169,110,0.3); }
+
+  .tbl-scroll {
+    max-height: 70vh;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--s1);
+  }
+  .tbl-scroll table { width: 100%; border-collapse: collapse; }
+  .tbl-scroll thead th {
+    position: sticky; top: 0;
+    background: var(--s2);
+    padding: 10px 12px;
+    font-size: 10px; letter-spacing: 0.7px; text-transform: uppercase;
+    color: var(--muted); text-align: left;
+    border-bottom: 1px solid var(--border);
+    z-index: 1;
+    user-select: none;
+  }
+  .tbl-scroll thead th.sortable { cursor: pointer; }
+  .tbl-scroll thead th.sortable:hover { color: var(--text); }
+  .tbl-scroll thead th.sortable .arrow { opacity: 0.3; margin-left: 4px; font-size: 9px; }
+  .tbl-scroll thead th.sortable.asc  .arrow,
+  .tbl-scroll thead th.sortable.desc .arrow { opacity: 1; color: var(--gold); }
+  .tbl-scroll tbody td {
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    font-size: 12px;
+    vertical-align: middle;
+  }
+  .tbl-scroll tbody tr:hover { background: rgba(255,255,255,0.02); }
+  .tbl-scroll tbody td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tbl-scroll tbody td.muted { color: var(--muted); }
+
+  .stale-badge {
+    display: inline-block;
+    background: rgba(224,96,96,0.12);
+    color: var(--red);
+    border: 1px solid rgba(224,96,96,0.3);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    margin-left: 12px;
+  }
+  .stale-badge.warn { background: rgba(201,169,110,0.12); color: var(--gold); border-color: rgba(201,169,110,0.3); }
 
   /* ── Loading/Error ── */
   .state-wrap {
@@ -320,6 +398,12 @@
       <div class="nav-item" onclick="navigate('orders')">
         <span class="nav-icon">◆</span> Замовлення
       </div>
+      <div class="nav-item" onclick="navigate('sku')">
+        <span class="nav-icon">◉</span> SKU-аналітика
+      </div>
+      <div class="nav-item" onclick="navigate('reorder')">
+        <span class="nav-icon">↻</span> Реордер
+      </div>
     </nav>
 
     <div class="sidebar-bottom">
@@ -341,7 +425,25 @@
 </div>
 
 <script>
+// ── Token gate ───────────────────────
+const _params = new URLSearchParams(location.search);
+if (_params.get('key')) {
+  localStorage.setItem('dt', _params.get('key'));
+  history.replaceState({}, '', location.pathname + location.hash);
+}
+const TOKEN = localStorage.getItem('dt') || '';
+const apiUrl = (path, extra) => {
+  const sep = path.indexOf('?') === -1 ? '?' : '&';
+  const tail = TOKEN ? `${sep}token=${encodeURIComponent(TOKEN)}` : '';
+  const more = extra ? (tail ? '&' : sep) + extra : '';
+  return path + tail + more;
+};
+
 let DATA = null;
+let SKU_DATA = null;
+let SKU_META = null;
+let SKU_SORT = { col: 'velocity_30d', dir: 'desc' };
+let SKU_FILTER = { search: '', status: '', category: '' };
 let currentDays = 30;
 let charts = {};
 
@@ -356,7 +458,7 @@ async function loadData(days = currentDays) {
   currentDays = days;
   showLoading();
   try {
-    const res = await fetch(`/api/data?days=${days}`);
+    const res = await fetch(apiUrl(`/api/data?days=${days}`));
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Помилка сервера');
     DATA = json;
@@ -365,6 +467,30 @@ async function loadData(days = currentDays) {
     renderCurrentPage();
   } catch(e) {
     showError(e.message);
+  }
+}
+
+async function loadSku(opts) {
+  showLoading();
+  try {
+    const params = new URLSearchParams();
+    if (opts && opts.reorder) params.set('reorder', 'true');
+    if (SKU_FILTER.status)   params.set('status', SKU_FILTER.status);
+    if (SKU_FILTER.category) params.set('category', SKU_FILTER.category);
+    const url = apiUrl('/api/sku', params.toString());
+    const [skuRes, metaRes] = await Promise.all([
+      fetch(url),
+      fetch(apiUrl('/api/sku?meta=true')),
+    ]);
+    const skuJson = await skuRes.json();
+    const metaJson = await metaRes.json();
+    if (!skuRes.ok) throw new Error(skuJson.error || 'Помилка сервера');
+    SKU_DATA = skuJson.rows || [];
+    SKU_META = metaJson;
+    return true;
+  } catch(e) {
+    showError(e.message);
+    return false;
   }
 }
 
@@ -393,14 +519,16 @@ function navigate(page) {
   currentPage = page;
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
   event.currentTarget.classList.add('active');
-  if (DATA) renderCurrentPage();
+  renderCurrentPage();
 }
 
-function renderCurrentPage() {
+async function renderCurrentPage() {
   destroyCharts();
-  if (currentPage === 'overview') renderOverview();
-  else if (currentPage === 'products') renderProducts();
-  else if (currentPage === 'orders') renderOrders();
+  if (currentPage === 'overview') { if (!DATA) await loadData(currentDays); renderOverview(); }
+  else if (currentPage === 'products') { if (!DATA) await loadData(currentDays); renderProducts(); }
+  else if (currentPage === 'orders')   { if (!DATA) await loadData(currentDays); renderOrders(); }
+  else if (currentPage === 'sku')      { const ok = await loadSku(); if (ok) renderSku(); }
+  else if (currentPage === 'reorder')  { const ok = await loadSku({ reorder: true }); if (ok) renderReorder(); }
 }
 
 function destroyCharts() {
@@ -682,11 +810,280 @@ function renderOrders() {
     </div>`).join('') || '<div class="no-data">Немає даних за цей період</div>';
 }
 
-// ── Init ─────────────────────────────
-loadData(30);
+// ── SKU helpers ──────────────────────
+const STATUS_PILL = { hit: 'g', slow: 'y', dead: 'r', new: 'b' };
+const STATUS_LABEL = { hit: 'Хіт', slow: 'Повільний', dead: 'Мертвий', new: 'Новий' };
 
-// Auto-refresh every 30 min
-setInterval(() => loadData(currentDays), 30 * 60 * 1000);
+function staleBadge() {
+  if (!SKU_META || !SKU_META.last_snapshot_date) {
+    return '<span class="stale-badge">Немає снапшотів</span>';
+  }
+  const last = new Date(SKU_META.last_snapshot_date + 'T00:00:00Z');
+  const today = new Date();
+  const ageMs = today - last;
+  const ageDays = Math.floor(ageMs / (24*60*60*1000));
+  if (ageDays >= 2) return `<span class="stale-badge">Дані застаріли · ${ageDays}д</span>`;
+  if (ageDays === 1) return `<span class="stale-badge warn">Дані вчорашні</span>`;
+  return '';
+}
+
+function fmtNum(n, d) {
+  if (n === null || n === undefined || n === '' || isNaN(parseFloat(n))) return '—';
+  const v = parseFloat(n);
+  return v.toFixed(d || 0);
+}
+function fmtPct(n) {
+  if (n === null || n === undefined || isNaN(parseFloat(n))) return '—';
+  return Math.round(parseFloat(n) * 100) + '%';
+}
+
+function applySkuFilters(rows) {
+  let out = rows;
+  if (SKU_FILTER.search) {
+    const q = SKU_FILTER.search.toLowerCase();
+    out = out.filter(r =>
+      ((r.name || '') + ' ' + (r.sku || '') + ' ' + (r.category_name || '')).toLowerCase().includes(q)
+    );
+  }
+  return out;
+}
+
+function sortSku(rows) {
+  const { col, dir } = SKU_SORT;
+  const sign = dir === 'asc' ? 1 : -1;
+  return rows.slice().sort((a, b) => {
+    const av = a[col], bv = b[col];
+    if (av === null || av === undefined) return 1;
+    if (bv === null || bv === undefined) return -1;
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * sign;
+    return String(av).localeCompare(String(bv)) * sign;
+  });
+}
+
+function setSort(col) {
+  if (SKU_SORT.col === col) SKU_SORT.dir = SKU_SORT.dir === 'asc' ? 'desc' : 'asc';
+  else { SKU_SORT.col = col; SKU_SORT.dir = 'desc'; }
+  renderSkuTable();
+}
+
+function renderSkuTable() {
+  if (!SKU_DATA) return;
+  const rows = sortSku(applySkuFilters(SKU_DATA));
+  const tbody = document.getElementById('sku-tbody');
+  if (!tbody) return;
+  document.getElementById('sku-count').textContent = rows.length;
+  document.querySelectorAll('#sku-table thead th.sortable').forEach(th => {
+    th.classList.remove('asc', 'desc');
+    if (th.dataset.col === SKU_SORT.col) th.classList.add(SKU_SORT.dir);
+  });
+  tbody.innerHTML = rows.length === 0
+    ? '<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
+    : rows.map(r => `
+      <tr>
+        <td title="${r.sku || ''}">${(r.name || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</td>
+        <td class="muted">${r.category_name || '—'}</td>
+        <td class="num">${fmtNum(r.current_stock)}</td>
+        <td class="num">${fmtNum(r.velocity_7d, 2)}</td>
+        <td class="num">${fmtNum(r.velocity_30d, 2)}</td>
+        <td class="num">${fmtNum(r.days_of_supply, 0)}</td>
+        <td class="num">${fmtPct(r.sell_through_30d)}</td>
+        <td class="num muted">${r.age_days != null ? r.age_days + 'д' : '—'}</td>
+        <td><span class="pill ${STATUS_PILL[r.status] || 'y'}">${STATUS_LABEL[r.status] || r.status || '—'}</span></td>
+      </tr>`).join('');
+}
+
+function exportSkuCsv(rows, filename) {
+  const cols = ['name','sku','category_name','current_stock','velocity_7d','velocity_30d','days_of_supply','sell_through_30d','age_days','status','cost'];
+  const head = cols.join(',');
+  const esc = v => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : v;
+  const body = rows.map(r => cols.map(c => esc(r[c])).join(',')).join('\n');
+  const blob = new Blob(['﻿' + head + '\n' + body], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename || 'sku.csv';
+  a.click();
+}
+
+// ── SKU page ─────────────────────────
+function renderSku() {
+  const m = SKU_META || {};
+  const counts = m.active_by_status || { hit: 0, slow: 0, dead: 0, new: 0 };
+  const total = m.active_total || (SKU_DATA || []).length;
+
+  const cats = {};
+  (SKU_DATA || []).forEach(r => { if (r.category_id) cats[r.category_id] = r.category_name || ('id:' + r.category_id); });
+  const catOptions = Object.entries(cats)
+    .sort((a, b) => a[1].localeCompare(b[1]))
+    .map(([id, name]) => `<option value="${id}" ${SKU_FILTER.category === id ? 'selected' : ''}>${name}</option>`).join('');
+
+  document.getElementById('main-area').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">SKU-аналітика ${staleBadge()}</div>
+        <div class="page-sub">Активних: ${total} · Хітів: ${counts.hit} · Повільних: ${counts.slow} · Мертвих: ${counts.dead} · Нових: ${counts.new}</div>
+      </div>
+      <button class="refresh-btn" onclick="reloadSkuPage()"><span class="ri">↺</span> Оновити</button>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-accent"></div>
+        <div class="kpi-label">Активних SKU</div><div class="kpi-val">${fmt(total)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent green"></div>
+        <div class="kpi-label">Хіти</div><div class="kpi-val" style="color:var(--green)">${fmt(counts.hit)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:var(--gold)"></div>
+        <div class="kpi-label">Повільні</div><div class="kpi-val" style="color:var(--gold)">${fmt(counts.slow)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent red"></div>
+        <div class="kpi-label">Мертві</div><div class="kpi-val" style="color:var(--red)">${fmt(counts.dead)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent purple"></div>
+        <div class="kpi-label">Нові</div><div class="kpi-val" style="color:var(--purple)">${fmt(counts.new)}</div>
+      </div>
+    </div>
+
+    <div class="filter-bar">
+      <input type="search" id="sku-search" placeholder="Пошук за назвою / SKU / категорією" value="${SKU_FILTER.search}">
+      <select id="sku-status">
+        <option value="">Усі статуси</option>
+        <option value="hit"  ${SKU_FILTER.status==='hit'?'selected':''}>Хіти</option>
+        <option value="slow" ${SKU_FILTER.status==='slow'?'selected':''}>Повільні</option>
+        <option value="dead" ${SKU_FILTER.status==='dead'?'selected':''}>Мертві</option>
+        <option value="new"  ${SKU_FILTER.status==='new'?'selected':''}>Нові</option>
+      </select>
+      <select id="sku-category">
+        <option value="">Усі категорії</option>
+        ${catOptions}
+      </select>
+      <div class="spacer"></div>
+      <span style="align-self:center;color:var(--muted);font-size:11px">Знайдено: <span id="sku-count">0</span></span>
+      <button onclick="exportSkuCsv(sortSku(applySkuFilters(SKU_DATA)), 'sku-analytics.csv')">Експорт CSV</button>
+    </div>
+
+    <div class="tbl-scroll">
+      <table id="sku-table">
+        <thead><tr>
+          <th class="sortable" data-col="name" onclick="setSort('name')">Назва <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="category_name" onclick="setSort('category_name')">Категорія <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="current_stock" onclick="setSort('current_stock')" style="text-align:right">Склад <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="velocity_7d" onclick="setSort('velocity_7d')" style="text-align:right">V7 <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="velocity_30d" onclick="setSort('velocity_30d')" style="text-align:right">V30 <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="days_of_supply" onclick="setSort('days_of_supply')" style="text-align:right">DoS <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="sell_through_30d" onclick="setSort('sell_through_30d')" style="text-align:right">Sell-through <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="age_days" onclick="setSort('age_days')" style="text-align:right">Вік <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="status" onclick="setSort('status')">Статус <span class="arrow">▼</span></th>
+        </tr></thead>
+        <tbody id="sku-tbody"></tbody>
+      </table>
+    </div>
+  `;
+
+  document.getElementById('sku-search').addEventListener('input', e => {
+    SKU_FILTER.search = e.target.value;
+    renderSkuTable();
+  });
+  document.getElementById('sku-status').addEventListener('change', async e => {
+    SKU_FILTER.status = e.target.value;
+    await loadSku();
+    renderSkuTable();
+  });
+  document.getElementById('sku-category').addEventListener('change', async e => {
+    SKU_FILTER.category = e.target.value;
+    await loadSku();
+    renderSkuTable();
+  });
+
+  renderSkuTable();
+}
+
+async function reloadSkuPage() {
+  if (currentPage === 'sku') { await loadSku(); renderSku(); }
+  else if (currentPage === 'reorder') { await loadSku({ reorder: true }); renderReorder(); }
+}
+
+// ── Reorder page ─────────────────────
+function renderReorder() {
+  const rows = (SKU_DATA || []).slice();
+  let totalCost = 0;
+  rows.forEach(r => {
+    const v30 = parseFloat(r.velocity_30d) || 0;
+    r.suggested_qty = Math.max(1, Math.ceil(v30 * 60));
+    r.estimated_cost = r.cost ? r.suggested_qty * parseFloat(r.cost) : null;
+    if (r.estimated_cost) totalCost += r.estimated_cost;
+  });
+
+  document.getElementById('main-area').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">Реордер ${staleBadge()}</div>
+        <div class="page-sub">Хіти з days-of-supply &lt; 30 днів — кандидати на повторне замовлення</div>
+      </div>
+      <button class="refresh-btn" onclick="reloadSkuPage()"><span class="ri">↺</span> Оновити</button>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-accent green"></div>
+        <div class="kpi-label">Кандидатів на реордер</div>
+        <div class="kpi-val">${fmt(rows.length)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent"></div>
+        <div class="kpi-label">Орієнтовна сума</div>
+        <div class="kpi-val">${totalCost > 0 ? fmtMoney(totalCost) : '—'}</div>
+        <div class="kpi-sub">${totalCost > 0 ? 'на основі заповнених cost' : 'заповніть cost у Supabase'}</div>
+      </div>
+    </div>
+
+    <div class="filter-bar">
+      <div class="spacer"></div>
+      <button onclick="exportSkuCsv(SKU_DATA, 'reorder.csv')">Експорт CSV для замовлення</button>
+    </div>
+
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr>
+          <th>Назва</th>
+          <th>Категорія</th>
+          <th style="text-align:right">Склад</th>
+          <th style="text-align:right">V30</th>
+          <th style="text-align:right">DoS</th>
+          <th style="text-align:right">Замовити</th>
+          <th style="text-align:right">Cost</th>
+          <th style="text-align:right">Сума</th>
+        </tr></thead>
+        <tbody>
+          ${rows.length === 0
+            ? '<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">Поки немає кандидатів на реордер</td></tr>'
+            : rows.map(r => `
+              <tr>
+                <td>${(r.name || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</td>
+                <td class="muted">${r.category_name || '—'}</td>
+                <td class="num">${fmtNum(r.current_stock)}</td>
+                <td class="num">${fmtNum(r.velocity_30d, 2)}</td>
+                <td class="num">${fmtNum(r.days_of_supply, 0)}</td>
+                <td class="num"><b>${r.suggested_qty}</b></td>
+                <td class="num muted">${r.cost ? fmtMoney(parseFloat(r.cost)) : '—'}</td>
+                <td class="num">${r.estimated_cost ? fmtMoney(r.estimated_cost) : '—'}</td>
+              </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ── Init ─────────────────────────────
+if (!TOKEN) {
+  document.getElementById('main-area').innerHTML = `
+    <div class="state-wrap">
+      <div class="error-card">
+        <div class="error-title">Доступ заборонено</div>
+        <div class="state-sub">Відкрийте дашборд за допомогою параметра <code>?key=ВАШ_ТОКЕН</code> у URL.</div>
+      </div>
+    </div>`;
+} else {
+  loadData(30);
+  setInterval(() => { if (['overview','products','orders'].includes(currentPage)) loadData(currentDays); }, 30 * 60 * 1000);
+}
 </script>
 </body>
 </html>
