@@ -39,12 +39,13 @@ module.exports = async function handler(req, res) {
     if (req.query) {
       if (req.query.status) q = q.eq("status", req.query.status);
       if (req.query.category) q = q.eq("category_id", req.query.category);
+      if (req.query.inStock === "true") q = q.gt("current_stock", 0);
       if (req.query.reorder === "true") {
         q = q.eq("status", "hit").lt("days_of_supply", 30);
       }
     }
 
-    q = q.order("velocity_30d", { ascending: false }).limit(2000);
+    q = q.order("velocity_30d", { ascending: false }).limit(5000);
 
     const { data, error } = await q;
     if (error) throw new Error(error.message);

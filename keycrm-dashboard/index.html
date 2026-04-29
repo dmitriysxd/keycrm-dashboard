@@ -443,7 +443,7 @@ let DATA = null;
 let SKU_DATA = null;
 let SKU_META = null;
 let SKU_SORT = { col: 'velocity_30d', dir: 'desc' };
-let SKU_FILTER = { search: '', status: '', category: '' };
+let SKU_FILTER = { search: '', status: '', category: '', inStockOnly: false };
 let currentDays = 30;
 let charts = {};
 
@@ -477,6 +477,7 @@ async function loadSku(opts) {
     if (opts && opts.reorder) params.set('reorder', 'true');
     if (SKU_FILTER.status)   params.set('status', SKU_FILTER.status);
     if (SKU_FILTER.category) params.set('category', SKU_FILTER.category);
+    if (SKU_FILTER.inStockOnly) params.set('inStock', 'true');
     const url = apiUrl('/api/sku', params.toString());
     const [skuRes, metaRes] = await Promise.all([
       fetch(url),
@@ -877,10 +878,11 @@ function renderSkuTable() {
     if (th.dataset.col === SKU_SORT.col) th.classList.add(SKU_SORT.dir);
   });
   tbody.innerHTML = rows.length === 0
-    ? '<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
+    ? '<tr><td colspan="10" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
     : rows.map(r => `
       <tr>
-        <td title="${r.sku || ''}">${(r.name || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</td>
+        <td>${(r.name || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</td>
+        <td class="muted">${r.sku || '—'}</td>
         <td class="muted">${r.category_name || '—'}</td>
         <td class="num">${fmtNum(r.current_stock)}</td>
         <td class="num">${fmtNum(r.velocity_7d, 2)}</td>
@@ -944,7 +946,7 @@ function renderSku() {
     </div>
 
     <div class="filter-bar">
-      <input type="search" id="sku-search" placeholder="Пошук за назвою / SKU / категорією" value="${SKU_FILTER.search}">
+      <input type="search" id="sku-search" placeholder="Пошук за назвою / артикулом / категорією" value="${SKU_FILTER.search}">
       <select id="sku-status">
         <option value="">Усі статуси</option>
         <option value="hit"  ${SKU_FILTER.status==='hit'?'selected':''}>Хіти</option>
@@ -956,6 +958,10 @@ function renderSku() {
         <option value="">Усі категорії</option>
         ${catOptions}
       </select>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;cursor:pointer">
+        <input type="checkbox" id="sku-instock" ${SKU_FILTER.inStockOnly ? 'checked' : ''}>
+        Тільки в наявності
+      </label>
       <div class="spacer"></div>
       <span style="align-self:center;color:var(--muted);font-size:11px">Знайдено: <span id="sku-count">0</span></span>
       <button onclick="exportSkuCsv(sortSku(applySkuFilters(SKU_DATA)), 'sku-analytics.csv')">Експорт CSV</button>
@@ -965,6 +971,7 @@ function renderSku() {
       <table id="sku-table">
         <thead><tr>
           <th class="sortable" data-col="name" onclick="setSort('name')">Назва <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="sku" onclick="setSort('sku')">Артикул <span class="arrow">▼</span></th>
           <th class="sortable" data-col="category_name" onclick="setSort('category_name')">Категорія <span class="arrow">▼</span></th>
           <th class="sortable" data-col="current_stock" onclick="setSort('current_stock')" style="text-align:right">Склад <span class="arrow">▼</span></th>
           <th class="sortable" data-col="velocity_7d" onclick="setSort('velocity_7d')" style="text-align:right">V7 <span class="arrow">▼</span></th>
@@ -990,6 +997,11 @@ function renderSku() {
   });
   document.getElementById('sku-category').addEventListener('change', async e => {
     SKU_FILTER.category = e.target.value;
+    await loadSku();
+    renderSkuTable();
+  });
+  document.getElementById('sku-instock').addEventListener('change', async e => {
+    SKU_FILTER.inStockOnly = e.target.checked;
     await loadSku();
     renderSkuTable();
   });

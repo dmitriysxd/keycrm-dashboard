@@ -17,6 +17,7 @@ function linePrice(item) {
 }
 
 async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
+  const today = todayDate();
   const startPage = Math.max(1, parseInt(fromPage || 1));
   const limitPages = take ? parseInt(take) : 200;
   let total = 0;
@@ -28,21 +29,48 @@ async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
     if (!rows.length) return { total, lastPage: lastPageProcessed, more: false };
     total += rows.length;
     lastPageProcessed = page;
-    const upserts = rows.map((p) => ({
-      offer_id: p.id,
-      product_id: p.id,
-      sku: p.sku || null,
-      name: p.name || ("Product " + p.id),
-      category_id: p.category_id || (p.category && p.category.id) || null,
-      category_name: (p.category && p.category.name) || null,
-      price: parseFloat(p.price) || null,
-      last_seen_at: new Date().toISOString(),
-      is_active: true,
-    }));
-    const { error } = await supabase
+    const skuRows = [];
+    const snapRows = [];
+    const positives = [];
+    for (const p of rows) {
+      const qty = parseFloat(p.quantity != null ? p.quantity : p.in_stock);
+      const safeQty = isNaN(qty) ? 0 : qty;
+      const price = parseFloat(p.price);
+      const safePrice = isNaN(price) ? null : price;
+      skuRows.push({
+        offer_id: p.id,
+        product_id: p.id,
+        sku: p.sku || null,
+        name: p.name || ("Product " + p.id),
+        category_id: p.category_id || (p.category && p.category.id) || null,
+        category_name: (p.category && p.category.name) || null,
+        price: safePrice,
+        last_seen_at: new Date().toISOString(),
+        is_active: true,
+      });
+      snapRows.push({
+        snapshot_date: today,
+        offer_id: p.id,
+        quantity: safeQty,
+        price: safePrice,
+      });
+      if (safeQty > 0) positives.push(p.id);
+    }
+    const e1 = await supabase
       .from("skus")
-      .upsert(upserts, { onConflict: "offer_id", ignoreDuplicates: false });
-    if (error) throw new Error("skus upsert: " + error.message);
+      .upsert(skuRows, { onConflict: "offer_id", ignoreDuplicates: false });
+    if (e1.error) throw new Error("skus upsert: " + e1.error.message);
+    const e2 = await supabase
+      .from("stock_snapshots")
+      .upsert(snapRows, { onConflict: "snapshot_date,offer_id" });
+    if (e2.error) throw new Error("stock_snapshots upsert: " + e2.error.message);
+    if (positives.length) {
+      await supabase
+        .from("skus")
+        .update({ first_stock_at: new Date().toISOString() })
+        .in("offer_id", positives)
+        .is("first_stock_at", null);
+    }
     if (rows.length < 50) return { total, lastPage: page, more: false };
     await sleep(20);
   }
