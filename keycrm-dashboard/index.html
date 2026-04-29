@@ -909,8 +909,9 @@ function exportSkuCsv(rows, filename) {
 // ── SKU page ─────────────────────────
 function renderSku() {
   const m = SKU_META || {};
-  const counts = m.active_by_status || { hit: 0, slow: 0, dead: 0, new: 0 };
-  const total = m.active_total || (SKU_DATA || []).length;
+  const counts = m.active_by_status || { hit: 0, slow: 0, dead: 0 };
+  const totalActive = m.active_total != null ? m.active_total : (SKU_DATA || []).length;
+  const totalInStock = m.active_in_stock != null ? m.active_in_stock : null;
 
   const cats = {};
   (SKU_DATA || []).forEach(r => { if (r.category_id) cats[r.category_id] = r.category_name || ('id:' + r.category_id); });
@@ -922,14 +923,17 @@ function renderSku() {
     <div class="page-header">
       <div>
         <div class="page-title">SKU-аналітика ${staleBadge()}</div>
-        <div class="page-sub">Активних: ${total} · Хітів: ${counts.hit} · Повільних: ${counts.slow} · Мертвих: ${counts.dead} · Нових: ${counts.new}</div>
+        <div class="page-sub">Активних: ${totalActive}${totalInStock != null ? ' · У наявності: ' + totalInStock : ''} · Хітів: ${counts.hit} · Повільних: ${counts.slow} · Мертвих: ${counts.dead}</div>
       </div>
       <button class="refresh-btn" onclick="reloadSkuPage()"><span class="ri">↺</span> Оновити</button>
     </div>
 
     <div class="kpi-grid">
       <div class="kpi"><div class="kpi-accent"></div>
-        <div class="kpi-label">Активних SKU</div><div class="kpi-val">${fmt(total)}</div>
+        <div class="kpi-label">Активних SKU</div><div class="kpi-val">${fmt(totalActive)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:#60a8e0"></div>
+        <div class="kpi-label">У наявності</div><div class="kpi-val" style="color:#60a8e0">${totalInStock != null ? fmt(totalInStock) : '—'}</div>
       </div>
       <div class="kpi"><div class="kpi-accent green"></div>
         <div class="kpi-label">Хіти</div><div class="kpi-val" style="color:var(--green)">${fmt(counts.hit)}</div>
@@ -940,9 +944,6 @@ function renderSku() {
       <div class="kpi"><div class="kpi-accent red"></div>
         <div class="kpi-label">Мертві</div><div class="kpi-val" style="color:var(--red)">${fmt(counts.dead)}</div>
       </div>
-      <div class="kpi"><div class="kpi-accent purple"></div>
-        <div class="kpi-label">Нові</div><div class="kpi-val" style="color:var(--purple)">${fmt(counts.new)}</div>
-      </div>
     </div>
 
     <div class="filter-bar">
@@ -952,7 +953,6 @@ function renderSku() {
         <option value="hit"  ${SKU_FILTER.status==='hit'?'selected':''}>Хіти</option>
         <option value="slow" ${SKU_FILTER.status==='slow'?'selected':''}>Повільні</option>
         <option value="dead" ${SKU_FILTER.status==='dead'?'selected':''}>Мертві</option>
-        <option value="new"  ${SKU_FILTER.status==='new'?'selected':''}>Нові</option>
       </select>
       <select id="sku-category">
         <option value="">Усі категорії</option>

@@ -87,16 +87,19 @@ SELECT
   COALESCE(
     s.manual_status,
     CASE
-      WHEN s.first_stock_at IS NULL THEN 'new'
-      WHEN EXTRACT(DAY FROM (NOW() - s.first_stock_at)) < 14 THEN 'new'
-      WHEN EXTRACT(DAY FROM (NOW() - s.first_stock_at)) >= 60
-           AND COALESCE(s30.qty, 0) = 0
-           AND COALESCE(ls.current_stock, 0) > 0 THEN 'dead'
+      -- Hit: selling and the supply will not last 60 days at the 7-day pace.
       WHEN COALESCE(s30.qty, 0) / 30.0 >= 0.3
-           AND (
-             COALESCE(s7.qty, 0) > 0
-             AND COALESCE(ls.current_stock, 0) / NULLIF(COALESCE(s7.qty, 0)::numeric / 7.0, 0) <= 60
-           ) THEN 'hit'
+           AND COALESCE(s7.qty, 0) > 0
+           AND COALESCE(ls.current_stock, 0) / NULLIF(COALESCE(s7.qty, 0)::numeric / 7.0, 0) <= 60
+        THEN 'hit'
+      -- Dead: in stock but zero sales in the last 30 days, regardless of age.
+      WHEN COALESCE(ls.current_stock, 0) > 0
+           AND COALESCE(s30.qty, 0) = 0
+        THEN 'dead'
+      -- New: no sales ever AND no stock yet (effectively just listed).
+      WHEN COALESCE(st.qty_all, 0) = 0
+           AND COALESCE(ls.current_stock, 0) = 0
+        THEN 'new'
       ELSE 'slow'
     END
   ) AS status

@@ -46,7 +46,7 @@ module.exports = async function handler(req, res) {
     let total = 0;
     let upserted = 0;
     const params = {
-      include: "products,status",
+      include: "products.offer,status",
       limit: 50,
       "filter[created_between]": from + "," + to,
     };
@@ -67,12 +67,13 @@ module.exports = async function handler(req, res) {
           const qty = lineQty(item);
           if (qty <= 0) return;
           const price = linePrice(item);
+          const offer = item.offer || {};
           lines.push({
             order_id: order.id,
             line_idx: idx,
-            offer_id: item.offer_id || (item.offer && item.offer.id) || null,
-            product_id: item.product_id || (item.product && item.product.id) || null,
-            name_snapshot: item.name || (item.offer && item.offer.name) || null,
+            offer_id: offer.id || null,
+            product_id: offer.product_id || null,
+            name_snapshot: item.name || offer.name || null,
             quantity: qty,
             unit_price: price,
             revenue: price * qty,

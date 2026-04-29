@@ -16,10 +16,24 @@ function linePrice(item) {
   return isNaN(p) ? 0 : p;
 }
 
+async function fetchCategories(apiKey, ctx) {
+  const map = {};
+  let page = 1;
+  while (page <= 20) {
+    const resp = await get("/products/categories", { page, limit: 50 }, apiKey, ctx);
+    const rows = resp.data || [];
+    rows.forEach((c) => { if (c && c.id) map[String(c.id)] = c.name || null; });
+    if (rows.length < 50) break;
+    page++;
+  }
+  return map;
+}
+
 async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
   const today = todayDate();
   const startPage = Math.max(1, parseInt(fromPage || 1));
   const limitPages = take ? parseInt(take) : 200;
+  const categories = await fetchCategories(apiKey, ctx);
   let total = 0;
   let lastPageProcessed = startPage - 1;
   for (let i = 0; i < limitPages; i++) {
@@ -37,13 +51,15 @@ async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
       const safeQty = isNaN(qty) ? 0 : qty;
       const price = parseFloat(p.price);
       const safePrice = isNaN(price) ? null : price;
+      const catId = p.category_id || (p.category && p.category.id) || null;
+      const catName = (p.category && p.category.name) || (catId ? categories[String(catId)] : null) || null;
       skuRows.push({
         offer_id: p.id,
         product_id: p.id,
         sku: p.sku || null,
         name: p.name || ("Product " + p.id),
-        category_id: p.category_id || (p.category && p.category.id) || null,
-        category_name: (p.category && p.category.name) || null,
+        category_id: catId,
+        category_name: catName,
         price: safePrice,
         last_seen_at: new Date().toISOString(),
         is_active: true,
@@ -165,7 +181,7 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
   let total = 0;
   let upserted = 0;
   const params = {
-    include: "products,status",
+    include: "products.offer,status",
     limit: 50,
   };
   if (sinceISO) {
@@ -189,12 +205,13 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
         const qty = lineQty(item);
         if (qty <= 0) return;
         const price = linePrice(item);
+        const offer = item.offer || {};
         lines.push({
           order_id: order.id,
           line_idx: idx,
-          offer_id: item.offer_id || (item.offer && item.offer.id) || null,
-          product_id: item.product_id || (item.product && item.product.id) || null,
-          name_snapshot: item.name || (item.offer && item.offer.name) || null,
+          offer_id: offer.id || null,
+          product_id: offer.product_id || null,
+          name_snapshot: item.name || offer.name || null,
           quantity: qty,
           unit_price: price,
           revenue: price * qty,
