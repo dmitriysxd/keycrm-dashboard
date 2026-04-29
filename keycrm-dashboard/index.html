@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KEYCRM · Аналітика</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;700&family=Inter:wght@300;400;500;600&display=swap');
 
@@ -267,10 +268,12 @@
     display: inline-block; padding: 2px 8px;
     border-radius: 20px; font-size: 10px; font-weight: 500;
   }
-  .pill.r { background: rgba(224,96,96,0.12); color: var(--red); }
-  .pill.g { background: rgba(92,184,138,0.12); color: var(--green); }
-  .pill.y { background: rgba(201,169,110,0.12); color: var(--gold); }
-  .pill.b { background: rgba(124,110,245,0.15); color: var(--purple); }
+  .pill.r  { background: rgba(224,96,96,0.12);  color: var(--red); }
+  .pill.g  { background: rgba(92,184,138,0.16); color: var(--green); }
+  .pill.gg { background: rgba(158,209,179,0.14); color: #9ed1b3; }
+  .pill.y  { background: rgba(201,169,110,0.12); color: var(--gold); }
+  .pill.o  { background: rgba(224,160,96,0.14);  color: #e0a060; }
+  .pill.b  { background: rgba(124,110,245,0.15); color: var(--purple); }
 
   /* ── SKU table (sortable, sticky header, filters) ── */
   .filter-bar {
@@ -812,8 +815,9 @@ function renderOrders() {
 }
 
 // ── SKU helpers ──────────────────────
-const STATUS_PILL = { hit: 'g', slow: 'y', dead: 'r', new: 'b' };
-const STATUS_LABEL = { hit: 'Хіт', slow: 'Повільний', dead: 'Мертвий', new: 'Новий' };
+const STATUS_PILL  = { hit: 'g', good: 'gg', slow: 'y', weak: 'o', dead: 'r', new: 'b' };
+const STATUS_LABEL = { hit: 'Хіт', good: 'Хороший', slow: 'Повільний', weak: 'Слабкий', dead: 'Мертвий', new: 'Новий' };
+const STATUS_COLOR = { hit: 'var(--green)', good: '#9ed1b3', slow: 'var(--gold)', weak: '#e0a060', dead: 'var(--red)', new: 'var(--purple)' };
 
 function staleBadge() {
   if (!SKU_META || !SKU_META.last_snapshot_date) {
@@ -878,15 +882,17 @@ function renderSkuTable() {
     if (th.dataset.col === SKU_SORT.col) th.classList.add(SKU_SORT.dir);
   });
   tbody.innerHTML = rows.length === 0
-    ? '<tr><td colspan="10" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
+    ? '<tr><td colspan="12" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
     : rows.map(r => `
       <tr>
         <td>${(r.name || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</td>
         <td class="muted">${r.sku || '—'}</td>
         <td class="muted">${r.category_name || '—'}</td>
         <td class="num">${fmtNum(r.current_stock)}</td>
+        <td class="num">${fmtNum(r.sold_30d)}</td>
         <td class="num">${fmtNum(r.velocity_7d, 2)}</td>
         <td class="num">${fmtNum(r.velocity_30d, 2)}</td>
+        <td class="num">${fmtNum(r.velocity_90d, 2)}</td>
         <td class="num">${fmtNum(r.days_of_supply, 0)}</td>
         <td class="num">${fmtPct(r.sell_through_30d)}</td>
         <td class="num muted">${r.age_days != null ? r.age_days + 'д' : '—'}</td>
@@ -894,24 +900,58 @@ function renderSkuTable() {
       </tr>`).join('');
 }
 
-function exportSkuCsv(rows, filename) {
-  const cols = ['name','sku','category_name','current_stock','velocity_7d','velocity_30d','days_of_supply','sell_through_30d','age_days','status','cost'];
-  const head = cols.join(',');
-  const esc = v => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : v;
-  const body = rows.map(r => cols.map(c => esc(r[c])).join(',')).join('\n');
-  const blob = new Blob(['﻿' + head + '\n' + body], { type: 'text/csv;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename || 'sku.csv';
-  a.click();
+const XLS_COLS = [
+  { key: 'name',             label: 'Назва' },
+  { key: 'sku',              label: 'Артикул' },
+  { key: 'category_name',    label: 'Категорія' },
+  { key: 'current_stock',    label: 'Склад' },
+  { key: 'sold_30d',         label: 'Продано за 30 днів' },
+  { key: 'velocity_7d',      label: 'V7' },
+  { key: 'velocity_30d',     label: 'V30' },
+  { key: 'velocity_90d',     label: 'V90' },
+  { key: 'days_of_supply',   label: 'DoS' },
+  { key: 'sell_through_30d', label: 'Sell-through %' },
+  { key: 'age_days',         label: 'Вік (днів)' },
+  { key: 'status',           label: 'Статус' },
+  { key: 'cost',             label: 'Cost (UAH)' },
+  { key: 'price',            label: 'Ціна продажу' },
+  { key: 'sold_total',       label: 'Продано всього' },
+  { key: 'last_sold_at',     label: 'Остання продажа' },
+];
+
+function exportSkuXlsx(rows, baseName) {
+  const aoa = [XLS_COLS.map(c => c.label)];
+  rows.forEach(r => {
+    aoa.push(XLS_COLS.map(c => {
+      const v = r[c.key];
+      if (v == null || v === '') return '';
+      if (c.key === 'status') return STATUS_LABEL[v] || v;
+      if (c.key === 'sell_through_30d') {
+        const num = parseFloat(v);
+        return isNaN(num) ? '' : Math.round(num * 100) + '%';
+      }
+      if (typeof v === 'number') return v;
+      const num = parseFloat(v);
+      return isNaN(num) ? v : num;
+    }));
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [
+    { wch: 50 }, { wch: 14 }, { wch: 24 }, { wch: 8 }, { wch: 10 },
+    { wch: 8 },  { wch: 8 },  { wch: 8 },  { wch: 8 }, { wch: 12 },
+    { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 18 },
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'SKU');
+  const fname = (baseName || 'sku-analytics') + '_' + new Date().toISOString().slice(0, 10) + '.xlsx';
+  XLSX.writeFile(wb, fname);
 }
 
 // ── SKU page ─────────────────────────
 function renderSku() {
   const m = SKU_META || {};
-  const counts = m.active_by_status || { hit: 0, slow: 0, dead: 0 };
+  const counts = m.active_by_status || { hit: 0, good: 0, slow: 0, weak: 0, dead: 0 };
   const totalActive = m.active_total != null ? m.active_total : (SKU_DATA || []).length;
-  const totalInStock = m.active_in_stock != null ? m.active_in_stock : null;
 
   const cats = {};
   (SKU_DATA || []).forEach(r => { if (r.category_id) cats[r.category_id] = r.category_name || ('id:' + r.category_id); });
@@ -923,26 +963,31 @@ function renderSku() {
     <div class="page-header">
       <div>
         <div class="page-title">SKU-аналітика ${staleBadge()}</div>
-        <div class="page-sub">Активних: ${totalActive}${totalInStock != null ? ' · У наявності: ' + totalInStock : ''} · Хітів: ${counts.hit} · Повільних: ${counts.slow} · Мертвих: ${counts.dead}</div>
+        <div class="page-sub">Усього активних: ${totalActive}</div>
       </div>
       <button class="refresh-btn" onclick="reloadSkuPage()"><span class="ri">↺</span> Оновити</button>
     </div>
 
     <div class="kpi-grid">
-      <div class="kpi"><div class="kpi-accent"></div>
-        <div class="kpi-label">Активних SKU</div><div class="kpi-val">${fmt(totalActive)}</div>
-      </div>
-      <div class="kpi"><div class="kpi-accent" style="background:#60a8e0"></div>
-        <div class="kpi-label">У наявності</div><div class="kpi-val" style="color:#60a8e0">${totalInStock != null ? fmt(totalInStock) : '—'}</div>
-      </div>
       <div class="kpi"><div class="kpi-accent green"></div>
-        <div class="kpi-label">Хіти</div><div class="kpi-val" style="color:var(--green)">${fmt(counts.hit)}</div>
+        <div class="kpi-label">Хіт (≥30/міс)</div>
+        <div class="kpi-val" style="color:var(--green)">${fmt(counts.hit)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:#9ed1b3"></div>
+        <div class="kpi-label">Хороший (15–29/міс)</div>
+        <div class="kpi-val" style="color:#9ed1b3">${fmt(counts.good)}</div>
       </div>
       <div class="kpi"><div class="kpi-accent" style="background:var(--gold)"></div>
-        <div class="kpi-label">Повільні</div><div class="kpi-val" style="color:var(--gold)">${fmt(counts.slow)}</div>
+        <div class="kpi-label">Повільний (6–14/міс)</div>
+        <div class="kpi-val" style="color:var(--gold)">${fmt(counts.slow)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:#e0a060"></div>
+        <div class="kpi-label">Слабкий (1–5/міс)</div>
+        <div class="kpi-val" style="color:#e0a060">${fmt(counts.weak)}</div>
       </div>
       <div class="kpi"><div class="kpi-accent red"></div>
-        <div class="kpi-label">Мертві</div><div class="kpi-val" style="color:var(--red)">${fmt(counts.dead)}</div>
+        <div class="kpi-label">Мертвий (стік без продажів)</div>
+        <div class="kpi-val" style="color:var(--red)">${fmt(counts.dead)}</div>
       </div>
     </div>
 
@@ -950,9 +995,11 @@ function renderSku() {
       <input type="search" id="sku-search" placeholder="Пошук за назвою / артикулом / категорією" value="${SKU_FILTER.search}">
       <select id="sku-status">
         <option value="">Усі статуси</option>
-        <option value="hit"  ${SKU_FILTER.status==='hit'?'selected':''}>Хіти</option>
-        <option value="slow" ${SKU_FILTER.status==='slow'?'selected':''}>Повільні</option>
-        <option value="dead" ${SKU_FILTER.status==='dead'?'selected':''}>Мертві</option>
+        <option value="hit"  ${SKU_FILTER.status==='hit'?'selected':''}>Хіт</option>
+        <option value="good" ${SKU_FILTER.status==='good'?'selected':''}>Хороший</option>
+        <option value="slow" ${SKU_FILTER.status==='slow'?'selected':''}>Повільний</option>
+        <option value="weak" ${SKU_FILTER.status==='weak'?'selected':''}>Слабкий</option>
+        <option value="dead" ${SKU_FILTER.status==='dead'?'selected':''}>Мертвий</option>
       </select>
       <select id="sku-category">
         <option value="">Усі категорії</option>
@@ -963,8 +1010,8 @@ function renderSku() {
         Тільки в наявності
       </label>
       <div class="spacer"></div>
-      <span style="align-self:center;color:var(--muted);font-size:11px">Знайдено: <span id="sku-count">0</span></span>
-      <button onclick="exportSkuCsv(sortSku(applySkuFilters(SKU_DATA)), 'sku-analytics.csv')">Експорт CSV</button>
+      <span style="align-self:center;color:var(--muted);font-size:11px">Показано: <span id="sku-count">0</span></span>
+      <button onclick="exportSkuXlsx(sortSku(applySkuFilters(SKU_DATA)), 'sku-analytics')">Скачати XLS</button>
     </div>
 
     <div class="tbl-scroll">
@@ -974,8 +1021,10 @@ function renderSku() {
           <th class="sortable" data-col="sku" onclick="setSort('sku')">Артикул <span class="arrow">▼</span></th>
           <th class="sortable" data-col="category_name" onclick="setSort('category_name')">Категорія <span class="arrow">▼</span></th>
           <th class="sortable" data-col="current_stock" onclick="setSort('current_stock')" style="text-align:right">Склад <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="sold_30d" onclick="setSort('sold_30d')" style="text-align:right">S30d <span class="arrow">▼</span></th>
           <th class="sortable" data-col="velocity_7d" onclick="setSort('velocity_7d')" style="text-align:right">V7 <span class="arrow">▼</span></th>
           <th class="sortable" data-col="velocity_30d" onclick="setSort('velocity_30d')" style="text-align:right">V30 <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="velocity_90d" onclick="setSort('velocity_90d')" style="text-align:right">V90 <span class="arrow">▼</span></th>
           <th class="sortable" data-col="days_of_supply" onclick="setSort('days_of_supply')" style="text-align:right">DoS <span class="arrow">▼</span></th>
           <th class="sortable" data-col="sell_through_30d" onclick="setSort('sell_through_30d')" style="text-align:right">Sell-through <span class="arrow">▼</span></th>
           <th class="sortable" data-col="age_days" onclick="setSort('age_days')" style="text-align:right">Вік <span class="arrow">▼</span></th>
@@ -1029,7 +1078,7 @@ function renderReorder() {
     <div class="page-header">
       <div>
         <div class="page-title">Реордер ${staleBadge()}</div>
-        <div class="page-sub">Хіти з days-of-supply &lt; 30 днів — кандидати на повторне замовлення</div>
+        <div class="page-sub">Хіти з days-of-supply &lt; 60 днів — кандидати на повторне замовлення</div>
       </div>
       <button class="refresh-btn" onclick="reloadSkuPage()"><span class="ri">↺</span> Оновити</button>
     </div>
@@ -1048,7 +1097,7 @@ function renderReorder() {
 
     <div class="filter-bar">
       <div class="spacer"></div>
-      <button onclick="exportSkuCsv(SKU_DATA, 'reorder.csv')">Експорт CSV для замовлення</button>
+      <button onclick="exportSkuXlsx(SKU_DATA, 'reorder')">Скачати XLS для замовлення</button>
     </div>
 
     <div class="tbl-scroll">
