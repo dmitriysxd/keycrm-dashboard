@@ -16,14 +16,18 @@ function linePrice(item) {
   return isNaN(p) ? 0 : p;
 }
 
-async function ingestProducts(apiKey, supabase, ctx) {
-  let page = 1;
+async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
+  const startPage = Math.max(1, parseInt(fromPage || 1));
+  const limitPages = take ? parseInt(take) : 200;
   let total = 0;
-  while (page <= 200) {
+  let lastPageProcessed = startPage - 1;
+  for (let i = 0; i < limitPages; i++) {
+    const page = startPage + i;
     const resp = await get("/products", { page, limit: 50 }, apiKey, ctx);
     const rows = resp.data || [];
-    if (!rows.length) break;
+    if (!rows.length) return { total, lastPage: lastPageProcessed, more: false };
     total += rows.length;
+    lastPageProcessed = page;
     const upserts = rows.map((p) => ({
       offer_id: p.id,
       product_id: p.id,
@@ -39,23 +43,26 @@ async function ingestProducts(apiKey, supabase, ctx) {
       .from("skus")
       .upsert(upserts, { onConflict: "offer_id", ignoreDuplicates: false });
     if (error) throw new Error("skus upsert: " + error.message);
-    if (rows.length < 50) break;
-    page++;
-    await sleep(50);
+    if (rows.length < 50) return { total, lastPage: page, more: false };
+    await sleep(20);
   }
-  return total;
+  return { total, lastPage: lastPageProcessed, more: true };
 }
 
-async function ingestOffers(apiKey, supabase, ctx) {
+async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
   const today = todayDate();
-  let page = 1;
+  const startPage = Math.max(1, parseInt(fromPage || 1));
+  const limitPages = take ? parseInt(take) : 200;
   let total = 0;
+  let lastPageProcessed = startPage - 1;
 
-  while (page <= 200) {
+  for (let i = 0; i < limitPages; i++) {
+    const page = startPage + i;
     const resp = await get("/offers", { page, limit: 50 }, apiKey, ctx);
     const rows = resp.data || [];
-    if (!rows.length) break;
+    if (!rows.length) return { offersSeen: total, lastPage: lastPageProcessed, more: false };
     total += rows.length;
+    lastPageProcessed = page;
 
     const skuRows = [];
     const snapRows = [];
@@ -104,12 +111,11 @@ async function ingestOffers(apiKey, supabase, ctx) {
       }
     }
 
-    if (rows.length < 50) break;
-    page++;
-    await sleep(50);
+    if (rows.length < 50) return { offersSeen: total, lastPage: page, more: false };
+    await sleep(20);
   }
 
-  return { offersSeen: total };
+  return { offersSeen: total, lastPage: lastPageProcessed, more: true };
 }
 
 async function ingestSales(apiKey, supabase, ctx, sinceISO) {
@@ -166,7 +172,7 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
 
     if (rows.length < 50) break;
     page++;
-    await sleep(50);
+    await sleep(20);
   }
 
   return { ordersSeen: total, salesUpserted: upserted };
@@ -191,12 +197,14 @@ module.exports = async function handler(req, res) {
   const ctx = { apiCalls: 0 };
   const runStartIso = new Date().toISOString();
   const step = (req.query && req.query.step) || "all";
+  const fromPage = req.query && req.query.from;
+  const take = req.query && req.query.take;
   let runId = null;
 
   try {
     const ins = await supabase
       .from("ingest_runs")
-      .insert({ kind: "daily", status: "running", meta: { step } })
+      .insert({ kind: "daily", status: "running", meta: { step, fromPage, take } })
       .select("id")
       .single();
     if (ins.error) throw new Error("ingest_runs insert: " + ins.error.message);
@@ -204,14 +212,22 @@ module.exports = async function handler(req, res) {
 
     let productsSeen = 0, offersSeen = 0, ordersSeen = 0, salesUpserted = 0;
     let didMetrics = false;
+    let nextPage = null;
 
     if (step === "products" || step === "all") {
-      productsSeen = await ingestProducts(apiKey, supabase, ctx);
+      const r = await ingestProducts(apiKey, supabase, ctx, fromPage, take);
+      productsSeen = r.total;
+      if (r.more) nextPage = r.lastPage + 1;
     }
     if (step === "offers" || step === "all") {
-      const r = await ingestOffers(apiKey, supabase, ctx);
+      const r = await ingestOffers(apiKey, supabase, ctx, fromPage, take);
       offersSeen = r.offersSeen;
-      await deactivateMissing(supabase, runStartIso);
+      if (r.more) nextPage = r.lastPage + 1;
+      if (!r.more && step === "offers") {
+        await deactivateMissing(supabase, runStartIso);
+      } else if (step === "all") {
+        await deactivateMissing(supabase, runStartIso);
+      }
     }
     if (step === "sales" || step === "all") {
       const since = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
@@ -248,6 +264,8 @@ module.exports = async function handler(req, res) {
       sales_upserted: salesUpserted,
       metrics_refreshed: didMetrics,
       api_calls: ctx.apiCalls,
+      next_page: nextPage,
+      more: nextPage !== null,
     });
   } catch (err) {
     const msg = (err && err.message) || String(err);
