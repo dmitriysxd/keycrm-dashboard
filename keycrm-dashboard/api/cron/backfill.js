@@ -48,8 +48,7 @@ module.exports = async function handler(req, res) {
     const params = {
       include: "products,status",
       limit: 50,
-      "filter[created_at_min]": from,
-      "filter[created_at_max]": to,
+      "filter[created_between]": from + "," + to,
     };
 
     while (page <= 200) {

@@ -120,7 +120,10 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
     include: "products,status",
     limit: 50,
   };
-  if (sinceISO) params["filter[updated_at_min]"] = sinceISO;
+  if (sinceISO) {
+    const now = new Date().toISOString().slice(0, 10);
+    params["filter[updated_between]"] = sinceISO.slice(0, 10) + "," + now;
+  }
 
   while (page <= 200) {
     const resp = await get("/order", Object.assign({}, params, { page }), apiKey, ctx);
