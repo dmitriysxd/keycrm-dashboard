@@ -19,7 +19,7 @@ function linePrice(item) {
 async function ingestProducts(apiKey, supabase, ctx) {
   let page = 1;
   let total = 0;
-  while (page <= 100) {
+  while (page <= 200) {
     const resp = await get("/products", { page, limit: 50 }, apiKey, ctx);
     const rows = resp.data || [];
     if (!rows.length) break;
@@ -41,7 +41,7 @@ async function ingestProducts(apiKey, supabase, ctx) {
     if (error) throw new Error("skus upsert: " + error.message);
     if (rows.length < 50) break;
     page++;
-    await sleep(200);
+    await sleep(50);
   }
   return total;
 }
@@ -51,7 +51,7 @@ async function ingestOffers(apiKey, supabase, ctx) {
   let page = 1;
   let total = 0;
 
-  while (page <= 100) {
+  while (page <= 200) {
     const resp = await get("/offers", { page, limit: 50 }, apiKey, ctx);
     const rows = resp.data || [];
     if (!rows.length) break;
@@ -106,7 +106,7 @@ async function ingestOffers(apiKey, supabase, ctx) {
 
     if (rows.length < 50) break;
     page++;
-    await sleep(200);
+    await sleep(50);
   }
 
   return { offersSeen: total };
@@ -166,7 +166,7 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
 
     if (rows.length < 50) break;
     page++;
-    await sleep(200);
+    await sleep(50);
   }
 
   return { ordersSeen: total, salesUpserted: upserted };
@@ -190,27 +190,40 @@ module.exports = async function handler(req, res) {
   const supabase = getSupabase();
   const ctx = { apiCalls: 0 };
   const runStartIso = new Date().toISOString();
+  const step = (req.query && req.query.step) || "all";
   let runId = null;
 
   try {
     const ins = await supabase
       .from("ingest_runs")
-      .insert({ kind: "daily", status: "running" })
+      .insert({ kind: "daily", status: "running", meta: { step } })
       .select("id")
       .single();
     if (ins.error) throw new Error("ingest_runs insert: " + ins.error.message);
     runId = ins.data.id;
 
-    const productsSeen = await ingestProducts(apiKey, supabase, ctx);
-    const { offersSeen } = await ingestOffers(apiKey, supabase, ctx);
+    let productsSeen = 0, offersSeen = 0, ordersSeen = 0, salesUpserted = 0;
+    let didMetrics = false;
 
-    await deactivateMissing(supabase, runStartIso);
-
-    const since = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
-    const { ordersSeen, salesUpserted } = await ingestSales(apiKey, supabase, ctx, since);
-
-    const refresh = await supabase.rpc("refresh_sku_metrics");
-    if (refresh.error) throw new Error("refresh_sku_metrics: " + refresh.error.message);
+    if (step === "products" || step === "all") {
+      productsSeen = await ingestProducts(apiKey, supabase, ctx);
+    }
+    if (step === "offers" || step === "all") {
+      const r = await ingestOffers(apiKey, supabase, ctx);
+      offersSeen = r.offersSeen;
+      await deactivateMissing(supabase, runStartIso);
+    }
+    if (step === "sales" || step === "all") {
+      const since = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+      const r = await ingestSales(apiKey, supabase, ctx, since);
+      ordersSeen = r.ordersSeen;
+      salesUpserted = r.salesUpserted;
+    }
+    if (step === "metrics" || step === "all") {
+      const refresh = await supabase.rpc("refresh_sku_metrics");
+      if (refresh.error) throw new Error("refresh_sku_metrics: " + refresh.error.message);
+      didMetrics = true;
+    }
 
     await supabase
       .from("ingest_runs")
@@ -227,11 +240,13 @@ module.exports = async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
+      step,
       run_id: runId,
       products: productsSeen,
       offers: offersSeen,
       orders: ordersSeen,
       sales_upserted: salesUpserted,
+      metrics_refreshed: didMetrics,
       api_calls: ctx.apiCalls,
     });
   } catch (err) {
