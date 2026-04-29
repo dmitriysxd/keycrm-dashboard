@@ -58,7 +58,7 @@ async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
 
   for (let i = 0; i < limitPages; i++) {
     const page = startPage + i;
-    const resp = await get("/offers", { page, limit: 50 }, apiKey, ctx);
+    const resp = await get("/offers", { page, limit: 50, include: "product" }, apiKey, ctx);
     const rows = resp.data || [];
     if (!rows.length) return { offersSeen: total, lastPage: lastPageProcessed, more: false };
     total += rows.length;
@@ -68,15 +68,29 @@ async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
     const snapRows = [];
     for (const o of rows) {
       const offerId = o.id;
-      const productId = o.product_id || o.product || offerId;
+      const product = o.product || {};
+      const productId = o.product_id || product.id || offerId;
       const qty = parseFloat(o.quantity);
       const price = parseFloat(o.price);
+      const productName = product.name || o.product_name || o.name;
+      const variantSuffix = o.sku && productName && !productName.includes(o.sku)
+        ? " · " + o.sku
+        : "";
+      const displayName = productName
+        ? productName + variantSuffix
+        : ("Offer " + offerId);
+      const categoryId = product.category_id
+        || (product.category && product.category.id)
+        || null;
+      const categoryName = (product.category && product.category.name) || null;
 
       skuRows.push({
         offer_id: offerId,
         product_id: productId,
         sku: o.sku || null,
-        name: o.product_name || o.name || ("Offer " + offerId),
+        name: displayName,
+        category_id: categoryId,
+        category_name: categoryName,
         price: isNaN(price) ? null : price,
         last_seen_at: new Date().toISOString(),
         is_active: true,

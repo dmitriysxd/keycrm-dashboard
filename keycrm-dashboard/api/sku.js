@@ -33,12 +33,14 @@ module.exports = async function handler(req, res) {
 
     let q = supabase.from("sku_metrics").select("*");
 
+    const includeInactive = req.query && req.query.all === "true";
+    if (!includeInactive) q = q.eq("is_active", true);
+
     if (req.query) {
       if (req.query.status) q = q.eq("status", req.query.status);
       if (req.query.category) q = q.eq("category_id", req.query.category);
-      if (req.query.active === "true") q = q.eq("is_active", true);
       if (req.query.reorder === "true") {
-        q = q.eq("status", "hit").eq("is_active", true).lt("days_of_supply", 30);
+        q = q.eq("status", "hit").lt("days_of_supply", 30);
       }
     }
 
