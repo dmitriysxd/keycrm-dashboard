@@ -474,7 +474,8 @@ async function loadData(days = currentDays) {
 }
 
 async function loadSku(opts) {
-  showLoading();
+  const silent = opts && opts.silent;
+  if (!silent) showLoading();
   try {
     const params = new URLSearchParams();
     if (opts && opts.reorder) params.set('reorder', 'true');
@@ -482,15 +483,14 @@ async function loadSku(opts) {
     if (SKU_FILTER.category) params.set('category', SKU_FILTER.category);
     if (SKU_FILTER.inStockOnly) params.set('inStock', 'true');
     const url = apiUrl('/api/sku', params.toString());
-    const [skuRes, metaRes] = await Promise.all([
-      fetch(url),
-      fetch(apiUrl('/api/sku?meta=true')),
-    ]);
-    const skuJson = await skuRes.json();
-    const metaJson = await metaRes.json();
-    if (!skuRes.ok) throw new Error(skuJson.error || 'Помилка сервера');
+    const wantMeta = !silent || !SKU_META;
+    const fetches = [fetch(url)];
+    if (wantMeta) fetches.push(fetch(apiUrl('/api/sku?meta=true')));
+    const results = await Promise.all(fetches);
+    const skuJson = await results[0].json();
+    if (!results[0].ok) throw new Error(skuJson.error || 'Помилка сервера');
     SKU_DATA = skuJson.rows || [];
-    SKU_META = metaJson;
+    if (results[1]) SKU_META = await results[1].json();
     return true;
   } catch(e) {
     showError(e.message);
@@ -953,11 +953,15 @@ function renderSku() {
   const counts = m.active_by_status || { hit: 0, good: 0, slow: 0, weak: 0, dead: 0 };
   const totalActive = m.active_total != null ? m.active_total : (SKU_DATA || []).length;
 
-  const cats = {};
-  (SKU_DATA || []).forEach(r => { if (r.category_id) cats[r.category_id] = r.category_name || ('id:' + r.category_id); });
-  const catOptions = Object.entries(cats)
-    .sort((a, b) => a[1].localeCompare(b[1]))
-    .map(([id, name]) => `<option value="${id}" ${SKU_FILTER.category === id ? 'selected' : ''}>${name}</option>`).join('');
+  const allCats = (m.categories && m.categories.length)
+    ? m.categories
+    : (() => {
+        const seen = {};
+        (SKU_DATA || []).forEach(r => { if (r.category_id != null && !seen[r.category_id]) seen[r.category_id] = r.category_name || ('id:' + r.category_id); });
+        return Object.entries(seen).map(([id, name]) => ({ id, name })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      })();
+  const catOptions = allCats
+    .map(c => `<option value="${c.id}" ${String(SKU_FILTER.category) === String(c.id) ? 'selected' : ''}>${c.name}</option>`).join('');
 
   document.getElementById('main-area').innerHTML = `
     <div class="page-header">
@@ -1041,18 +1045,15 @@ function renderSku() {
   });
   document.getElementById('sku-status').addEventListener('change', async e => {
     SKU_FILTER.status = e.target.value;
-    await loadSku();
-    renderSkuTable();
+    if (await loadSku({ silent: true })) renderSku();
   });
   document.getElementById('sku-category').addEventListener('change', async e => {
     SKU_FILTER.category = e.target.value;
-    await loadSku();
-    renderSkuTable();
+    if (await loadSku({ silent: true })) renderSku();
   });
   document.getElementById('sku-instock').addEventListener('change', async e => {
     SKU_FILTER.inStockOnly = e.target.checked;
-    await loadSku();
-    renderSkuTable();
+    if (await loadSku({ silent: true })) renderSku();
   });
 
   renderSkuTable();

@@ -32,6 +32,21 @@ module.exports = async function handler(req, res) {
         if (extra) q = extra(q);
         return q;
       };
+      const catRows = await fetchAll(
+        () => supabase.from("skus").select("category_id, category_name").not("category_id", "is", null),
+        1000,
+        20000
+      );
+      const catMap = new Map();
+      for (const r of catRows) {
+        if (r.category_id != null && !catMap.has(r.category_id)) {
+          catMap.set(r.category_id, r.category_name || ("id:" + r.category_id));
+        }
+      }
+      const categories = Array.from(catMap.entries())
+        .map(([id, name]) => ({ id, name }))
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
       const [snap, run, totalAll, totalActive, hits, good, slow, weak, dead, inStock] = await Promise.all([
         supabase.from("stock_snapshots").select("snapshot_date").order("snapshot_date", { ascending: false }).limit(1),
         supabase.from("ingest_runs").select("id, kind, status, started_at, finished_at, error_message").order("started_at", { ascending: false }).limit(1),
@@ -57,6 +72,7 @@ module.exports = async function handler(req, res) {
           weak: weak.count || 0,
           dead: dead.count || 0,
         },
+        categories,
         now: new Date().toISOString(),
       });
     }
