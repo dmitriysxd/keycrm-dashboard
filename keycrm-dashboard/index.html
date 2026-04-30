@@ -183,23 +183,6 @@
   }
   .grid-1 { margin-bottom: 16px; }
 
-  @media (max-width: 900px) {
-    .grid-2 { grid-template-columns: 1fr; }
-    .main { padding: 20px 16px; padding-top: 64px; }
-    .mobile-menu-btn { display: flex; }
-    .sidebar {
-      position: fixed;
-      left: -240px;
-      top: 0;
-      width: 220px;
-      z-index: 200;
-      transition: left 0.25s ease;
-      box-shadow: 0 0 20px rgba(0,0,0,0.6);
-    }
-    .sidebar.open { left: 0; display: flex; }
-    .sidebar-backdrop.show { display: block; }
-  }
-
   .mobile-menu-btn {
     display: none;
     position: fixed;
@@ -222,6 +205,23 @@
     inset: 0;
     background: rgba(0,0,0,0.5);
     z-index: 150;
+  }
+
+  @media (max-width: 900px) {
+    .grid-2 { grid-template-columns: 1fr; }
+    .main { padding: 20px 16px; padding-top: 64px; }
+    .mobile-menu-btn { display: flex; }
+    .sidebar {
+      position: fixed;
+      left: -240px;
+      top: 0;
+      width: 220px;
+      z-index: 200;
+      transition: left 0.25s ease;
+      box-shadow: 0 0 20px rgba(0,0,0,0.6);
+    }
+    .sidebar.open { left: 0; display: flex; }
+    .sidebar-backdrop.show { display: block; }
   }
 
   /* ── Card ── */
