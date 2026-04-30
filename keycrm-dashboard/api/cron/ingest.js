@@ -245,6 +245,138 @@ async function deactivateMissing(supabase, runStartIso) {
     .eq("is_active", true);
 }
 
+const PRODUCTS_CHUNK_PAGES = 8;
+
+async function readState(supabase) {
+  const { data, error } = await supabase
+    .from("ingest_state")
+    .select("*")
+    .eq("id", 1)
+    .maybeSingle();
+  if (error) throw new Error("ingest_state read: " + error.message);
+  return data;
+}
+
+async function writeState(supabase, patch) {
+  const row = Object.assign({ id: 1, updated_at: new Date().toISOString() }, patch);
+  const { error } = await supabase
+    .from("ingest_state")
+    .upsert(row, { onConflict: "id" });
+  if (error) throw new Error("ingest_state write: " + error.message);
+}
+
+function todayUTC() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function selfTriggerUrl(req) {
+  const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
+  const host = req.headers["host"];
+  const headerAuth = req.headers["authorization"] || req.headers["Authorization"] || "";
+  const headerSecret = headerAuth.startsWith("Bearer ") ? headerAuth.slice(7) : "";
+  const secret = (req.query && req.query.secret) || headerSecret || process.env.CRON_SECRET || "";
+  return proto + "://" + host + "/api/cron/ingest?step=auto&secret=" + encodeURIComponent(secret);
+}
+
+async function fireSelf(req) {
+  const url = selfTriggerUrl(req);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
+  try {
+    await fetch(url, { method: "GET", signal: controller.signal });
+  } catch (_) {
+    // Abort or transient error is fine — request already left this instance.
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function runAutoChunk(req, supabase, apiKey, ctx) {
+  let state = await readState(supabase);
+  const today = todayUTC();
+
+  // Decide whether to start a fresh cycle.
+  const isStaleDone = !state || (state.status === "done" && state.cycle_date !== today);
+  const isStaleIdle = state && state.status === "idle";
+  if (isStaleDone || isStaleIdle) {
+    const fresh = {
+      cycle_date: today,
+      cycle_started_at: new Date().toISOString(),
+      current_step: "products",
+      current_page: 1,
+      status: "running",
+      last_error: null,
+    };
+    await writeState(supabase, fresh);
+    state = Object.assign({ id: 1 }, fresh);
+  } else if (state.status === "done") {
+    return { phase: "noop", reason: "already_done_today", state };
+  }
+  // status === "running" → resume from saved cursor.
+
+  const stepName = state.current_step;
+  const cycleStartIso = state.cycle_started_at;
+  const result = { phase: stepName, page: state.current_page };
+
+  try {
+    if (stepName === "products") {
+      const r = await ingestProducts(apiKey, supabase, ctx, state.current_page, PRODUCTS_CHUNK_PAGES);
+      result.products = r.total;
+      result.lastPage = r.lastPage;
+      if (r.more) {
+        await writeState(supabase, {
+          current_page: r.lastPage + 1,
+          last_chunk_at: new Date().toISOString(),
+        });
+      } else {
+        // Products done — deactivate stale SKUs, advance to sales.
+        await deactivateMissing(supabase, cycleStartIso);
+        await writeState(supabase, {
+          current_step: "sales",
+          current_page: 1,
+          last_chunk_at: new Date().toISOString(),
+        });
+        result.advanced = "sales";
+      }
+    } else if (stepName === "sales") {
+      const since = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+      const r = await ingestSales(apiKey, supabase, ctx, since);
+      result.orders = r.ordersSeen;
+      result.sales_upserted = r.salesUpserted;
+      await writeState(supabase, {
+        current_step: "metrics",
+        current_page: 1,
+        last_chunk_at: new Date().toISOString(),
+      });
+      result.advanced = "metrics";
+    } else if (stepName === "metrics") {
+      const refresh = await supabase.rpc("refresh_sku_metrics");
+      if (refresh.error) throw new Error("refresh_sku_metrics: " + refresh.error.message);
+      result.metrics = true;
+      await writeState(supabase, {
+        current_step: "done",
+        current_page: 1,
+        status: "done",
+        last_chunk_at: new Date().toISOString(),
+      });
+      result.advanced = "done";
+    } else {
+      // Unknown step — reset.
+      await writeState(supabase, { current_step: "products", current_page: 1, status: "running" });
+      result.reset = true;
+    }
+  } catch (err) {
+    await writeState(supabase, {
+      status: "error",
+      last_error: ((err && err.message) || String(err)).substring(0, 500),
+      last_chunk_at: new Date().toISOString(),
+    });
+    throw err;
+  }
+
+  return result;
+}
+
 module.exports = async function handler(req, res) {
   const auth = checkCronAuth(req);
   if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
@@ -255,7 +387,7 @@ module.exports = async function handler(req, res) {
   const supabase = getSupabase();
   const ctx = { apiCalls: 0 };
   const runStartIso = new Date().toISOString();
-  const step = (req.query && req.query.step) || "all";
+  const step = (req.query && req.query.step) || "auto";
   const fromPage = req.query && req.query.from;
   const take = req.query && req.query.take;
   let runId = null;
@@ -263,12 +395,46 @@ module.exports = async function handler(req, res) {
   try {
     const ins = await supabase
       .from("ingest_runs")
-      .insert({ kind: "daily", status: "running", meta: { step, fromPage, take } })
+      .insert({ kind: step === "auto" ? "auto" : "manual", status: "running", meta: { step, fromPage, take } })
       .select("id")
       .single();
     if (ins.error) throw new Error("ingest_runs insert: " + ins.error.message);
     runId = ins.data.id;
 
+    if (step === "auto") {
+      const chunkResult = await runAutoChunk(req, supabase, apiKey, ctx);
+      const stateAfter = await readState(supabase);
+      const more = stateAfter && stateAfter.status === "running";
+
+      await supabase
+        .from("ingest_runs")
+        .update({
+          finished_at: new Date().toISOString(),
+          status: "ok",
+          products_seen: chunkResult.products || 0,
+          orders_seen: chunkResult.orders || 0,
+          sales_upserted: chunkResult.sales_upserted || 0,
+          api_calls: ctx.apiCalls,
+          meta: { step: "auto", chunk: chunkResult, more },
+        })
+        .eq("id", runId);
+
+      if (more) {
+        await fireSelf(req);
+      }
+
+      return res.status(200).json({
+        ok: true,
+        step: "auto",
+        run_id: runId,
+        chunk: chunkResult,
+        state: stateAfter,
+        chained: more,
+        api_calls: ctx.apiCalls,
+      });
+    }
+
+    // Manual one-shot modes (for debugging / forced runs).
     let productsSeen = 0, offersSeen = 0, ordersSeen = 0, salesUpserted = 0;
     let didMetrics = false;
     let nextPage = null;
