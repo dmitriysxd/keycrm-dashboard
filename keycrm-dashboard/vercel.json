@@ -1,7 +1,11 @@
 {
   "functions": {
-    "api/data.js": {
-      "maxDuration": 60
-    }
-  }
+    "api/data.js":          { "maxDuration": 60 },
+    "api/sku.js":           { "maxDuration": 30 },
+    "api/cron/ingest.js":   { "maxDuration": 60 },
+    "api/cron/backfill.js": { "maxDuration": 60 }
+  },
+  "crons": [
+    { "path": "/api/cron/ingest", "schedule": "0 3 * * *" }
+  ]
 }

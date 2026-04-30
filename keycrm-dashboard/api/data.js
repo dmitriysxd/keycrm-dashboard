@@ -1,6 +1,8 @@
 // KEYCRM API — https://docs.keycrm.app
 // Стратегія: мінімум запитів (~6-8 всього) щоб не словити 429 і не таймаутитись
 
+const { checkDashboardToken } = require("../lib/auth");
+
 const BASE = "https://openapi.keycrm.app/v1";
 
 async function get(path, params, apiKey) {
@@ -30,6 +32,9 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   if (req.method === "OPTIONS") return res.status(200).end();
+
+  var auth = checkDashboardToken(req);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
 
   var apiKey = process.env.KEYCRM_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "KEYCRM_API_KEY не налаштовано" });

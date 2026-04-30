@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KEYCRM · Аналітика</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;700&family=Inter:wght@300;400;500;600&display=swap');
 
@@ -267,9 +268,89 @@
     display: inline-block; padding: 2px 8px;
     border-radius: 20px; font-size: 10px; font-weight: 500;
   }
-  .pill.r { background: rgba(224,96,96,0.12); color: var(--red); }
-  .pill.g { background: rgba(92,184,138,0.12); color: var(--green); }
-  .pill.y { background: rgba(201,169,110,0.12); color: var(--gold); }
+  .pill.r  { background: rgba(224,96,96,0.12);  color: var(--red); }
+  .pill.g  { background: rgba(92,184,138,0.16); color: var(--green); }
+  .pill.gg { background: rgba(158,209,179,0.14); color: #9ed1b3; }
+  .pill.y  { background: rgba(201,169,110,0.12); color: var(--gold); }
+  .pill.o  { background: rgba(224,160,96,0.14);  color: #e0a060; }
+  .pill.b  { background: rgba(124,110,245,0.15); color: var(--purple); }
+
+  /* ── SKU table (sortable, sticky header, filters) ── */
+  .filter-bar {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    margin-bottom: 14px;
+  }
+  .filter-bar input[type="search"],
+  .filter-bar select {
+    background: var(--s2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-family: 'Inter', sans-serif;
+    outline: none;
+    min-width: 160px;
+  }
+  .filter-bar input[type="search"]:focus,
+  .filter-bar select:focus { border-color: rgba(201,169,110,0.4); }
+  .filter-bar .spacer { flex: 1; }
+  .filter-bar button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 11px;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+  }
+  .filter-bar button:hover { color: var(--gold); border-color: rgba(201,169,110,0.3); }
+
+  .tbl-scroll {
+    max-height: 70vh;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--s1);
+  }
+  .tbl-scroll table { width: 100%; border-collapse: collapse; }
+  .tbl-scroll thead th {
+    position: sticky; top: 0;
+    background: var(--s2);
+    padding: 10px 12px;
+    font-size: 10px; letter-spacing: 0.7px; text-transform: uppercase;
+    color: var(--muted); text-align: left;
+    border-bottom: 1px solid var(--border);
+    z-index: 1;
+    user-select: none;
+  }
+  .tbl-scroll thead th.sortable { cursor: pointer; }
+  .tbl-scroll thead th.sortable:hover { color: var(--text); }
+  .tbl-scroll thead th.sortable .arrow { opacity: 0.3; margin-left: 4px; font-size: 9px; }
+  .tbl-scroll thead th.sortable.asc  .arrow,
+  .tbl-scroll thead th.sortable.desc .arrow { opacity: 1; color: var(--gold); }
+  .tbl-scroll tbody td {
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    font-size: 12px;
+    vertical-align: middle;
+  }
+  .tbl-scroll tbody tr:hover { background: rgba(255,255,255,0.02); }
+  .tbl-scroll tbody td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tbl-scroll tbody td.muted { color: var(--muted); }
+
+  .stale-badge {
+    display: inline-block;
+    background: rgba(224,96,96,0.12);
+    color: var(--red);
+    border: 1px solid rgba(224,96,96,0.3);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    margin-left: 12px;
+  }
+  .stale-badge.warn { background: rgba(201,169,110,0.12); color: var(--gold); border-color: rgba(201,169,110,0.3); }
 
   /* ── Loading/Error ── */
   .state-wrap {
@@ -320,6 +401,12 @@
       <div class="nav-item" onclick="navigate('orders')">
         <span class="nav-icon">◆</span> Замовлення
       </div>
+      <div class="nav-item" onclick="navigate('sku')">
+        <span class="nav-icon">◉</span> SKU-аналітика
+      </div>
+      <div class="nav-item" onclick="navigate('reorder')">
+        <span class="nav-icon">↻</span> Реордер
+      </div>
     </nav>
 
     <div class="sidebar-bottom">
@@ -341,7 +428,25 @@
 </div>
 
 <script>
+// ── Token gate ───────────────────────
+const _params = new URLSearchParams(location.search);
+if (_params.get('key')) {
+  localStorage.setItem('dt', _params.get('key'));
+  history.replaceState({}, '', location.pathname + location.hash);
+}
+const TOKEN = localStorage.getItem('dt') || '';
+const apiUrl = (path, extra) => {
+  const sep = path.indexOf('?') === -1 ? '?' : '&';
+  const tail = TOKEN ? `${sep}token=${encodeURIComponent(TOKEN)}` : '';
+  const more = extra ? (tail ? '&' : sep) + extra : '';
+  return path + tail + more;
+};
+
 let DATA = null;
+let SKU_DATA = null;
+let SKU_META = null;
+let SKU_SORT = { col: 'velocity_30d', dir: 'desc' };
+let SKU_FILTER = { search: '', status: '', category: '', inStockOnly: false };
 let currentDays = 30;
 let charts = {};
 
@@ -356,7 +461,7 @@ async function loadData(days = currentDays) {
   currentDays = days;
   showLoading();
   try {
-    const res = await fetch(`/api/data?days=${days}`);
+    const res = await fetch(apiUrl(`/api/data?days=${days}`));
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Помилка сервера');
     DATA = json;
@@ -365,6 +470,31 @@ async function loadData(days = currentDays) {
     renderCurrentPage();
   } catch(e) {
     showError(e.message);
+  }
+}
+
+async function loadSku(opts) {
+  showLoading();
+  try {
+    const params = new URLSearchParams();
+    if (opts && opts.reorder) params.set('reorder', 'true');
+    if (SKU_FILTER.status)   params.set('status', SKU_FILTER.status);
+    if (SKU_FILTER.category) params.set('category', SKU_FILTER.category);
+    if (SKU_FILTER.inStockOnly) params.set('inStock', 'true');
+    const url = apiUrl('/api/sku', params.toString());
+    const [skuRes, metaRes] = await Promise.all([
+      fetch(url),
+      fetch(apiUrl('/api/sku?meta=true')),
+    ]);
+    const skuJson = await skuRes.json();
+    const metaJson = await metaRes.json();
+    if (!skuRes.ok) throw new Error(skuJson.error || 'Помилка сервера');
+    SKU_DATA = skuJson.rows || [];
+    SKU_META = metaJson;
+    return true;
+  } catch(e) {
+    showError(e.message);
+    return false;
   }
 }
 
@@ -393,14 +523,16 @@ function navigate(page) {
   currentPage = page;
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
   event.currentTarget.classList.add('active');
-  if (DATA) renderCurrentPage();
+  renderCurrentPage();
 }
 
-function renderCurrentPage() {
+async function renderCurrentPage() {
   destroyCharts();
-  if (currentPage === 'overview') renderOverview();
-  else if (currentPage === 'products') renderProducts();
-  else if (currentPage === 'orders') renderOrders();
+  if (currentPage === 'overview') { if (!DATA) await loadData(currentDays); renderOverview(); }
+  else if (currentPage === 'products') { if (!DATA) await loadData(currentDays); renderProducts(); }
+  else if (currentPage === 'orders')   { if (!DATA) await loadData(currentDays); renderOrders(); }
+  else if (currentPage === 'sku')      { const ok = await loadSku(); if (ok) renderSku(); }
+  else if (currentPage === 'reorder')  { const ok = await loadSku({ reorder: true }); if (ok) renderReorder(); }
 }
 
 function destroyCharts() {
@@ -682,11 +814,337 @@ function renderOrders() {
     </div>`).join('') || '<div class="no-data">Немає даних за цей період</div>';
 }
 
-// ── Init ─────────────────────────────
-loadData(30);
+// ── SKU helpers ──────────────────────
+const STATUS_PILL  = { hit: 'g', good: 'gg', slow: 'y', weak: 'o', dead: 'r', new: 'b' };
+const STATUS_LABEL = { hit: 'Хіт', good: 'Хороший', slow: 'Повільний', weak: 'Слабкий', dead: 'Мертвий', new: 'Новий' };
+const STATUS_COLOR = { hit: 'var(--green)', good: '#9ed1b3', slow: 'var(--gold)', weak: '#e0a060', dead: 'var(--red)', new: 'var(--purple)' };
 
-// Auto-refresh every 30 min
-setInterval(() => loadData(currentDays), 30 * 60 * 1000);
+function staleBadge() {
+  if (!SKU_META || !SKU_META.last_snapshot_date) {
+    return '<span class="stale-badge">Немає снапшотів</span>';
+  }
+  const last = new Date(SKU_META.last_snapshot_date + 'T00:00:00Z');
+  const today = new Date();
+  const ageMs = today - last;
+  const ageDays = Math.floor(ageMs / (24*60*60*1000));
+  if (ageDays >= 2) return `<span class="stale-badge">Дані застаріли · ${ageDays}д</span>`;
+  if (ageDays === 1) return `<span class="stale-badge warn">Дані вчорашні</span>`;
+  return '';
+}
+
+function fmtNum(n, d) {
+  if (n === null || n === undefined || n === '' || isNaN(parseFloat(n))) return '—';
+  const v = parseFloat(n);
+  return v.toFixed(d || 0);
+}
+function fmtPct(n) {
+  if (n === null || n === undefined || isNaN(parseFloat(n))) return '—';
+  return Math.round(parseFloat(n) * 100) + '%';
+}
+
+function applySkuFilters(rows) {
+  let out = rows;
+  if (SKU_FILTER.search) {
+    const q = SKU_FILTER.search.toLowerCase();
+    out = out.filter(r =>
+      ((r.name || '') + ' ' + (r.sku || '') + ' ' + (r.category_name || '')).toLowerCase().includes(q)
+    );
+  }
+  return out;
+}
+
+function sortSku(rows) {
+  const { col, dir } = SKU_SORT;
+  const sign = dir === 'asc' ? 1 : -1;
+  return rows.slice().sort((a, b) => {
+    const av = a[col], bv = b[col];
+    if (av === null || av === undefined) return 1;
+    if (bv === null || bv === undefined) return -1;
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * sign;
+    return String(av).localeCompare(String(bv)) * sign;
+  });
+}
+
+function setSort(col) {
+  if (SKU_SORT.col === col) SKU_SORT.dir = SKU_SORT.dir === 'asc' ? 'desc' : 'asc';
+  else { SKU_SORT.col = col; SKU_SORT.dir = 'desc'; }
+  renderSkuTable();
+}
+
+function renderSkuTable() {
+  if (!SKU_DATA) return;
+  const rows = sortSku(applySkuFilters(SKU_DATA));
+  const tbody = document.getElementById('sku-tbody');
+  if (!tbody) return;
+  document.getElementById('sku-count').textContent = rows.length;
+  document.querySelectorAll('#sku-table thead th.sortable').forEach(th => {
+    th.classList.remove('asc', 'desc');
+    if (th.dataset.col === SKU_SORT.col) th.classList.add(SKU_SORT.dir);
+  });
+  tbody.innerHTML = rows.length === 0
+    ? '<tr><td colspan="12" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
+    : rows.map(r => `
+      <tr>
+        <td>${(r.name || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</td>
+        <td class="muted">${r.sku || '—'}</td>
+        <td class="muted">${r.category_name || '—'}</td>
+        <td class="num">${fmtNum(r.current_stock)}</td>
+        <td class="num">${fmtNum(r.sold_30d)}</td>
+        <td class="num">${fmtNum(r.velocity_7d, 2)}</td>
+        <td class="num">${fmtNum(r.velocity_30d, 2)}</td>
+        <td class="num">${fmtNum(r.velocity_90d, 2)}</td>
+        <td class="num">${fmtNum(r.days_of_supply, 0)}</td>
+        <td class="num">${fmtPct(r.sell_through_30d)}</td>
+        <td class="num muted">${r.age_days != null ? r.age_days + 'д' : '—'}</td>
+        <td><span class="pill ${STATUS_PILL[r.status] || 'y'}">${STATUS_LABEL[r.status] || r.status || '—'}</span></td>
+      </tr>`).join('');
+}
+
+const XLS_COLS = [
+  { key: 'name',             label: 'Назва' },
+  { key: 'sku',              label: 'Артикул' },
+  { key: 'category_name',    label: 'Категорія' },
+  { key: 'current_stock',    label: 'Склад' },
+  { key: 'sold_30d',         label: 'Продано за 30 днів' },
+  { key: 'velocity_7d',      label: 'V7' },
+  { key: 'velocity_30d',     label: 'V30' },
+  { key: 'velocity_90d',     label: 'V90' },
+  { key: 'days_of_supply',   label: 'DoS' },
+  { key: 'sell_through_30d', label: 'Sell-through %' },
+  { key: 'age_days',         label: 'Вік (днів)' },
+  { key: 'status',           label: 'Статус' },
+  { key: 'cost',             label: 'Cost (UAH)' },
+  { key: 'price',            label: 'Ціна продажу' },
+  { key: 'sold_total',       label: 'Продано всього' },
+  { key: 'last_sold_at',     label: 'Остання продажа' },
+];
+
+function exportSkuXlsx(rows, baseName) {
+  const aoa = [XLS_COLS.map(c => c.label)];
+  rows.forEach(r => {
+    aoa.push(XLS_COLS.map(c => {
+      const v = r[c.key];
+      if (v == null || v === '') return '';
+      if (c.key === 'status') return STATUS_LABEL[v] || v;
+      if (c.key === 'sell_through_30d') {
+        const num = parseFloat(v);
+        return isNaN(num) ? '' : Math.round(num * 100) + '%';
+      }
+      if (typeof v === 'number') return v;
+      const num = parseFloat(v);
+      return isNaN(num) ? v : num;
+    }));
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [
+    { wch: 50 }, { wch: 14 }, { wch: 24 }, { wch: 8 }, { wch: 10 },
+    { wch: 8 },  { wch: 8 },  { wch: 8 },  { wch: 8 }, { wch: 12 },
+    { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 18 },
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'SKU');
+  const fname = (baseName || 'sku-analytics') + '_' + new Date().toISOString().slice(0, 10) + '.xlsx';
+  XLSX.writeFile(wb, fname);
+}
+
+// ── SKU page ─────────────────────────
+function renderSku() {
+  const m = SKU_META || {};
+  const counts = m.active_by_status || { hit: 0, good: 0, slow: 0, weak: 0, dead: 0 };
+  const totalActive = m.active_total != null ? m.active_total : (SKU_DATA || []).length;
+
+  const cats = {};
+  (SKU_DATA || []).forEach(r => { if (r.category_id) cats[r.category_id] = r.category_name || ('id:' + r.category_id); });
+  const catOptions = Object.entries(cats)
+    .sort((a, b) => a[1].localeCompare(b[1]))
+    .map(([id, name]) => `<option value="${id}" ${SKU_FILTER.category === id ? 'selected' : ''}>${name}</option>`).join('');
+
+  document.getElementById('main-area').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">SKU-аналітика ${staleBadge()}</div>
+        <div class="page-sub">Усього активних: ${totalActive}</div>
+      </div>
+      <button class="refresh-btn" onclick="reloadSkuPage()"><span class="ri">↺</span> Оновити</button>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-accent green"></div>
+        <div class="kpi-label">Хіт (≥30/міс)</div>
+        <div class="kpi-val" style="color:var(--green)">${fmt(counts.hit)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:#9ed1b3"></div>
+        <div class="kpi-label">Хороший (15–29/міс)</div>
+        <div class="kpi-val" style="color:#9ed1b3">${fmt(counts.good)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:var(--gold)"></div>
+        <div class="kpi-label">Повільний (6–14/міс)</div>
+        <div class="kpi-val" style="color:var(--gold)">${fmt(counts.slow)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:#e0a060"></div>
+        <div class="kpi-label">Слабкий (1–5/міс)</div>
+        <div class="kpi-val" style="color:#e0a060">${fmt(counts.weak)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent red"></div>
+        <div class="kpi-label">Мертвий (стік без продажів)</div>
+        <div class="kpi-val" style="color:var(--red)">${fmt(counts.dead)}</div>
+      </div>
+    </div>
+
+    <div class="filter-bar">
+      <input type="search" id="sku-search" placeholder="Пошук за назвою / артикулом / категорією" value="${SKU_FILTER.search}">
+      <select id="sku-status">
+        <option value="">Усі статуси</option>
+        <option value="hit"  ${SKU_FILTER.status==='hit'?'selected':''}>Хіт</option>
+        <option value="good" ${SKU_FILTER.status==='good'?'selected':''}>Хороший</option>
+        <option value="slow" ${SKU_FILTER.status==='slow'?'selected':''}>Повільний</option>
+        <option value="weak" ${SKU_FILTER.status==='weak'?'selected':''}>Слабкий</option>
+        <option value="dead" ${SKU_FILTER.status==='dead'?'selected':''}>Мертвий</option>
+      </select>
+      <select id="sku-category">
+        <option value="">Усі категорії</option>
+        ${catOptions}
+      </select>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;cursor:pointer">
+        <input type="checkbox" id="sku-instock" ${SKU_FILTER.inStockOnly ? 'checked' : ''}>
+        Тільки в наявності
+      </label>
+      <div class="spacer"></div>
+      <span style="align-self:center;color:var(--muted);font-size:11px">Показано: <span id="sku-count">0</span></span>
+      <button onclick="exportSkuXlsx(sortSku(applySkuFilters(SKU_DATA)), 'sku-analytics')">Скачати XLS</button>
+    </div>
+
+    <div class="tbl-scroll">
+      <table id="sku-table">
+        <thead><tr>
+          <th class="sortable" data-col="name" onclick="setSort('name')">Назва <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="sku" onclick="setSort('sku')">Артикул <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="category_name" onclick="setSort('category_name')">Категорія <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="current_stock" onclick="setSort('current_stock')" style="text-align:right">Склад <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="sold_30d" onclick="setSort('sold_30d')" style="text-align:right">S30d <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="velocity_7d" onclick="setSort('velocity_7d')" style="text-align:right">V7 <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="velocity_30d" onclick="setSort('velocity_30d')" style="text-align:right">V30 <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="velocity_90d" onclick="setSort('velocity_90d')" style="text-align:right">V90 <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="days_of_supply" onclick="setSort('days_of_supply')" style="text-align:right">DoS <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="sell_through_30d" onclick="setSort('sell_through_30d')" style="text-align:right">Sell-through <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="age_days" onclick="setSort('age_days')" style="text-align:right">Вік <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="status" onclick="setSort('status')">Статус <span class="arrow">▼</span></th>
+        </tr></thead>
+        <tbody id="sku-tbody"></tbody>
+      </table>
+    </div>
+  `;
+
+  document.getElementById('sku-search').addEventListener('input', e => {
+    SKU_FILTER.search = e.target.value;
+    renderSkuTable();
+  });
+  document.getElementById('sku-status').addEventListener('change', async e => {
+    SKU_FILTER.status = e.target.value;
+    await loadSku();
+    renderSkuTable();
+  });
+  document.getElementById('sku-category').addEventListener('change', async e => {
+    SKU_FILTER.category = e.target.value;
+    await loadSku();
+    renderSkuTable();
+  });
+  document.getElementById('sku-instock').addEventListener('change', async e => {
+    SKU_FILTER.inStockOnly = e.target.checked;
+    await loadSku();
+    renderSkuTable();
+  });
+
+  renderSkuTable();
+}
+
+async function reloadSkuPage() {
+  if (currentPage === 'sku') { await loadSku(); renderSku(); }
+  else if (currentPage === 'reorder') { await loadSku({ reorder: true }); renderReorder(); }
+}
+
+// ── Reorder page ─────────────────────
+function renderReorder() {
+  const rows = (SKU_DATA || []).slice();
+  let totalCost = 0;
+  rows.forEach(r => {
+    const v30 = parseFloat(r.velocity_30d) || 0;
+    r.suggested_qty = Math.max(1, Math.ceil(v30 * 60));
+    r.estimated_cost = r.cost ? r.suggested_qty * parseFloat(r.cost) : null;
+    if (r.estimated_cost) totalCost += r.estimated_cost;
+  });
+
+  document.getElementById('main-area').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">Реордер ${staleBadge()}</div>
+        <div class="page-sub">Хіти з days-of-supply &lt; 60 днів — кандидати на повторне замовлення</div>
+      </div>
+      <button class="refresh-btn" onclick="reloadSkuPage()"><span class="ri">↺</span> Оновити</button>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-accent green"></div>
+        <div class="kpi-label">Кандидатів на реордер</div>
+        <div class="kpi-val">${fmt(rows.length)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent"></div>
+        <div class="kpi-label">Орієнтовна сума</div>
+        <div class="kpi-val">${totalCost > 0 ? fmtMoney(totalCost) : '—'}</div>
+        <div class="kpi-sub">${totalCost > 0 ? 'на основі заповнених cost' : 'заповніть cost у Supabase'}</div>
+      </div>
+    </div>
+
+    <div class="filter-bar">
+      <div class="spacer"></div>
+      <button onclick="exportSkuXlsx(SKU_DATA, 'reorder')">Скачати XLS для замовлення</button>
+    </div>
+
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr>
+          <th>Назва</th>
+          <th>Категорія</th>
+          <th style="text-align:right">Склад</th>
+          <th style="text-align:right">V30</th>
+          <th style="text-align:right">DoS</th>
+          <th style="text-align:right">Замовити</th>
+          <th style="text-align:right">Cost</th>
+          <th style="text-align:right">Сума</th>
+        </tr></thead>
+        <tbody>
+          ${rows.length === 0
+            ? '<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">Поки немає кандидатів на реордер</td></tr>'
+            : rows.map(r => `
+              <tr>
+                <td>${(r.name || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</td>
+                <td class="muted">${r.category_name || '—'}</td>
+                <td class="num">${fmtNum(r.current_stock)}</td>
+                <td class="num">${fmtNum(r.velocity_30d, 2)}</td>
+                <td class="num">${fmtNum(r.days_of_supply, 0)}</td>
+                <td class="num"><b>${r.suggested_qty}</b></td>
+                <td class="num muted">${r.cost ? fmtMoney(parseFloat(r.cost)) : '—'}</td>
+                <td class="num">${r.estimated_cost ? fmtMoney(r.estimated_cost) : '—'}</td>
+              </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ── Init ─────────────────────────────
+if (!TOKEN) {
+  document.getElementById('main-area').innerHTML = `
+    <div class="state-wrap">
+      <div class="error-card">
+        <div class="error-title">Доступ заборонено</div>
+        <div class="state-sub">Відкрийте дашборд за допомогою параметра <code>?key=ВАШ_ТОКЕН</code> у URL.</div>
+      </div>
+    </div>`;
+} else {
+  loadData(30);
+  setInterval(() => { if (['overview','products','orders'].includes(currentPage)) loadData(currentDays); }, 30 * 60 * 1000);
+}
 </script>
 </body>
 </html>
