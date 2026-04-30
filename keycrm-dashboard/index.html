@@ -185,8 +185,43 @@
 
   @media (max-width: 900px) {
     .grid-2 { grid-template-columns: 1fr; }
-    .sidebar { display: none; }
-    .main { padding: 20px 16px; }
+    .main { padding: 20px 16px; padding-top: 64px; }
+    .mobile-menu-btn { display: flex; }
+    .sidebar {
+      position: fixed;
+      left: -240px;
+      top: 0;
+      width: 220px;
+      z-index: 200;
+      transition: left 0.25s ease;
+      box-shadow: 0 0 20px rgba(0,0,0,0.6);
+    }
+    .sidebar.open { left: 0; display: flex; }
+    .sidebar-backdrop.show { display: block; }
+  }
+
+  .mobile-menu-btn {
+    display: none;
+    position: fixed;
+    top: 12px; left: 12px;
+    z-index: 210;
+    width: 40px; height: 40px;
+    align-items: center; justify-content: center;
+    background: var(--s1);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--gold);
+    font-size: 20px;
+    cursor: pointer;
+  }
+  .mobile-menu-btn:active { background: var(--s2); }
+
+  .sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 150;
   }
 
   /* ── Card ── */
@@ -384,8 +419,11 @@
 <body>
 <div class="layout">
 
+  <button class="mobile-menu-btn" onclick="toggleMobileMenu()" aria-label="Меню">☰</button>
+  <div class="sidebar-backdrop" id="sidebar-backdrop" onclick="closeMobileMenu()"></div>
+
   <!-- Sidebar -->
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar">
     <div class="logo">
       <div class="logo-mark">KEY<span>CRM</span></div>
       <div class="logo-sub">АНАЛІТИКА · БІЗНЕС</div>
@@ -523,7 +561,17 @@ function navigate(page) {
   currentPage = page;
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
   event.currentTarget.classList.add('active');
+  closeMobileMenu();
   renderCurrentPage();
+}
+
+function toggleMobileMenu() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebar-backdrop').classList.toggle('show');
+}
+function closeMobileMenu() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-backdrop').classList.remove('show');
 }
 
 async function renderCurrentPage() {
