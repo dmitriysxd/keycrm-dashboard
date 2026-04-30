@@ -47,7 +47,7 @@ module.exports = async function handler(req, res) {
         .map(([id, name]) => ({ id, name }))
         .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
-      const [snap, run, totalAll, totalActive, hits, good, slow, weak, dead, inStock] = await Promise.all([
+      const [snap, run, totalAll, totalActive, hits, good, slow, weak, dead, isnew, archive, inStock] = await Promise.all([
         supabase.from("stock_snapshots").select("snapshot_date").order("snapshot_date", { ascending: false }).limit(1),
         supabase.from("ingest_runs").select("id, kind, status, started_at, finished_at, error_message").order("started_at", { ascending: false }).limit(1),
         head(),
@@ -57,6 +57,8 @@ module.exports = async function handler(req, res) {
         head((q) => q.eq("is_active", true).eq("status", "slow")),
         head((q) => q.eq("is_active", true).eq("status", "weak")),
         head((q) => q.eq("is_active", true).eq("status", "dead")),
+        head((q) => q.eq("is_active", true).eq("status", "new")),
+        head((q) => q.eq("is_active", true).eq("status", "archive")),
         head((q) => q.eq("is_active", true).gt("current_stock", 0)),
       ]);
       return res.status(200).json({
@@ -66,11 +68,13 @@ module.exports = async function handler(req, res) {
         active_total: totalActive.count || 0,
         active_in_stock: inStock.count || 0,
         active_by_status: {
-          hit:  hits.count || 0,
-          good: good.count || 0,
-          slow: slow.count || 0,
-          weak: weak.count || 0,
-          dead: dead.count || 0,
+          hit:     hits.count || 0,
+          good:    good.count || 0,
+          slow:    slow.count || 0,
+          weak:    weak.count || 0,
+          dead:    dead.count || 0,
+          new:     isnew.count || 0,
+          archive: archive.count || 0,
         },
         categories,
         now: new Date().toISOString(),
@@ -82,11 +86,13 @@ module.exports = async function handler(req, res) {
     const category = req.query && req.query.category;
     const inStockOnly = req.query && req.query.inStock === "true";
     const reorder = req.query && req.query.reorder === "true";
+    const includeArchive = req.query && req.query.inclArchive === "true";
 
     const buildQuery = () => {
       let q = supabase.from("sku_metrics").select("*");
       if (!includeInactive) q = q.eq("is_active", true);
       if (status) q = q.eq("status", status);
+      else if (!includeArchive) q = q.neq("status", "archive");
       if (category) q = q.eq("category_id", category);
       if (inStockOnly) q = q.gt("current_stock", 0);
       if (reorder) q = q.eq("status", "hit").lt("days_of_supply", 60);

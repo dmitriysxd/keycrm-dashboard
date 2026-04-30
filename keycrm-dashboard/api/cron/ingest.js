@@ -53,6 +53,8 @@ async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
       const safePrice = isNaN(price) ? null : price;
       const catId = p.category_id || (p.category && p.category.id) || null;
       const catName = (p.category && p.category.name) || (catId ? categories[String(catId)] : null) || null;
+      const createdAtRaw = p.created_at || p.createdAt || null;
+      const keycrmCreatedAt = createdAtRaw ? new Date(createdAtRaw).toISOString() : null;
       skuRows.push({
         offer_id: p.id,
         product_id: p.id,
@@ -61,6 +63,7 @@ async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
         category_id: catId,
         category_name: catName,
         price: safePrice,
+        keycrm_created_at: keycrmCreatedAt,
         last_seen_at: new Date().toISOString(),
         is_active: true,
       });
@@ -128,6 +131,8 @@ async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
         || null;
       const categoryName = (product.category && product.category.name) || null;
 
+      const createdAtRaw = (product && (product.created_at || product.createdAt)) || o.created_at || o.createdAt || null;
+      const keycrmCreatedAt = createdAtRaw ? new Date(createdAtRaw).toISOString() : null;
       skuRows.push({
         offer_id: offerId,
         product_id: productId,
@@ -136,6 +141,7 @@ async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
         category_id: categoryId,
         category_name: categoryName,
         price: isNaN(price) ? null : price,
+        keycrm_created_at: keycrmCreatedAt,
         last_seen_at: new Date().toISOString(),
         is_active: true,
       });
@@ -329,8 +335,12 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
           last_chunk_at: new Date().toISOString(),
         });
       } else {
-        // Products done — deactivate stale SKUs, advance to sales.
+        // Products done — deactivate stale SKUs, flag restocks, advance to sales.
         await deactivateMissing(supabase, cycleStartIso);
+        try {
+          const rs = await supabase.rpc("detect_restocks", { target_date: todayUTC() });
+          if (!rs.error) result.restocks_flagged = rs.data;
+        } catch (_) {}
         await writeState(supabase, {
           current_step: "sales",
           current_page: 1,
@@ -439,10 +449,17 @@ module.exports = async function handler(req, res) {
     let didMetrics = false;
     let nextPage = null;
 
+    let restocksFlagged = null;
     if (step === "products" || step === "all") {
       const r = await ingestProducts(apiKey, supabase, ctx, fromPage, take);
       productsSeen = r.total;
       if (r.more) nextPage = r.lastPage + 1;
+      if (!r.more) {
+        try {
+          const rs = await supabase.rpc("detect_restocks", { target_date: todayUTC() });
+          if (!rs.error) restocksFlagged = rs.data;
+        } catch (_) {}
+      }
     }
     if (step === "offers" || step === "all") {
       const r = await ingestOffers(apiKey, supabase, ctx, fromPage, take);
@@ -488,6 +505,7 @@ module.exports = async function handler(req, res) {
       orders: ordersSeen,
       sales_upserted: salesUpserted,
       metrics_refreshed: didMetrics,
+      restocks_flagged: restocksFlagged,
       api_calls: ctx.apiCalls,
       next_page: nextPage,
       more: nextPage !== null,

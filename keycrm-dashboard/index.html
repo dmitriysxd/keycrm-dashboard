@@ -309,6 +309,7 @@
   .pill.y  { background: rgba(201,169,110,0.12); color: var(--gold); }
   .pill.o  { background: rgba(224,160,96,0.14);  color: #e0a060; }
   .pill.b  { background: rgba(124,110,245,0.15); color: var(--purple); }
+  .pill.a  { background: rgba(255,255,255,0.05); color: var(--muted); border: 1px solid rgba(255,255,255,0.07); }
 
   /* ── SKU table (sortable, sticky header, filters) ── */
   .filter-bar {
@@ -484,7 +485,7 @@ let DATA = null;
 let SKU_DATA = null;
 let SKU_META = null;
 let SKU_SORT = { col: 'velocity_30d', dir: 'desc' };
-let SKU_FILTER = { search: '', status: '', category: '', inStockOnly: false };
+let SKU_FILTER = { search: '', status: '', category: '', inStockOnly: false, inclArchive: false };
 let currentDays = 30;
 let charts = {};
 
@@ -520,6 +521,7 @@ async function loadSku(opts) {
     if (SKU_FILTER.status)   params.set('status', SKU_FILTER.status);
     if (SKU_FILTER.category) params.set('category', SKU_FILTER.category);
     if (SKU_FILTER.inStockOnly) params.set('inStock', 'true');
+    if (SKU_FILTER.inclArchive) params.set('inclArchive', 'true');
     const url = apiUrl('/api/sku', params.toString());
     const wantMeta = !silent || !SKU_META;
     const fetches = [fetch(url)];
@@ -863,9 +865,19 @@ function renderOrders() {
 }
 
 // ── SKU helpers ──────────────────────
-const STATUS_PILL  = { hit: 'g', good: 'gg', slow: 'y', weak: 'o', dead: 'r', new: 'b' };
-const STATUS_LABEL = { hit: 'Хіт', good: 'Хороший', slow: 'Повільний', weak: 'Слабкий', dead: 'Мертвий', new: 'Новий' };
-const STATUS_COLOR = { hit: 'var(--green)', good: '#9ed1b3', slow: 'var(--gold)', weak: '#e0a060', dead: 'var(--red)', new: 'var(--purple)' };
+const STATUS_PILL  = { hit: 'g', good: 'gg', slow: 'y', weak: 'o', dead: 'r', new: 'b', archive: 'a' };
+const STATUS_LABEL = { hit: 'Хіт', good: 'Хороший', slow: 'Повільний', weak: 'Слабкий', dead: 'Мертвий', new: 'Новий', archive: 'Архів' };
+const STATUS_COLOR = { hit: 'var(--green)', good: '#9ed1b3', slow: 'var(--gold)', weak: '#e0a060', dead: 'var(--red)', new: 'var(--purple)', archive: 'var(--muted)' };
+const ARCHIVE_TIER_LABEL = { hit: 'Хіт', good: 'Хороший', slow: 'Слабкий', dead: 'Мертвий' };
+
+function statusPill(r) {
+  const cls   = STATUS_PILL[r.status] || 'y';
+  const label = STATUS_LABEL[r.status] || r.status || '—';
+  if (r.status === 'archive' && r.archive_tier && ARCHIVE_TIER_LABEL[r.archive_tier]) {
+    return `<span class="pill ${cls}">${label} · ${ARCHIVE_TIER_LABEL[r.archive_tier]}</span>`;
+  }
+  return `<span class="pill ${cls}">${label}</span>`;
+}
 
 function staleBadge() {
   if (!SKU_META || !SKU_META.last_snapshot_date) {
@@ -944,27 +956,29 @@ function renderSkuTable() {
         <td class="num">${fmtNum(r.days_of_supply, 0)}</td>
         <td class="num">${fmtPct(r.sell_through_30d)}</td>
         <td class="num muted">${r.age_days != null ? r.age_days + 'д' : '—'}</td>
-        <td><span class="pill ${STATUS_PILL[r.status] || 'y'}">${STATUS_LABEL[r.status] || r.status || '—'}</span></td>
+        <td>${statusPill(r)}</td>
       </tr>`).join('');
 }
 
 const XLS_COLS = [
-  { key: 'name',             label: 'Назва' },
-  { key: 'sku',              label: 'Артикул' },
-  { key: 'category_name',    label: 'Категорія' },
-  { key: 'current_stock',    label: 'Склад' },
-  { key: 'sold_30d',         label: 'Продано за 30 днів' },
-  { key: 'velocity_7d',      label: 'V7' },
-  { key: 'velocity_30d',     label: 'V30' },
-  { key: 'velocity_90d',     label: 'V90' },
-  { key: 'days_of_supply',   label: 'DoS' },
-  { key: 'sell_through_30d', label: 'Sell-through %' },
-  { key: 'age_days',         label: 'Вік (днів)' },
-  { key: 'status',           label: 'Статус' },
-  { key: 'cost',             label: 'Cost (UAH)' },
-  { key: 'price',            label: 'Ціна продажу' },
-  { key: 'sold_total',       label: 'Продано всього' },
-  { key: 'last_sold_at',     label: 'Остання продажа' },
+  { key: 'name',               label: 'Назва' },
+  { key: 'sku',                label: 'Артикул' },
+  { key: 'category_name',      label: 'Категорія' },
+  { key: 'current_stock',      label: 'Склад' },
+  { key: 'sold_30d',           label: 'Продано за 30 днів' },
+  { key: 'velocity_7d',        label: 'V7' },
+  { key: 'velocity_30d',       label: 'V30' },
+  { key: 'velocity_90d',       label: 'V90' },
+  { key: 'lifetime_velocity',  label: 'Lifetime velocity' },
+  { key: 'days_of_supply',     label: 'DoS' },
+  { key: 'sell_through_30d',   label: 'Sell-through %' },
+  { key: 'age_days',           label: 'Вік (днів)' },
+  { key: 'status',             label: 'Статус' },
+  { key: 'archive_tier',       label: 'Архів · підкатегорія' },
+  { key: 'cost',               label: 'Cost (UAH)' },
+  { key: 'price',              label: 'Ціна продажу' },
+  { key: 'sold_total',         label: 'Продано всього' },
+  { key: 'last_sold_at',       label: 'Остання продажа' },
 ];
 
 function exportSkuXlsx(rows, baseName) {
@@ -974,6 +988,10 @@ function exportSkuXlsx(rows, baseName) {
       const v = r[c.key];
       if (v == null || v === '') return '';
       if (c.key === 'status') return STATUS_LABEL[v] || v;
+      if (c.key === 'archive_tier') {
+        if (r.status !== 'archive') return '';
+        return ARCHIVE_TIER_LABEL[v] || v;
+      }
       if (c.key === 'sell_through_30d') {
         const num = parseFloat(v);
         return isNaN(num) ? '' : Math.round(num * 100) + '%';
@@ -986,8 +1004,9 @@ function exportSkuXlsx(rows, baseName) {
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!cols'] = [
     { wch: 50 }, { wch: 14 }, { wch: 24 }, { wch: 8 }, { wch: 10 },
-    { wch: 8 },  { wch: 8 },  { wch: 8 },  { wch: 8 }, { wch: 12 },
-    { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 18 },
+    { wch: 8 },  { wch: 8 },  { wch: 8 },  { wch: 14 }, { wch: 8 },
+    { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 18 }, { wch: 12 },
+    { wch: 12 }, { wch: 12 }, { wch: 18 },
   ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'SKU');
@@ -1041,17 +1060,27 @@ function renderSku() {
         <div class="kpi-label">Мертвий (стік без продажів)</div>
         <div class="kpi-val" style="color:var(--red)">${fmt(counts.dead)}</div>
       </div>
+      <div class="kpi"><div class="kpi-accent" style="background:var(--purple)"></div>
+        <div class="kpi-label">Новий (14 днів)</div>
+        <div class="kpi-val" style="color:var(--purple)">${fmt(counts.new || 0)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:rgba(255,255,255,0.25)"></div>
+        <div class="kpi-label">Архів (розпродано)</div>
+        <div class="kpi-val" style="color:var(--muted)">${fmt(counts.archive || 0)}</div>
+      </div>
     </div>
 
     <div class="filter-bar">
       <input type="search" id="sku-search" placeholder="Пошук за назвою / артикулом / категорією" value="${SKU_FILTER.search}">
       <select id="sku-status">
         <option value="">Усі статуси</option>
-        <option value="hit"  ${SKU_FILTER.status==='hit'?'selected':''}>Хіт</option>
-        <option value="good" ${SKU_FILTER.status==='good'?'selected':''}>Хороший</option>
-        <option value="slow" ${SKU_FILTER.status==='slow'?'selected':''}>Повільний</option>
-        <option value="weak" ${SKU_FILTER.status==='weak'?'selected':''}>Слабкий</option>
-        <option value="dead" ${SKU_FILTER.status==='dead'?'selected':''}>Мертвий</option>
+        <option value="hit"     ${SKU_FILTER.status==='hit'?'selected':''}>Хіт</option>
+        <option value="good"    ${SKU_FILTER.status==='good'?'selected':''}>Хороший</option>
+        <option value="slow"    ${SKU_FILTER.status==='slow'?'selected':''}>Повільний</option>
+        <option value="weak"    ${SKU_FILTER.status==='weak'?'selected':''}>Слабкий</option>
+        <option value="dead"    ${SKU_FILTER.status==='dead'?'selected':''}>Мертвий</option>
+        <option value="new"     ${SKU_FILTER.status==='new'?'selected':''}>Новий</option>
+        <option value="archive" ${SKU_FILTER.status==='archive'?'selected':''}>Архів</option>
       </select>
       <select id="sku-category">
         <option value="">Усі категорії</option>
@@ -1060,6 +1089,10 @@ function renderSku() {
       <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;cursor:pointer">
         <input type="checkbox" id="sku-instock" ${SKU_FILTER.inStockOnly ? 'checked' : ''}>
         Тільки в наявності
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;cursor:pointer">
+        <input type="checkbox" id="sku-incl-archive" ${SKU_FILTER.inclArchive ? 'checked' : ''}>
+        Включити архів
       </label>
       <div class="spacer"></div>
       <span style="align-self:center;color:var(--muted);font-size:11px">Показано: <span id="sku-count">0</span></span>
@@ -1101,6 +1134,10 @@ function renderSku() {
   });
   document.getElementById('sku-instock').addEventListener('change', async e => {
     SKU_FILTER.inStockOnly = e.target.checked;
+    if (await loadSku({ silent: true })) renderSku();
+  });
+  document.getElementById('sku-incl-archive').addEventListener('change', async e => {
+    SKU_FILTER.inclArchive = e.target.checked;
     if (await loadSku({ silent: true })) renderSku();
   });
 
