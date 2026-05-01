@@ -6,14 +6,13 @@
 --   * Відмовились             — customer refused
 --   * Об'єднання замовлень    — order was merged into another (counted twice)
 --   * incorrect_data          — invalid order data
---   * Зв'язатись повторно     — pre-confirmation, not a confirmed sale
 --   * underbid                — undelivery / shortage (treated as non-sale)
 --
--- All sales aggregations now share the same exclusion list.
--- For convenience, the list is centralised by reusing it across CTEs;
--- Postgres doesn't allow CTE reuse for arrays cleanly, so we repeat
--- the literal but keep them identical.
+-- Counted as sales (per user instruction): 'Зв'язатись повторно' —
+-- couldn't reach customer yet, but the items are reserved and represent
+-- real demand.
 --
+-- All sales aggregations now share the same exclusion list.
 -- Apply via Supabase SQL Editor.
 
 DROP MATERIALIZED VIEW IF EXISTS sku_metrics;
@@ -50,7 +49,7 @@ sales_dates AS (
   WHERE COALESCE(order_status, '') NOT IN (
           'cancelled', 'rejected', 'canceled',
           'Повернули', 'Відмовились', 'Об''єднання замовлень',
-          'incorrect_data', 'Зв''язатись повторно', 'underbid'
+          'incorrect_data', 'underbid'
         )
     AND product_id IS NOT NULL
   GROUP BY product_id
@@ -62,7 +61,7 @@ sales_7 AS (
     AND COALESCE(order_status, '') NOT IN (
           'cancelled', 'rejected', 'canceled',
           'Повернули', 'Відмовились', 'Об''єднання замовлень',
-          'incorrect_data', 'Зв''язатись повторно', 'underbid'
+          'incorrect_data', 'underbid'
         )
     AND product_id IS NOT NULL
   GROUP BY product_id
@@ -76,7 +75,7 @@ sales_30 AS (
     AND COALESCE(order_status, '') NOT IN (
           'cancelled', 'rejected', 'canceled',
           'Повернули', 'Відмовились', 'Об''єднання замовлень',
-          'incorrect_data', 'Зв''язатись повторно', 'underbid'
+          'incorrect_data', 'underbid'
         )
     AND product_id IS NOT NULL
   GROUP BY product_id
@@ -88,7 +87,7 @@ sales_90 AS (
     AND COALESCE(order_status, '') NOT IN (
           'cancelled', 'rejected', 'canceled',
           'Повернули', 'Відмовились', 'Об''єднання замовлень',
-          'incorrect_data', 'Зв''язатись повторно', 'underbid'
+          'incorrect_data', 'underbid'
         )
     AND product_id IS NOT NULL
   GROUP BY product_id
@@ -101,7 +100,7 @@ sales_total AS (
   WHERE COALESCE(order_status, '') NOT IN (
           'cancelled', 'rejected', 'canceled',
           'Повернули', 'Відмовились', 'Об''єднання замовлень',
-          'incorrect_data', 'Зв''язатись повторно', 'underbid'
+          'incorrect_data', 'underbid'
         )
     AND product_id IS NOT NULL
   GROUP BY product_id
