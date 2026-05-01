@@ -199,12 +199,28 @@ async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
   return { offersSeen: total, lastPage: lastPageProcessed, more: true };
 }
 
+function pickBuyerId(order) {
+  if (!order || typeof order !== "object") return null;
+  const candidates = [
+    order.buyer_id, order.buyerId,
+    order.client_id, order.clientId,
+    order.customer_id, order.customerId,
+    order.buyer && order.buyer.id,
+    order.client && order.client.id,
+    order.customer && order.customer.id,
+  ];
+  for (const v of candidates) {
+    if (v != null && v !== "" && !isNaN(parseInt(v))) return parseInt(v);
+  }
+  return null;
+}
+
 async function ingestSales(apiKey, supabase, ctx, sinceISO) {
   let page = 1;
   let total = 0;
   let upserted = 0;
   const params = {
-    include: "products.offer,status",
+    include: "products.offer,status,buyer",
     limit: 50,
   };
   if (sinceISO) {
@@ -223,6 +239,7 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
       const status = (order.status && (order.status.name || order.status.title)) || null;
       const orderedAt = order.ordered_at || order.created_at;
       if (!orderedAt) continue;
+      const buyerId = pickBuyerId(order);
       const items = order.products || [];
       items.forEach((item, idx) => {
         const qty = lineQty(item);
@@ -240,6 +257,7 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
           revenue: price * qty,
           order_status: status,
           ordered_at: orderedAt,
+          buyer_id: buyerId,
         });
       });
     }

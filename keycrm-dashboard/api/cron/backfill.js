@@ -10,6 +10,21 @@ function linePrice(item) {
   const p = parseFloat(item.price || item.unit_price || 0);
   return isNaN(p) ? 0 : p;
 }
+function pickBuyerId(order) {
+  if (!order || typeof order !== "object") return null;
+  const candidates = [
+    order.buyer_id, order.buyerId,
+    order.client_id, order.clientId,
+    order.customer_id, order.customerId,
+    order.buyer && order.buyer.id,
+    order.client && order.client.id,
+    order.customer && order.customer.id,
+  ];
+  for (const v of candidates) {
+    if (v != null && v !== "" && !isNaN(parseInt(v))) return parseInt(v);
+  }
+  return null;
+}
 
 module.exports = async function handler(req, res) {
   const auth = checkCronAuth(req);
@@ -46,7 +61,7 @@ module.exports = async function handler(req, res) {
     let total = 0;
     let upserted = 0;
     const params = {
-      include: "products.offer,status",
+      include: "products.offer,status,buyer",
       limit: 50,
       "filter[created_between]": from + "," + to,
     };
@@ -62,6 +77,7 @@ module.exports = async function handler(req, res) {
         const status = (order.status && (order.status.name || order.status.title)) || null;
         const orderedAt = order.ordered_at || order.created_at;
         if (!orderedAt) continue;
+        const buyerId = pickBuyerId(order);
         const items = order.products || [];
         items.forEach((item, idx) => {
           const qty = lineQty(item);
@@ -79,6 +95,7 @@ module.exports = async function handler(req, res) {
             revenue: price * qty,
             order_status: status,
             ordered_at: orderedAt,
+            buyer_id: buyerId,
           });
         });
       }

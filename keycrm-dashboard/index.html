@@ -485,7 +485,7 @@ let DATA = null;
 let SKU_DATA = null;
 let SKU_META = null;
 let SKU_SORT = { col: 'velocity_30d', dir: 'desc' };
-let SKU_FILTER = { search: '', status: '', category: '', inStockOnly: false };
+let SKU_FILTER = { search: '', status: '', category: '', inStockOnly: false, hideArchive: true };
 let currentDays = 30;
 let charts = {};
 
@@ -521,6 +521,7 @@ async function loadSku(opts) {
     if (SKU_FILTER.status)   params.set('status', SKU_FILTER.status);
     if (SKU_FILTER.category) params.set('category', SKU_FILTER.category);
     if (SKU_FILTER.inStockOnly) params.set('inStock', 'true');
+    if (!SKU_FILTER.hideArchive) params.set('inclArchive', 'true');
     const url = apiUrl('/api/sku', params.toString());
     const wantMeta = !silent || !SKU_META;
     const fetches = [fetch(url)];
@@ -941,7 +942,7 @@ function renderSkuTable() {
     if (th.dataset.col === SKU_SORT.col) th.classList.add(SKU_SORT.dir);
   });
   tbody.innerHTML = rows.length === 0
-    ? '<tr><td colspan="12" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
+    ? '<tr><td colspan="13" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
     : rows.map(r => `
       <tr>
         <td>${(r.name || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</td>
@@ -952,6 +953,7 @@ function renderSkuTable() {
         <td class="num">${fmtNum(r.velocity_7d, 2)}</td>
         <td class="num">${fmtNum(r.velocity_30d, 2)}</td>
         <td class="num">${fmtNum(r.velocity_90d, 2)}</td>
+        <td class="num">${fmtNum(r.lifetime_velocity, 2)}</td>
         <td class="num">${fmtNum(r.days_of_supply, 0)}</td>
         <td class="num">${fmtPct(r.sell_through_30d)}</td>
         <td class="num muted">${r.age_days != null ? r.age_days + 'д' : '—'}</td>
@@ -1072,14 +1074,14 @@ function renderSku() {
     <div class="filter-bar">
       <input type="search" id="sku-search" placeholder="Пошук за назвою / артикулом / категорією" value="${SKU_FILTER.search}">
       <select id="sku-status">
-        <option value=""        ${SKU_FILTER.status===''?'selected':''}>Активні (без архіву)</option>
+        <option value=""        ${SKU_FILTER.status===''?'selected':''}>Усі статуси</option>
         <option value="hit"     ${SKU_FILTER.status==='hit'?'selected':''}>Хіт</option>
         <option value="good"    ${SKU_FILTER.status==='good'?'selected':''}>Хороший</option>
         <option value="slow"    ${SKU_FILTER.status==='slow'?'selected':''}>Повільний</option>
         <option value="weak"    ${SKU_FILTER.status==='weak'?'selected':''}>Слабкий</option>
         <option value="dead"    ${SKU_FILTER.status==='dead'?'selected':''}>Мертвий</option>
         <option value="new"     ${SKU_FILTER.status==='new'?'selected':''}>Новий</option>
-        <option value="archive" ${SKU_FILTER.status==='archive'?'selected':''}>Тільки архів</option>
+        <option value="archive" ${SKU_FILTER.status==='archive'?'selected':''}>Архів</option>
       </select>
       <select id="sku-category">
         <option value="">Усі категорії</option>
@@ -1088,6 +1090,10 @@ function renderSku() {
       <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;cursor:pointer">
         <input type="checkbox" id="sku-instock" ${SKU_FILTER.inStockOnly ? 'checked' : ''}>
         Тільки в наявності
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;cursor:pointer">
+        <input type="checkbox" id="sku-hide-archive" ${SKU_FILTER.hideArchive ? 'checked' : ''}>
+        Приховати архів
       </label>
       <div class="spacer"></div>
       <span style="align-self:center;color:var(--muted);font-size:11px">Показано: <span id="sku-count">0</span></span>
@@ -1105,6 +1111,7 @@ function renderSku() {
           <th class="sortable" data-col="velocity_7d" onclick="setSort('velocity_7d')" style="text-align:right">V7 <span class="arrow">▼</span></th>
           <th class="sortable" data-col="velocity_30d" onclick="setSort('velocity_30d')" style="text-align:right">V30 <span class="arrow">▼</span></th>
           <th class="sortable" data-col="velocity_90d" onclick="setSort('velocity_90d')" style="text-align:right">V90 <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="lifetime_velocity" onclick="setSort('lifetime_velocity')" style="text-align:right" title="Швидкість продажу за період наявності на складі">Vlife <span class="arrow">▼</span></th>
           <th class="sortable" data-col="days_of_supply" onclick="setSort('days_of_supply')" style="text-align:right">DoS <span class="arrow">▼</span></th>
           <th class="sortable" data-col="sell_through_30d" onclick="setSort('sell_through_30d')" style="text-align:right">Sell-through <span class="arrow">▼</span></th>
           <th class="sortable" data-col="age_days" onclick="setSort('age_days')" style="text-align:right">Вік <span class="arrow">▼</span></th>
@@ -1129,6 +1136,10 @@ function renderSku() {
   });
   document.getElementById('sku-instock').addEventListener('change', async e => {
     SKU_FILTER.inStockOnly = e.target.checked;
+    if (await loadSku({ silent: true })) renderSku();
+  });
+  document.getElementById('sku-hide-archive').addEventListener('change', async e => {
+    SKU_FILTER.hideArchive = e.target.checked;
     if (await loadSku({ silent: true })) renderSku();
   });
 
