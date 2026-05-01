@@ -29,6 +29,21 @@ async function fetchCategories(apiKey, ctx) {
   return map;
 }
 
+function pickCreatedAt(obj) {
+  if (!obj || typeof obj !== "object") return null;
+  const candidates = [
+    "created_at", "createdAt", "date_created", "dateCreated",
+    "created", "inserted_at", "insertedAt", "date_added", "dateAdded",
+  ];
+  for (const k of candidates) {
+    const v = obj[k];
+    if (v == null || v === "") continue;
+    const d = new Date(v);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+  return null;
+}
+
 async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
   const today = todayDate();
   const startPage = Math.max(1, parseInt(fromPage || 1));
@@ -36,11 +51,14 @@ async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
   const categories = await fetchCategories(apiKey, ctx);
   let total = 0;
   let lastPageProcessed = startPage - 1;
+  let sampleKeys = null;
+  let createdAtHits = 0;
   for (let i = 0; i < limitPages; i++) {
     const page = startPage + i;
     const resp = await get("/products", { page, limit: 50 }, apiKey, ctx);
     const rows = resp.data || [];
-    if (!rows.length) return { total, lastPage: lastPageProcessed, more: false };
+    if (!rows.length) return { total, lastPage: lastPageProcessed, more: false, sampleKeys, createdAtHits };
+    if (!sampleKeys && rows[0]) sampleKeys = Object.keys(rows[0]);
     total += rows.length;
     lastPageProcessed = page;
     const skuRows = [];
@@ -53,8 +71,8 @@ async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
       const safePrice = isNaN(price) ? null : price;
       const catId = p.category_id || (p.category && p.category.id) || null;
       const catName = (p.category && p.category.name) || (catId ? categories[String(catId)] : null) || null;
-      const createdAtRaw = p.created_at || p.createdAt || null;
-      const keycrmCreatedAt = createdAtRaw ? new Date(createdAtRaw).toISOString() : null;
+      const keycrmCreatedAt = pickCreatedAt(p);
+      if (keycrmCreatedAt) createdAtHits++;
       skuRows.push({
         offer_id: p.id,
         product_id: p.id,
@@ -90,10 +108,10 @@ async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
         .in("offer_id", positives)
         .is("first_stock_at", null);
     }
-    if (rows.length < 50) return { total, lastPage: page, more: false };
+    if (rows.length < 50) return { total, lastPage: page, more: false, sampleKeys, createdAtHits };
     await sleep(20);
   }
-  return { total, lastPage: lastPageProcessed, more: true };
+  return { total, lastPage: lastPageProcessed, more: true, sampleKeys, createdAtHits };
 }
 
 async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
@@ -131,8 +149,7 @@ async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
         || null;
       const categoryName = (product.category && product.category.name) || null;
 
-      const createdAtRaw = (product && (product.created_at || product.createdAt)) || o.created_at || o.createdAt || null;
-      const keycrmCreatedAt = createdAtRaw ? new Date(createdAtRaw).toISOString() : null;
+      const keycrmCreatedAt = pickCreatedAt(product) || pickCreatedAt(o);
       skuRows.push({
         offer_id: offerId,
         product_id: productId,
@@ -329,6 +346,8 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
       const r = await ingestProducts(apiKey, supabase, ctx, state.current_page, PRODUCTS_CHUNK_PAGES);
       result.products = r.total;
       result.lastPage = r.lastPage;
+      result.sample_keys = r.sampleKeys;
+      result.created_at_hits = r.createdAtHits;
       if (r.more) {
         await writeState(supabase, {
           current_page: r.lastPage + 1,
@@ -450,9 +469,13 @@ module.exports = async function handler(req, res) {
     let nextPage = null;
 
     let restocksFlagged = null;
+    let productsSampleKeys = null;
+    let createdAtHits = null;
     if (step === "products" || step === "all") {
       const r = await ingestProducts(apiKey, supabase, ctx, fromPage, take);
       productsSeen = r.total;
+      productsSampleKeys = r.sampleKeys;
+      createdAtHits = r.createdAtHits;
       if (r.more) nextPage = r.lastPage + 1;
       if (!r.more) {
         try {
@@ -506,6 +529,8 @@ module.exports = async function handler(req, res) {
       sales_upserted: salesUpserted,
       metrics_refreshed: didMetrics,
       restocks_flagged: restocksFlagged,
+      sample_keys: productsSampleKeys,
+      created_at_hits: createdAtHits,
       api_calls: ctx.apiCalls,
       next_page: nextPage,
       more: nextPage !== null,
