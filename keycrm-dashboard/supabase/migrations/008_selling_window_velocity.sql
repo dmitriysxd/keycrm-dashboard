@@ -210,13 +210,6 @@ SELECT
            AND keycrm_created_at >= NOW() - INTERVAL '14 days' THEN 'new'
       WHEN last_restock_at IS NOT NULL
            AND last_restock_at >= (CURRENT_DATE - INTERVAL '14 days')::date THEN 'new'
-      -- new fallback: KeyCRM creation date unknown, SKU first seen ≤ 7 days ago,
-      -- has stock now, and zero sales ever in our DB.
-      WHEN keycrm_created_at IS NULL
-           AND first_seen_at IS NOT NULL
-           AND first_seen_at >= NOW() - INTERVAL '7 days'
-           AND sold_total = 0
-           AND current_stock > 0 THEN 'new'
       -- hit (strict): V30 ≥ 1 (≥ 30/міс)
       WHEN sold_30d >= 30 THEN 'hit'
       -- hit (real fast-turnover): meaningful volume + high peak-aware sell-through
