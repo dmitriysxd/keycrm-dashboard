@@ -205,11 +205,19 @@ SELECT
   COALESCE(
     manual_status,
     CASE
-      -- new: 14-day grace from creation OR latest restock
+      -- new: 14-day grace from creation OR latest restock,
+      -- but only for SKUs that never sold (sold_total = 0).
+      -- A re-stocked old SKU with prior sales is NOT "new" — it goes
+      -- through the regular V30 cascade and reflects current performance.
+      -- Note: this rule becomes accurate only after a full sales-history
+      -- backfill. With our current 90-day window, sold_total = 0 may
+      -- mistakenly include products that sold > 90 days ago.
       WHEN keycrm_created_at IS NOT NULL
-           AND keycrm_created_at >= NOW() - INTERVAL '14 days' THEN 'new'
+           AND keycrm_created_at >= NOW() - INTERVAL '14 days'
+           AND sold_total = 0 THEN 'new'
       WHEN last_restock_at IS NOT NULL
-           AND last_restock_at >= (CURRENT_DATE - INTERVAL '14 days')::date THEN 'new'
+           AND last_restock_at >= (CURRENT_DATE - INTERVAL '14 days')::date
+           AND sold_total = 0 THEN 'new'
       -- hit (strict): V30 ≥ 1 (≥ 30/міс)
       WHEN sold_30d >= 30 THEN 'hit'
       -- hit (real fast-turnover): meaningful volume + high peak-aware sell-through
