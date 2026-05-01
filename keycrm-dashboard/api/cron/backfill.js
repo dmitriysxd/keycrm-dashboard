@@ -40,8 +40,8 @@ module.exports = async function handler(req, res) {
   }
   const fromTs = Date.parse(from + "T00:00:00Z");
   const toTs   = Date.parse(to   + "T23:59:59Z");
-  if (toTs - fromTs > 31 * 24 * 60 * 60 * 1000) {
-    return res.status(400).json({ error: "діапазон не може перевищувати 31 день" });
+  if (toTs - fromTs > 35 * 24 * 60 * 60 * 1000) {
+    return res.status(400).json({ error: "діапазон не може перевищувати 35 днів" });
   }
 
   const supabase = getSupabase();
