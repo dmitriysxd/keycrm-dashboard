@@ -66,7 +66,10 @@ async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
     const positives = [];
     for (const p of rows) {
       const qty = parseFloat(p.quantity != null ? p.quantity : p.in_stock);
-      const safeQty = isNaN(qty) ? 0 : qty;
+      const reserved = parseFloat(p.in_reserve != null ? p.in_reserve : 0);
+      const totalQty = isNaN(qty) ? 0 : qty;
+      const reservedQty = isNaN(reserved) ? 0 : reserved;
+      const safeQty = Math.max(0, totalQty - reservedQty);
       const price = parseFloat(p.price);
       const safePrice = isNaN(price) ? null : price;
       const catId = p.category_id || (p.category && p.category.id) || null;
@@ -135,7 +138,9 @@ async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
       const offerId = o.id;
       const product = o.product || {};
       const productId = o.product_id || product.id || offerId;
-      const qty = parseFloat(o.quantity);
+      const qtyTotal = parseFloat(o.quantity);
+      const qtyReserved = parseFloat(o.in_reserve != null ? o.in_reserve : 0);
+      const qty = Math.max(0, (isNaN(qtyTotal) ? 0 : qtyTotal) - (isNaN(qtyReserved) ? 0 : qtyReserved));
       const price = parseFloat(o.price);
       const productName = product.name || o.product_name || o.name;
       const variantSuffix = o.sku && productName && !productName.includes(o.sku)
