@@ -485,7 +485,7 @@ let DATA = null;
 let SKU_DATA = null;
 let SKU_META = null;
 let SKU_SORT = { col: 'velocity_30d', dir: 'desc' };
-let SKU_FILTER = { search: '', status: '', category: '', inStockOnly: false, inclArchive: false };
+let SKU_FILTER = { search: '', status: '', category: '', inStockOnly: false };
 let currentDays = 30;
 let charts = {};
 
@@ -521,7 +521,6 @@ async function loadSku(opts) {
     if (SKU_FILTER.status)   params.set('status', SKU_FILTER.status);
     if (SKU_FILTER.category) params.set('category', SKU_FILTER.category);
     if (SKU_FILTER.inStockOnly) params.set('inStock', 'true');
-    if (SKU_FILTER.inclArchive) params.set('inclArchive', 'true');
     const url = apiUrl('/api/sku', params.toString());
     const wantMeta = !silent || !SKU_META;
     const fetches = [fetch(url)];
@@ -1073,14 +1072,14 @@ function renderSku() {
     <div class="filter-bar">
       <input type="search" id="sku-search" placeholder="Пошук за назвою / артикулом / категорією" value="${SKU_FILTER.search}">
       <select id="sku-status">
-        <option value="">Усі статуси</option>
+        <option value=""        ${SKU_FILTER.status===''?'selected':''}>Активні (без архіву)</option>
         <option value="hit"     ${SKU_FILTER.status==='hit'?'selected':''}>Хіт</option>
         <option value="good"    ${SKU_FILTER.status==='good'?'selected':''}>Хороший</option>
         <option value="slow"    ${SKU_FILTER.status==='slow'?'selected':''}>Повільний</option>
         <option value="weak"    ${SKU_FILTER.status==='weak'?'selected':''}>Слабкий</option>
         <option value="dead"    ${SKU_FILTER.status==='dead'?'selected':''}>Мертвий</option>
         <option value="new"     ${SKU_FILTER.status==='new'?'selected':''}>Новий</option>
-        <option value="archive" ${SKU_FILTER.status==='archive'?'selected':''}>Архів</option>
+        <option value="archive" ${SKU_FILTER.status==='archive'?'selected':''}>Тільки архів</option>
       </select>
       <select id="sku-category">
         <option value="">Усі категорії</option>
@@ -1089,10 +1088,6 @@ function renderSku() {
       <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;cursor:pointer">
         <input type="checkbox" id="sku-instock" ${SKU_FILTER.inStockOnly ? 'checked' : ''}>
         Тільки в наявності
-      </label>
-      <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;cursor:pointer">
-        <input type="checkbox" id="sku-incl-archive" ${SKU_FILTER.inclArchive ? 'checked' : ''}>
-        Включити архів
       </label>
       <div class="spacer"></div>
       <span style="align-self:center;color:var(--muted);font-size:11px">Показано: <span id="sku-count">0</span></span>
@@ -1134,10 +1129,6 @@ function renderSku() {
   });
   document.getElementById('sku-instock').addEventListener('change', async e => {
     SKU_FILTER.inStockOnly = e.target.checked;
-    if (await loadSku({ silent: true })) renderSku();
-  });
-  document.getElementById('sku-incl-archive').addEventListener('change', async e => {
-    SKU_FILTER.inclArchive = e.target.checked;
     if (await loadSku({ silent: true })) renderSku();
   });
 
