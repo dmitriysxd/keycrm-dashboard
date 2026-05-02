@@ -60,10 +60,17 @@ module.exports = async function handler(req, res) {
     let page = 1;
     let total = 0;
     let upserted = 0;
+    // Extend end boundary by +1 day so KeyCRM's possibly-exclusive end-date
+    // interpretation doesn't drop events from the user-supplied 'to' day.
+    // Adjacent backfill chunks can overlap safely — upsert by (order_id, line_idx)
+    // makes the import idempotent.
+    const toPlusOne = new Date(new Date(to + "T00:00:00Z").getTime() + 24 * 60 * 60 * 1000)
+      .toISOString().slice(0, 10);
     const params = {
       include: "products.offer,status,buyer",
       limit: 50,
-      "filter[created_between]": from + "," + to,
+      sort: "id",
+      "filter[created_between]": from + "," + toPlusOne,
     };
 
     while (page <= 200) {
