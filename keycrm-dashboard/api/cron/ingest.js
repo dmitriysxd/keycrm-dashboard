@@ -220,18 +220,16 @@ function pickBuyerId(order) {
   return null;
 }
 
-async function ingestSales(apiKey, supabase, ctx, sinceISO) {
+async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate, toDate) {
   let page = 1;
   let total = 0;
   let upserted = 0;
   const params = {
     include: "products.offer,status,buyer",
     limit: 50,
+    sort: "id",
   };
-  if (sinceISO) {
-    const now = new Date().toISOString().slice(0, 10);
-    params["filter[updated_between]"] = sinceISO.slice(0, 10) + "," + now;
-  }
+  params["filter[" + filterKey + "]"] = fromDate + "," + toDate;
 
   while (page <= 200) {
     const resp = await get("/order", Object.assign({}, params, { page }), apiKey, ctx);
@@ -281,6 +279,24 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
   }
 
   return { ordersSeen: total, salesUpserted: upserted };
+}
+
+async function ingestSales(apiKey, supabase, ctx, sinceISO) {
+  // Two-pass strategy to guarantee we capture both newly-created and recently-
+  // updated orders. KeyCRM can be inconsistent: brand-new orders may not match
+  // updated_between, and historical order edits may not match created_between.
+  // We always +1 day on the end boundary so today's events aren't cut off by
+  // exclusive-end-date interpretations on the API side. upsert by
+  // (order_id, line_idx) deduplicates the overlap between passes.
+  const fromDate = (sinceISO || new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()).slice(0, 10);
+  const toDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  const a = await fetchOrdersWithFilter(apiKey, supabase, ctx, "created_between", fromDate, toDate);
+  const b = await fetchOrdersWithFilter(apiKey, supabase, ctx, "updated_between", fromDate, toDate);
+  return {
+    ordersSeen: a.ordersSeen + b.ordersSeen,
+    salesUpserted: a.salesUpserted + b.salesUpserted,
+  };
 }
 
 async function deactivateMissing(supabase, runStartIso) {
