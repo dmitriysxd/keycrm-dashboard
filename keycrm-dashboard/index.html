@@ -415,6 +415,92 @@
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 4px; }
+
+  /* SKU chart modal */
+  .chart-modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(5, 5, 12, 0.85);
+    backdrop-filter: blur(4px);
+    z-index: 1000;
+    display: none;
+    align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .chart-modal-backdrop.open { display: flex; }
+  .chart-modal-card {
+    background: var(--s1);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    width: 100%; max-width: 1200px;
+    max-height: 90vh;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .chart-modal-head {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px;
+    flex-wrap: wrap;
+  }
+  .chart-modal-title {
+    font-family: 'Unbounded', sans-serif;
+    font-size: 16px; font-weight: 600; color: var(--text);
+    letter-spacing: -0.3px;
+    flex: 1; min-width: 0;
+  }
+  .chart-modal-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .chart-modal-period {
+    display: flex; gap: 4px;
+    background: var(--s2);
+    border-radius: 8px;
+    padding: 3px;
+  }
+  .chart-modal-period button {
+    background: transparent; border: 0;
+    color: var(--muted); font-size: 11px;
+    padding: 6px 12px; border-radius: 6px;
+    cursor: pointer; font-family: inherit;
+    transition: all 0.15s;
+  }
+  .chart-modal-period button:hover { color: var(--text); }
+  .chart-modal-period button.active {
+    background: var(--gold2); color: var(--gold);
+  }
+  .chart-modal-close {
+    background: transparent; border: 0;
+    color: var(--muted); font-size: 18px;
+    width: 32px; height: 32px; border-radius: 8px;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .chart-modal-close:hover { color: var(--text); background: var(--s2); }
+  .chart-modal-stats {
+    padding: 16px 24px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .chart-modal-stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .chart-modal-stat-val { font-size: 16px; font-weight: 600; color: var(--text); margin-top: 4px; font-family: 'JetBrains Mono', monospace; }
+  .chart-modal-body {
+    flex: 1; min-height: 380px;
+    padding: 20px 24px 24px;
+    position: relative;
+  }
+  .chart-modal-empty {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%; color: var(--muted); font-size: 12px;
+  }
+  /* Make table rows clickable */
+  #sku-table tbody tr { cursor: pointer; transition: background 0.1s; }
+  #sku-table tbody tr:hover { background: var(--s2); }
+
+  @media (max-width: 700px) {
+    .chart-modal-backdrop { padding: 8px; }
+    .chart-modal-head { padding: 16px; gap: 8px; }
+    .chart-modal-stats { padding: 12px 16px; }
+    .chart-modal-body { padding: 12px 16px 16px; min-height: 280px; }
+  }
 </style>
 </head>
 <body>
@@ -464,6 +550,29 @@
     </div>
   </main>
 
+</div>
+
+<!-- SKU chart modal -->
+<div class="chart-modal-backdrop" id="chart-modal" onclick="if(event.target===this) closeChartModal()">
+  <div class="chart-modal-card">
+    <div class="chart-modal-head">
+      <div style="flex:1; min-width:0">
+        <div class="chart-modal-title" id="chart-modal-title">SKU</div>
+        <div class="chart-modal-sub" id="chart-modal-sub"></div>
+      </div>
+      <div class="chart-modal-period">
+        <button data-days="7"   onclick="chartModalSetPeriod('7')">7д</button>
+        <button data-days="30"  onclick="chartModalSetPeriod('30')">30д</button>
+        <button data-days="90"  onclick="chartModalSetPeriod('90')">90д</button>
+        <button data-days="all" class="active" onclick="chartModalSetPeriod('all')">Весь час</button>
+      </div>
+      <button class="chart-modal-close" onclick="closeChartModal()" aria-label="Закрити">✕</button>
+    </div>
+    <div class="chart-modal-stats" id="chart-modal-stats"></div>
+    <div class="chart-modal-body" id="chart-modal-body">
+      <canvas id="chart-modal-canvas"></canvas>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -944,7 +1053,7 @@ function renderSkuTable() {
   tbody.innerHTML = rows.length === 0
     ? '<tr><td colspan="14" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
     : rows.map(r => `
-      <tr>
+      <tr onclick="openChartModal(${r.offer_id})">
         <td>${(r.name || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</td>
         <td class="muted">${r.sku || '—'}</td>
         <td class="muted">${r.category_name || '—'}</td>
@@ -1236,6 +1345,210 @@ if (!TOKEN) {
   loadData(30);
   setInterval(() => { if (['overview','products','orders'].includes(currentPage)) loadData(currentDays); }, 30 * 60 * 1000);
 }
+
+// ── SKU chart modal ─────────────────────────────
+let chartModalChart = null;
+let chartModalData = null;
+let chartModalPeriod = 'all';
+
+async function openChartModal(offerId) {
+  const backdrop = document.getElementById('chart-modal');
+  backdrop.classList.add('open');
+  document.getElementById('chart-modal-title').textContent = 'Завантажуємо…';
+  document.getElementById('chart-modal-sub').textContent = '';
+  document.getElementById('chart-modal-stats').innerHTML = '';
+  document.getElementById('chart-modal-body').innerHTML = '<div class="chart-modal-empty">Завантажуємо дані…</div>';
+  try {
+    const r = await fetch(apiUrl('/api/sku-chart', 'offer_id=' + encodeURIComponent(offerId)));
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.error || 'HTTP ' + r.status);
+    }
+    chartModalData = await r.json();
+    chartModalPeriod = 'all';
+    document.querySelectorAll('.chart-modal-period button').forEach(b => b.classList.toggle('active', b.dataset.days === 'all'));
+    renderChartModalContent();
+  } catch (e) {
+    document.getElementById('chart-modal-body').innerHTML = '<div class="chart-modal-empty">⚠ ' + (e.message || 'Помилка') + '</div>';
+  }
+}
+
+function closeChartModal() {
+  document.getElementById('chart-modal').classList.remove('open');
+  if (chartModalChart) { chartModalChart.destroy(); chartModalChart = null; }
+  chartModalData = null;
+}
+
+function chartModalSetPeriod(days) {
+  chartModalPeriod = days;
+  document.querySelectorAll('.chart-modal-period button').forEach(b => b.classList.toggle('active', b.dataset.days === days));
+  if (chartModalData) renderChartModalContent();
+}
+
+function renderChartModalContent() {
+  const d = chartModalData;
+  const sku = d.sku;
+  document.getElementById('chart-modal-title').textContent = (sku.name || 'SKU ' + sku.sku) + ' (' + (sku.sku || '—') + ')';
+  document.getElementById('chart-modal-sub').textContent = (sku.category_name || '');
+
+  // Header stats
+  const statusLabel = STATUS_LABEL[sku.status] || sku.status || '—';
+  const stats = [
+    { label: 'Склад', val: fmtNum(sku.current_stock) },
+    { label: 'Продано', val: fmtNum(sku.sold_total) },
+    { label: 'S30D', val: fmtNum(sku.sold_30d) },
+    { label: 'Vlife', val: fmtNum(sku.lifetime_velocity, 2) },
+    { label: 'Buyers', val: fmtNum(sku.buyers_count, 0) },
+    { label: 'Вік', val: sku.age_days != null ? sku.age_days + ' днів' : '—' },
+    { label: 'Статус', val: statusLabel },
+  ];
+  document.getElementById('chart-modal-stats').innerHTML = stats.map(s => `
+    <div>
+      <div class="chart-modal-stat-label">${s.label}</div>
+      <div class="chart-modal-stat-val">${s.val}</div>
+    </div>`).join('');
+
+  // Filter data by period
+  const cutoff = chartModalPeriod === 'all' ? null : new Date(Date.now() - parseInt(chartModalPeriod) * 86400000).toISOString().slice(0, 10);
+  const sales = cutoff ? d.sales_by_day.filter(x => x.date >= cutoff) : d.sales_by_day;
+  const stock = cutoff ? d.stock_by_day.filter(x => x.date >= cutoff) : d.stock_by_day;
+  const restocks = cutoff ? d.restock_dates.filter(x => x >= cutoff) : d.restock_dates;
+
+  // Build unified date axis
+  const allDates = new Set();
+  sales.forEach(x => allDates.add(x.date));
+  stock.forEach(x => allDates.add(x.date));
+  const labels = Array.from(allDates).sort();
+  if (labels.length === 0) {
+    document.getElementById('chart-modal-body').innerHTML = '<div class="chart-modal-empty">Немає даних за обраний період</div>';
+    return;
+  }
+  const salesMap = new Map(sales.map(x => [x.date, x.qty]));
+  const stockMap = new Map(stock.map(x => [x.date, x.qty]));
+  const salesData = labels.map(d => salesMap.has(d) ? salesMap.get(d) : null);
+  const stockData = labels.map(d => stockMap.has(d) ? stockMap.get(d) : null);
+
+  // Render chart
+  document.getElementById('chart-modal-body').innerHTML = '<canvas id="chart-modal-canvas"></canvas>';
+  const ctx = document.getElementById('chart-modal-canvas');
+  if (chartModalChart) chartModalChart.destroy();
+
+  // Plugin to draw vertical dashed lines at restock dates
+  const restockLinesPlugin = {
+    id: 'restockLines',
+    afterDatasetsDraw(chart) {
+      const { ctx, scales: { x, y } } = chart;
+      restocks.forEach(date => {
+        const idx = labels.indexOf(date);
+        if (idx < 0) return;
+        const px = x.getPixelForValue(idx);
+        ctx.save();
+        ctx.beginPath();
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = 'rgba(201, 169, 110, 0.6)';
+        ctx.lineWidth = 1;
+        ctx.moveTo(px, y.top);
+        ctx.lineTo(px, y.bottom);
+        ctx.stroke();
+        // Label
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(201, 169, 110, 0.85)';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('завоз', px, y.top + 12);
+        ctx.restore();
+      });
+    }
+  };
+
+  chartModalChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Продажі (шт./день)',
+          data: salesData,
+          yAxisID: 'y',
+          borderColor: '#5cb88a',
+          backgroundColor: 'rgba(92,184,138,0.15)',
+          borderWidth: 2,
+          fill: true,
+          tension: 0.3,
+          pointRadius: 2,
+          pointHoverRadius: 5,
+          spanGaps: false,
+        },
+        {
+          label: 'Склад',
+          data: stockData,
+          yAxisID: 'y1',
+          borderColor: 'rgba(124,110,245,0.5)',
+          backgroundColor: 'transparent',
+          borderWidth: 1.5,
+          borderDash: [6, 4],
+          tension: 0,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          spanGaps: true,
+          fill: false,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { color: 'rgba(220,220,230,0.85)', font: { size: 11 } } },
+        tooltip: {
+          backgroundColor: 'rgba(15,15,26,0.95)',
+          borderColor: 'rgba(255,255,255,0.1)',
+          borderWidth: 1,
+          callbacks: {
+            label: (ctx) => {
+              const v = ctx.raw;
+              if (v == null) return null;
+              return ctx.dataset.label + ': ' + (Number.isInteger(v) ? v : v.toFixed(1));
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: 'rgba(180,180,200,0.7)', maxRotation: 45, minRotation: 0, font: { size: 10 }, callback: function(val, idx) {
+            const lbl = labels[idx];
+            return lbl ? lbl.substring(5) : '';
+          }},
+          grid: { color: 'rgba(255,255,255,0.04)' }
+        },
+        y: {
+          position: 'left',
+          beginAtZero: true,
+          ticks: { color: 'rgba(180,180,200,0.7)', font: { size: 10 } },
+          grid: { color: 'rgba(255,255,255,0.04)' },
+          title: { display: true, text: 'Продажі', color: 'rgba(180,180,200,0.7)', font: { size: 11 } }
+        },
+        y1: {
+          position: 'right',
+          beginAtZero: true,
+          ticks: { color: 'rgba(180,180,200,0.5)', font: { size: 10 } },
+          grid: { drawOnChartArea: false },
+          title: { display: true, text: 'Склад', color: 'rgba(180,180,200,0.5)', font: { size: 11 } }
+        }
+      }
+    },
+    plugins: [restockLinesPlugin]
+  });
+}
+
+// ESC closes modal
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    const m = document.getElementById('chart-modal');
+    if (m && m.classList.contains('open')) closeChartModal();
+  }
+});
 </script>
 </body>
 </html>
