@@ -332,20 +332,34 @@ function todayUTC() {
 }
 
 function selfTriggerUrl(req) {
-  const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
-  const host = req.headers["host"];
+  // Prefer explicit env vars to ensure we hit the public production URL,
+  // not whatever internal hostname Vercel passed in the cron request.
+  let base;
+  if (process.env.PUBLIC_URL) {
+    base = process.env.PUBLIC_URL.replace(/\/+$/, "");
+  } else if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    base = "https://" + process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  } else if (process.env.VERCEL_URL) {
+    base = "https://" + process.env.VERCEL_URL;
+  } else {
+    const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
+    base = proto + "://" + req.headers["host"];
+  }
   const headerAuth = req.headers["authorization"] || req.headers["Authorization"] || "";
   const headerSecret = headerAuth.startsWith("Bearer ") ? headerAuth.slice(7) : "";
   const secret = (req.query && req.query.secret) || headerSecret || process.env.CRON_SECRET || "";
-  return proto + "://" + host + "/api/cron/ingest?step=auto&secret=" + encodeURIComponent(secret);
+  return base + "/api/cron/ingest?step=auto&secret=" + encodeURIComponent(secret);
 }
 
 async function fireSelf(req) {
   const url = selfTriggerUrl(req);
+  // Generous timeout: cold-start of the chained function can take 3-5s on
+  // Vercel; aborting too early means the receiver never gets the request
+  // and the chain dies after the first chunk.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1500);
+  const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    await fetch(url, { method: "GET", signal: controller.signal });
+    await fetch(url, { method: "GET", signal: controller.signal, keepalive: true });
   } catch (_) {
     // Abort or transient error is fine — request already left this instance.
   } finally {
