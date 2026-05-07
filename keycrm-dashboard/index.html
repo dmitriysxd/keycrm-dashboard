@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KEYCRM · Аналітика</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;700&family=Inter:wght@300;400;500;600&display=swap');
@@ -562,9 +563,9 @@
       </div>
       <div class="chart-modal-period">
         <button data-days="7"   onclick="chartModalSetPeriod('7')">7д</button>
-        <button data-days="30"  onclick="chartModalSetPeriod('30')">30д</button>
+        <button data-days="30"  class="active" onclick="chartModalSetPeriod('30')">30д</button>
         <button data-days="90"  onclick="chartModalSetPeriod('90')">90д</button>
-        <button data-days="all" class="active" onclick="chartModalSetPeriod('all')">Весь час</button>
+        <button data-days="all" onclick="chartModalSetPeriod('all')">Весь час</button>
       </div>
       <button class="chart-modal-close" onclick="closeChartModal()" aria-label="Закрити">✕</button>
     </div>
@@ -1349,7 +1350,7 @@ if (!TOKEN) {
 // ── SKU chart modal ─────────────────────────────
 let chartModalChart = null;
 let chartModalData = null;
-let chartModalPeriod = 'all';
+let chartModalPeriod = '30';
 
 async function openChartModal(offerId) {
   const backdrop = document.getElementById('chart-modal');
@@ -1365,8 +1366,8 @@ async function openChartModal(offerId) {
       throw new Error(err.error || 'HTTP ' + r.status);
     }
     chartModalData = await r.json();
-    chartModalPeriod = 'all';
-    document.querySelectorAll('.chart-modal-period button').forEach(b => b.classList.toggle('active', b.dataset.days === 'all'));
+    chartModalPeriod = '30';
+    document.querySelectorAll('.chart-modal-period button').forEach(b => b.classList.toggle('active', b.dataset.days === '30'));
     renderChartModalContent();
   } catch (e) {
     document.getElementById('chart-modal-body').innerHTML = '<div class="chart-modal-empty">⚠ ' + (e.message || 'Помилка') + '</div>';
@@ -1383,6 +1384,69 @@ function chartModalSetPeriod(days) {
   chartModalPeriod = days;
   document.querySelectorAll('.chart-modal-period button').forEach(b => b.classList.toggle('active', b.dataset.days === days));
   if (chartModalData) renderChartModalContent();
+}
+
+// Build a continuous daily series across [from, to] (inclusive). Missing
+// dates get null. Used for sales (gaps = no sale that day).
+function fillDailySeries(rows, fromDate, toDate, defaultVal) {
+  const map = new Map(rows.map(x => [x.date, x.qty]));
+  const series = [];
+  const start = new Date(fromDate + 'T00:00:00Z');
+  const end = new Date(toDate + 'T00:00:00Z');
+  for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+    const iso = d.toISOString().slice(0, 10);
+    const v = map.get(iso);
+    series.push({ x: iso, y: (v != null ? v : defaultVal) });
+  }
+  return series;
+}
+
+// Reconstruct a stock series for the period using snapshots where we have
+// them, plus a backward estimate (current_stock + cumulative future sales)
+// for dates before our snapshot history. Reset estimate at restock events.
+function buildStockSeries(stockRows, salesRows, restockDates, fromDate, toDate, currentStock) {
+  const stockMap = new Map(stockRows.map(x => [x.date, x.qty]));
+  const salesMap = new Map(salesRows.map(x => [x.date, x.qty]));
+  const restockSet = new Set(restockDates);
+  const series = [];
+  const start = new Date(fromDate + 'T00:00:00Z');
+  const end = new Date(toDate + 'T00:00:00Z');
+
+  // First pass: collect dates
+  const dates = [];
+  for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  // Find the earliest snapshot date — earlier than that we're estimating
+  const earliestSnapshot = stockRows.length ? stockRows[0].date : null;
+
+  // Walk chronologically; where no snapshot, leave null for now (filled below)
+  const known = dates.map(d => stockMap.has(d) ? stockMap.get(d) : null);
+
+  // Backward fill: from latest known going backwards, each prior day = next + sales(that day)
+  // (assumption: no restock in between; if hit a restock date, stop the backward fill)
+  for (let i = dates.length - 1; i >= 0; i--) {
+    if (known[i] != null) continue;
+    // If we have a known value to the right, propagate backward
+    let nextKnownIdx = -1;
+    for (let j = i + 1; j < dates.length; j++) { if (known[j] != null) { nextKnownIdx = j; break; } }
+    if (nextKnownIdx === -1) continue; // no future data, skip (forward gap, leave null)
+    if (restockSet.has(dates[nextKnownIdx])) continue; // a restock between us and known value — ambiguous, skip
+    const soldOnNext = salesMap.get(dates[nextKnownIdx]) || 0;
+    // Stock at i = stock at next + sales between i+1 and next
+    let est = known[nextKnownIdx];
+    for (let k = i + 1; k <= nextKnownIdx; k++) {
+      const sold = salesMap.get(dates[k]) || 0;
+      est += sold;
+    }
+    // But this gives stock at start of day i+1 ≈ stock at end of day i; close enough
+    known[i] = est;
+  }
+
+  for (let i = 0; i < dates.length; i++) {
+    series.push({ x: dates[i], y: known[i] });
+  }
+  return series;
 }
 
 function renderChartModalContent() {
@@ -1408,40 +1472,45 @@ function renderChartModalContent() {
       <div class="chart-modal-stat-val">${s.val}</div>
     </div>`).join('');
 
-  // Filter data by period
-  const cutoff = chartModalPeriod === 'all' ? null : new Date(Date.now() - parseInt(chartModalPeriod) * 86400000).toISOString().slice(0, 10);
-  const sales = cutoff ? d.sales_by_day.filter(x => x.date >= cutoff) : d.sales_by_day;
-  const stock = cutoff ? d.stock_by_day.filter(x => x.date >= cutoff) : d.stock_by_day;
-  const restocks = cutoff ? d.restock_dates.filter(x => x >= cutoff) : d.restock_dates;
-
-  // Build unified date axis
-  const allDates = new Set();
-  sales.forEach(x => allDates.add(x.date));
-  stock.forEach(x => allDates.add(x.date));
-  const labels = Array.from(allDates).sort();
-  if (labels.length === 0) {
-    document.getElementById('chart-modal-body').innerHTML = '<div class="chart-modal-empty">Немає даних за обраний період</div>';
-    return;
+  // Determine date range based on period
+  const today = new Date().toISOString().slice(0, 10);
+  let fromDate;
+  if (chartModalPeriod === 'all') {
+    const allDates = [];
+    d.sales_by_day.forEach(x => allDates.push(x.date));
+    d.stock_by_day.forEach(x => allDates.push(x.date));
+    if (!allDates.length) {
+      document.getElementById('chart-modal-body').innerHTML = '<div class="chart-modal-empty">Немає даних</div>';
+      return;
+    }
+    fromDate = allDates.sort()[0];
+  } else {
+    fromDate = new Date(Date.now() - parseInt(chartModalPeriod) * 86400000).toISOString().slice(0, 10);
   }
-  const salesMap = new Map(sales.map(x => [x.date, x.qty]));
-  const stockMap = new Map(stock.map(x => [x.date, x.qty]));
-  const salesData = labels.map(d => salesMap.has(d) ? salesMap.get(d) : null);
-  const stockData = labels.map(d => stockMap.has(d) ? stockMap.get(d) : null);
+  const toDate = today;
+
+  const sales = d.sales_by_day.filter(x => x.date >= fromDate && x.date <= toDate);
+  const stockRaw = d.stock_by_day.filter(x => x.date >= fromDate && x.date <= toDate);
+  const restocks = d.restock_dates.filter(x => x >= fromDate && x <= toDate);
+
+  // Sales: continuous daily series (0 for no-sale days makes the line touch zero clearly)
+  const salesSeries = fillDailySeries(sales, fromDate, toDate, 0);
+  // Stock: snapshots + backward estimate from sales
+  const stockSeries = buildStockSeries(stockRaw, sales, restocks, fromDate, toDate, sku.current_stock);
 
   // Render chart
   document.getElementById('chart-modal-body').innerHTML = '<canvas id="chart-modal-canvas"></canvas>';
   const ctx = document.getElementById('chart-modal-canvas');
   if (chartModalChart) chartModalChart.destroy();
 
-  // Plugin to draw vertical dashed lines at restock dates
+  // Plugin: dashed vertical "завоз" markers at restock dates
   const restockLinesPlugin = {
     id: 'restockLines',
     afterDatasetsDraw(chart) {
       const { ctx, scales: { x, y } } = chart;
       restocks.forEach(date => {
-        const idx = labels.indexOf(date);
-        if (idx < 0) return;
-        const px = x.getPixelForValue(idx);
+        const px = x.getPixelForValue(new Date(date + 'T00:00:00Z').getTime());
+        if (isNaN(px) || px < x.left || px > x.right) return;
         ctx.save();
         ctx.beginPath();
         ctx.setLineDash([4, 4]);
@@ -1450,7 +1519,6 @@ function renderChartModalContent() {
         ctx.moveTo(px, y.top);
         ctx.lineTo(px, y.bottom);
         ctx.stroke();
-        // Label
         ctx.setLineDash([]);
         ctx.fillStyle = 'rgba(201, 169, 110, 0.85)';
         ctx.font = '10px sans-serif';
@@ -1461,29 +1529,33 @@ function renderChartModalContent() {
     }
   };
 
+  // Are we extrapolating any stock values? (snapshots range vs requested range)
+  const earliestSnap = d.stock_by_day.length ? d.stock_by_day[0].date : null;
+  const showExtrapolationNote = earliestSnap && fromDate < earliestSnap;
+
   chartModalChart = new Chart(ctx, {
     type: 'line',
     data: {
-      labels,
       datasets: [
         {
           label: 'Продажі (шт./день)',
-          data: salesData,
+          data: salesSeries,
           yAxisID: 'y',
+          parsing: { xAxisKey: 'x', yAxisKey: 'y' },
           borderColor: '#5cb88a',
           backgroundColor: 'rgba(92,184,138,0.15)',
           borderWidth: 2,
           fill: true,
           tension: 0.3,
-          pointRadius: 2,
-          pointHoverRadius: 5,
-          spanGaps: false,
+          pointRadius: 0,
+          pointHoverRadius: 4,
         },
         {
-          label: 'Склад',
-          data: stockData,
+          label: 'Склад' + (showExtrapolationNote ? ' (естимація для попередніх дат)' : ''),
+          data: stockSeries,
           yAxisID: 'y1',
-          borderColor: 'rgba(124,110,245,0.5)',
+          parsing: { xAxisKey: 'x', yAxisKey: 'y' },
+          borderColor: 'rgba(124,110,245,0.55)',
           backgroundColor: 'transparent',
           borderWidth: 1.5,
           borderDash: [6, 4],
@@ -1506,33 +1578,32 @@ function renderChartModalContent() {
           borderColor: 'rgba(255,255,255,0.1)',
           borderWidth: 1,
           callbacks: {
-            label: (ctx) => {
-              const v = ctx.raw;
+            label: (c) => {
+              const v = c.parsed.y;
               if (v == null) return null;
-              return ctx.dataset.label + ': ' + (Number.isInteger(v) ? v : v.toFixed(1));
+              return c.dataset.label + ': ' + (Number.isInteger(v) ? v : v.toFixed(1));
             }
           }
         }
       },
       scales: {
         x: {
-          ticks: { color: 'rgba(180,180,200,0.7)', maxRotation: 45, minRotation: 0, font: { size: 10 }, callback: function(val, idx) {
-            const lbl = labels[idx];
-            return lbl ? lbl.substring(5) : '';
-          }},
+          type: 'time',
+          time: { unit: 'day', tooltipFormat: 'yyyy-MM-dd', displayFormats: { day: 'MM-dd', week: 'MM-dd', month: 'yyyy-MM' } },
+          ticks: { color: 'rgba(180,180,200,0.7)', font: { size: 10 }, maxRotation: 45, autoSkip: true, autoSkipPadding: 12 },
           grid: { color: 'rgba(255,255,255,0.04)' }
         },
         y: {
           position: 'left',
           beginAtZero: true,
-          ticks: { color: 'rgba(180,180,200,0.7)', font: { size: 10 } },
+          ticks: { color: 'rgba(180,180,200,0.7)', font: { size: 10 }, precision: 0 },
           grid: { color: 'rgba(255,255,255,0.04)' },
           title: { display: true, text: 'Продажі', color: 'rgba(180,180,200,0.7)', font: { size: 11 } }
         },
         y1: {
           position: 'right',
           beginAtZero: true,
-          ticks: { color: 'rgba(180,180,200,0.5)', font: { size: 10 } },
+          ticks: { color: 'rgba(180,180,200,0.5)', font: { size: 10 }, precision: 0 },
           grid: { drawOnChartArea: false },
           title: { display: true, text: 'Склад', color: 'rgba(180,180,200,0.5)', font: { size: 11 } }
         }
