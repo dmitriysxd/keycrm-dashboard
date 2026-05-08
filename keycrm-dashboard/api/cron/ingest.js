@@ -484,34 +484,52 @@ module.exports = async function handler(req, res) {
     runId = ins.data.id;
 
     if (step === "auto") {
-      const chunkResult = await runAutoChunk(req, supabase, apiKey, ctx);
-      const stateAfter = await readState(supabase);
-      const more = stateAfter && stateAfter.status === "running";
+      // Process chunks in a tight loop within a single function invocation.
+      // Avoids the previous self-trigger pattern, which was flaky on cron
+      // cold-starts (chain dropped after 1-5 chunks instead of completing
+      // ~12 chunks). Time budget 50s leaves headroom under Vercel's 60s
+      // function limit; state is persisted per-chunk so next-day cron
+      // resumes if today's invocation runs out of time.
+      const startMs = Date.now();
+      const TIME_BUDGET_MS = 50 * 1000;
+      let chunksProcessed = 0;
+      let totalProducts = 0, totalOrders = 0, totalSalesUpserted = 0;
+      let lastResult = null;
+
+      while (Date.now() - startMs < TIME_BUDGET_MS) {
+        lastResult = await runAutoChunk(req, supabase, apiKey, ctx);
+        chunksProcessed += 1;
+        totalProducts += lastResult.products || 0;
+        totalOrders += lastResult.orders || 0;
+        totalSalesUpserted += lastResult.sales_upserted || 0;
+        const stateAfter = await readState(supabase);
+        if (!stateAfter || stateAfter.status !== "running") break;
+      }
+
+      const finalState = await readState(supabase);
+      const completed = finalState && finalState.status === "done";
 
       await supabase
         .from("ingest_runs")
         .update({
           finished_at: new Date().toISOString(),
           status: "ok",
-          products_seen: chunkResult.products || 0,
-          orders_seen: chunkResult.orders || 0,
-          sales_upserted: chunkResult.sales_upserted || 0,
+          products_seen: totalProducts,
+          orders_seen: totalOrders,
+          sales_upserted: totalSalesUpserted,
           api_calls: ctx.apiCalls,
-          meta: { step: "auto", chunk: chunkResult, more },
+          meta: { step: "auto", chunks_processed: chunksProcessed, last_chunk: lastResult, completed },
         })
         .eq("id", runId);
-
-      if (more) {
-        await fireSelf(req);
-      }
 
       return res.status(200).json({
         ok: true,
         step: "auto",
         run_id: runId,
-        chunk: chunkResult,
-        state: stateAfter,
-        chained: more,
+        chunks_processed: chunksProcessed,
+        completed,
+        state: finalState,
+        last_chunk: lastResult,
         api_calls: ctx.apiCalls,
       });
     }
