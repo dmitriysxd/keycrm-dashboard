@@ -400,7 +400,15 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
   // Decide whether to start a fresh cycle.
   const isStaleDone = !state || (state.status === "done" && state.cycle_date !== today);
   const isStaleIdle = state && state.status === "idle";
-  if (isStaleDone || isStaleIdle) {
+  // Recover automatically from an old error: if the previous run failed
+  // (typically metrics refresh timeout) and >12h have passed, reset the
+  // state and start a fresh cycle instead of getting stuck forever.
+  const lastChunkMs = state && state.last_chunk_at
+    ? new Date(state.last_chunk_at).getTime()
+    : 0;
+  const isStaleError = state && state.status === "error"
+    && (Date.now() - lastChunkMs) > 12 * 3600 * 1000;
+  if (isStaleDone || isStaleIdle || isStaleError) {
     const fresh = {
       cycle_date: today,
       cycle_started_at: new Date().toISOString(),
@@ -458,9 +466,24 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
       });
       result.advanced = "metrics";
     } else if (stepName === "metrics") {
-      const refresh = await supabase.rpc("refresh_sku_metrics");
-      if (refresh.error) throw new Error("refresh_sku_metrics: " + refresh.error.message);
-      result.metrics = true;
+      // Soft refresh: try once with a short local timeout. If REFRESH
+      // MATERIALIZED VIEW doesn't complete in 8s (typical at our scale
+      // is 30-90s), we don't fail the cycle — pg_cron has the heavy
+      // refresh scheduled for 03:10 UTC and will finish it server-side.
+      try {
+        await Promise.race([
+          (async () => {
+            const r = await supabase.rpc("refresh_sku_metrics");
+            if (r && r.error) throw new Error(r.error.message);
+          })(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("local refresh timeout, deferring to pg_cron")), 8000)
+          ),
+        ]);
+        result.metrics = true;
+      } catch (err) {
+        result.metrics_deferred = (err && err.message) || String(err);
+      }
       await writeState(supabase, {
         current_step: "done",
         current_page: 1,
