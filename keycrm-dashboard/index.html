@@ -1472,11 +1472,16 @@ function renderClients() {
           <th class="sortable" data-col="phone" onclick="setClientSort('phone')">Телефон <span class="arrow">▼</span></th>
           <th>Статус</th>
           <th>Сегмент</th>
+          <th class="sortable" data-col="last_order_date" onclick="setClientSort('last_order_date')">Останнє замовлення <span class="arrow">▼</span></th>
           <th class="sortable" data-col="recency_days" onclick="setClientSort('recency_days')" style="text-align:right" title="Днів з останнього замовлення">R <span class="arrow">▼</span></th>
           <th class="sortable" data-col="frequency" onclick="setClientSort('frequency')" style="text-align:right" title="Кількість замовлень">F <span class="arrow">▼</span></th>
           <th class="sortable" data-col="monetary" onclick="setClientSort('monetary')" style="text-align:right" title="Сума усіх замовлень">M (₴) <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="aov" onclick="setClientSort('aov')" style="text-align:right" title="Середній чек">AOV <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="avg_interval_days" onclick="setClientSort('avg_interval_days')" style="text-align:right" title="Середній інтервал між замовленнями">Цикл <span class="arrow">▼</span></th>
+          <th style="text-align:center" title="Динаміка частоти покупок">Velocity</th>
+          <th class="sortable" data-col="churn_pct" onclick="setClientSort('churn_pct')" style="text-align:right" title="Ймовірність відтоку">Churn <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="ltv" onclick="setClientSort('ltv')" style="text-align:right" title="Сумарна виручка від клієнта">LTV <span class="arrow">▼</span></th>
           <th style="text-align:center" title="R-F-M квінтилі">RFM</th>
-          <th class="sortable" data-col="last_order_date" onclick="setClientSort('last_order_date')">Останнє замовлення <span class="arrow">▼</span></th>
         </tr></thead>
         <tbody id="clients-tbody"></tbody>
       </table>
@@ -1515,7 +1520,7 @@ function renderClientsTable() {
   });
   const esc = s => (s || '').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
   tbody.innerHTML = rows.length === 0
-    ? '<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
+    ? '<tr><td colspan="14" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
     : rows.map(r => {
       const statusBadge = r.status_name
         ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;background:${r.status_color || '#666'}22;color:${r.status_color || '#999'}">${esc(r.status_name)}</span>`
@@ -1523,17 +1528,35 @@ function renderClientsTable() {
       const segBadge = r.segment
         ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;background:${SEGMENT_COLOR[r.segment]}22;color:${SEGMENT_COLOR[r.segment]}">${SEGMENT_LABEL[r.segment]}</span>`
         : '<span class="muted">—</span>';
+      const overdueStyle = r.overdue ? ' background: rgba(239,68,68,0.08); border-left: 3px solid #ef4444;' : '';
+      const rTitle = r.overdue && r.avg_interval_days
+        ? ` title="Перевищив цикл закупки в ${(r.recency_days / r.avg_interval_days).toFixed(1)}× раз — затримка"` : '';
+      const rCell = r.recency_days != null
+        ? (r.overdue ? `<span style="color:#ef4444;font-weight:600">${r.recency_days}д ⚠</span>` : `${r.recency_days}д`)
+        : '—';
+      const churnColor = r.churn_pct >= 70 ? '#ef4444' : r.churn_pct >= 40 ? '#f59e0b' : r.churn_pct >= 20 ? '#9ca3af' : '#10b981';
+      const churnCell = `<span style="color:${churnColor};font-weight:600">${r.churn_pct}%</span>`;
+      const velocityCell = r.velocity_trend
+        ? (r.velocity_trend === 'accelerating' ? '<span style="color:#10b981" title="Прискорюється">↑ швидше</span>'
+           : r.velocity_trend === 'decelerating' ? '<span style="color:#ef4444" title="Сповільнюється">↓ повільніше</span>'
+           : '<span class="muted" title="Стабільно">→ стабільно</span>')
+        : '<span class="muted">—</span>';
       return `
-        <tr onclick="openClientModal(${r.buyer_id})">
+        <tr style="cursor:pointer;${overdueStyle}" onclick="openClientModal(${r.buyer_id})">
           <td>${esc(r.full_name) || '<span class="muted">— без імені —</span>'}${r.is_wholesale ? ' <span style="color:var(--gold);font-size:10px">★опт</span>' : ''}</td>
           <td class="muted">${esc(r.phone) || '—'}</td>
           <td>${statusBadge}</td>
           <td>${segBadge}</td>
-          <td class="num">${r.recency_days != null ? r.recency_days + 'д' : '—'}</td>
+          <td class="muted">${r.last_order_date || '—'}</td>
+          <td class="num"${rTitle}>${rCell}</td>
           <td class="num">${r.frequency || 0}</td>
           <td class="num">${fmtMoney(r.monetary || 0)}</td>
+          <td class="num">${r.aov != null ? fmtMoney(r.aov) : '—'}</td>
+          <td class="num">${r.avg_interval_days != null ? Math.round(r.avg_interval_days) + 'д' : '<span class="muted">—</span>'}</td>
+          <td style="text-align:center;font-size:11px">${velocityCell}</td>
+          <td class="num">${churnCell}</td>
+          <td class="num">${fmtMoney(r.ltv || 0)}</td>
           <td class="num muted" style="text-align:center;font-family:'JetBrains Mono',monospace">${r.rfm_code || '—'}</td>
-          <td class="muted">${r.last_order_date || '—'}</td>
         </tr>`;
     }).join('');
 }
@@ -1566,26 +1589,39 @@ function closeClientModal() {
 
 function renderClientModal() {
   if (!CURRENT_CLIENT) return;
-  const { buyer, rfm, orders, notes } = CURRENT_CLIENT;
+  const { buyer, rfm, enriched, orders, notes } = CURRENT_CLIENT;
   const esc = s => (s == null ? '' : String(s)).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 
   document.getElementById('client-modal-title').textContent = (buyer.full_name || '— без імені —') + (buyer.is_wholesale ? '  ★опт' : '');
   document.getElementById('client-modal-sub').textContent =
     (buyer.phone ? '📞 ' + buyer.phone : '') + (buyer.email ? '  ·  ' + buyer.email : '');
 
-  const r_score = rfm ? rfm.r_score : null;
-  const f_score = rfm ? rfm.f_score : null;
-  const m_score = rfm ? rfm.m_score : null;
+  const m = rfm || {};
+  const en = enriched || {};
+  const aov = m.aov != null ? parseFloat(m.aov) : null;
+  const aov90 = m.aov_last_90d != null ? parseFloat(m.aov_last_90d) : null;
+  const churnColor = en.churn_pct >= 70 ? '#ef4444' : en.churn_pct >= 40 ? '#f59e0b' : en.churn_pct >= 20 ? '#9ca3af' : '#10b981';
+  const velocityLabel = en.velocity_trend === 'accelerating' ? '↑ Прискорюється'
+    : en.velocity_trend === 'decelerating' ? '↓ Сповільнюється'
+    : en.velocity_trend === 'stable' ? '→ Стабільно' : '—';
+  const velocityColor = en.velocity_trend === 'accelerating' ? '#10b981'
+    : en.velocity_trend === 'decelerating' ? '#ef4444' : 'var(--text)';
+
   const stats = [
-    { label: 'R · днів', val: rfm ? (rfm.recency_days + 'д') : '—' },
-    { label: 'F · замовлень', val: rfm ? rfm.frequency : 0 },
-    { label: 'M · сума', val: rfm ? fmtMoney(parseFloat(rfm.monetary) || 0) : '—' },
-    { label: 'R-score', val: r_score || '—' },
-    { label: 'F-score', val: f_score || '—' },
-    { label: 'M-score', val: m_score || '—' },
+    { label: 'R · днів', val: m.recency_days != null ? m.recency_days + 'д' : '—', color: en.overdue ? '#ef4444' : null },
+    { label: 'F · замовлень', val: m.frequency || 0 },
+    { label: 'M · сума', val: m.monetary != null ? fmtMoney(parseFloat(m.monetary) || 0) : '—' },
+    { label: 'AOV · середній чек', val: aov != null ? fmtMoney(aov) : '—' },
+    { label: 'Цикл закупки', val: m.avg_interval_days != null ? Math.round(parseFloat(m.avg_interval_days)) + 'д' : '—' },
+    { label: 'LTV', val: en.ltv != null ? fmtMoney(en.ltv) : '—' },
+    { label: 'Velocity', val: velocityLabel, color: velocityColor },
+    { label: 'Churn-ризик', val: (en.churn_pct != null ? en.churn_pct + '%' : '—'), color: churnColor },
   ];
   document.getElementById('client-modal-stats').innerHTML = stats.map(s =>
-    `<div><div class="chart-modal-stat-label">${s.label}</div><div class="chart-modal-stat-val">${s.val}</div></div>`
+    `<div>
+       <div class="chart-modal-stat-label">${s.label}</div>
+       <div class="chart-modal-stat-val"${s.color ? ` style="color:${s.color}"` : ''}>${s.val}</div>
+     </div>`
   ).join('');
 
   const statusOpts = ['<option value="">— без статусу —</option>']
@@ -1624,6 +1660,43 @@ function renderClientModal() {
         </tbody>
       </table>`;
 
+  // Аналитический подблок: интервалы, динамика, причины churn.
+  const CHURN_REASON_LABEL = {
+    recency_3x_interval:    'Recency перевищує цикл у 3×',
+    recency_2x_interval:    'Recency перевищує цикл у 2×',
+    recency_1_5x_interval:  'Recency перевищує цикл у 1.5×',
+    recency_1_2x_interval:  'Recency перевищує цикл у 1.2×',
+    recency_180d_no_history:'180+ днів без замовлень (без історії)',
+    recency_90d_no_history: '90+ днів без замовлень (без історії)',
+    freq_dropped_to_zero:   'Частота впала до нуля за 90 днів',
+    freq_dropped_70pct:     'Частота впала на 70%+ vs попередніх 90 днів',
+    freq_dropped_50pct:     'Частота впала на 50%+ vs попередніх 90 днів',
+    aov_dropped_50pct:      'Середній чек просів на 50%+',
+    aov_dropped_30pct:      'Середній чек просів на 30%+',
+    category_narrowing:     'Звузив асортимент категорій',
+    velocity_decelerating:  'Інтервали між заказами збільшуються',
+    recent_negative_notes:  'Свіжі негативні заметки дзвінків',
+  };
+  const reasonsHtml = (en.churn_reasons && en.churn_reasons.length)
+    ? en.churn_reasons.map(r => `<li style="font-size:11px;color:var(--text);margin-bottom:2px">${CHURN_REASON_LABEL[r] || r}</li>`).join('')
+    : '<li style="font-size:11px;color:var(--muted)">Сигналів відтоку не виявлено</li>';
+  const analyticsHtml = `
+    <div style="margin-bottom:12px;font-size:11px;color:var(--text)">
+      <div style="color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Аналітика поведінки</div>
+      <table style="width:100%;font-size:11px;border-collapse:collapse">
+        <tr><td class="muted" style="padding:2px 0">Замовлень за 90 днів:</td><td style="text-align:right">${m.freq_last_90d || 0} <span class="muted">(попередні 90: ${m.freq_prior_90d || 0})</span></td></tr>
+        <tr><td class="muted" style="padding:2px 0">AOV (90 днів / весь час):</td><td style="text-align:right">${aov90 != null ? fmtMoney(aov90) : '—'} / ${aov != null ? fmtMoney(aov) : '—'}</td></tr>
+        <tr><td class="muted" style="padding:2px 0">Категорії (90д / весь час):</td><td style="text-align:right">${m.categories_90d || 0} / ${m.categories_lifetime || 0}</td></tr>
+        <tr><td class="muted" style="padding:2px 0">Інтервал (останні / ранні):</td><td style="text-align:right">${m.recent_interval_days != null ? Math.round(parseFloat(m.recent_interval_days)) + 'д' : '—'} / ${m.prior_interval_days != null ? Math.round(parseFloat(m.prior_interval_days)) + 'д' : '—'}</td></tr>
+        <tr><td class="muted" style="padding:2px 0">Перше замовлення:</td><td style="text-align:right">${m.first_order_date || '—'}</td></tr>
+      </table>
+      <div style="margin-top:8px">
+        <div class="muted" style="font-size:11px;margin-bottom:4px">Фактори churn-ризику (${en.churn_pct || 0}%):</div>
+        <ul style="margin:0;padding-left:18px">${reasonsHtml}</ul>
+      </div>
+    </div>
+  `;
+
   document.getElementById('client-modal-body').innerHTML = `
     <div style="display:grid;grid-template-columns: 1fr 1fr;gap:24px;align-items:start">
       <div>
@@ -1640,6 +1713,7 @@ function renderClientModal() {
             Оптовий клієнт
           </label>
         </div>
+        ${analyticsHtml}
         <hr style="border:0;border-top:1px solid var(--border);margin:16px 0">
         <div style="font-size:12px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Нова заметка</div>
         <select id="note-outcome" style="width:100%;margin-bottom:6px">

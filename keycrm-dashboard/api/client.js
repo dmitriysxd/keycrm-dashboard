@@ -7,6 +7,7 @@
 
 const { getSupabase } = require("../lib/supabase");
 const { checkDashboardToken } = require("../lib/auth");
+const { enrichRfmRow, isNegativeOutcome } = require("../lib/clients");
 
 const EXCLUDED_STATUSES = new Set([
   "cancelled", "rejected", "canceled",
@@ -103,9 +104,24 @@ module.exports = async function handler(req, res) {
       .sort((a, b) => (a.ordered_at < b.ordered_at ? 1 : -1))
       .slice(0, 20);
 
+    // Считаем негативные заметки за 30 дней для churn-формулы.
+    const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+    let negNotes30d = 0;
+    for (const n of notesRes.data || []) {
+      if (!isNegativeOutcome(n.outcome)) continue;
+      if (Date.parse(n.created_at) < cutoff) continue;
+      negNotes30d += 1;
+    }
+    const enriched = enrichRfmRow(rfmRes.data, { negNotes30d });
+    const monetary = rfmRes.data && rfmRes.data.monetary != null ? parseFloat(rfmRes.data.monetary) : 0;
+
     return res.status(200).json({
       buyer: profRes.data,
       rfm: rfmRes.data || null,
+      enriched: Object.assign({}, enriched, {
+        ltv: monetary,
+        recent_negative_notes: negNotes30d,
+      }),
       orders,
       notes: notesRes.data || [],
     });
