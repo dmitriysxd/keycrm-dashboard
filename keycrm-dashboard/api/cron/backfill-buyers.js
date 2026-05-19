@@ -87,9 +87,14 @@ async function fetchBuyer(apiKey, id, ctx) {
     const resp = await get("/buyer/" + id, { include: "custom_fields" }, apiKey, ctx);
     if (resp && resp.data && typeof resp.data === "object") return resp.data;
     if (resp && resp.id) return resp;
-    return null;
+    return { __notFound: true };
   } catch (e) {
-    return { __error: (e && e.message) || String(e) };
+    const msg = (e && e.message) || String(e);
+    // 404 від KeyCRM означає, що buyer_id з sales вже не існує в CRM (його
+    // видалили), але історичні замовлення лишились. Це не помилка — просто
+    // позначаємо як "видалений" і знімаємо з pending назавжди.
+    if (/HTTP 404/.test(msg)) return { __notFound: true };
+    return { __error: msg };
   }
 }
 
@@ -178,6 +183,7 @@ module.exports = async function handler(req, res) {
     const rows = [];
     const errors = [];
     let processed = 0;
+    let notFoundCount = 0;
 
     for (let i = 0; i < targets.length; i += PARALLEL) {
       if (Date.now() - startMs > TIME_BUDGET_MS) break;
@@ -188,6 +194,16 @@ module.exports = async function handler(req, res) {
         const b = results[j];
         processed++;
         if (!b) continue;
+        if (b.__notFound) {
+          // Стабовий рядок — щоб pending_buyer_ids більше не повертав цей id.
+          notFoundCount++;
+          rows.push({
+            buyer_id: id,
+            full_name: "(видалено в KeyCRM)",
+            last_synced_at: new Date().toISOString(),
+          });
+          continue;
+        }
         if (b.__error) { errors.push({ id, error: b.__error }); continue; }
         rows.push({
           buyer_id: id,
@@ -240,6 +256,7 @@ module.exports = async function handler(req, res) {
       run_id: runId,
       total_pending_before: totalPending,
       processed,
+      not_found_in_keycrm: notFoundCount,
       remaining_in_batch: remainingInBatch,
       pending_after_run: pendingAfter,
       more: pendingAfter > 0,
