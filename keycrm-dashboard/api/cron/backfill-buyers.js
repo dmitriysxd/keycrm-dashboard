@@ -18,8 +18,14 @@ const { getSupabase } = require("../../lib/supabase");
 const { checkCronAuth } = require("../../lib/auth");
 const { get, sleep } = require("../../lib/keycrm");
 
-const PARALLEL = 4;
-const TIME_BUDGET_MS = 50 * 1000;
+// KeyCRM офіційно дозволяє 60 req/min. PARALLEL=2 + sleep 1100ms між
+// батчами = ~109 req/min — на стелі. Якщо вилазимо за 429, lib/keycrm.js
+// сам відкатиться з expo-backoff (2s, 4s, 8s, ...). Зменшуємо TIME_BUDGET
+// до 40s, щоб залишити Vercel 20s резерву на доїдання in-flight запитів і
+// фінальний upsert/відповідь — раніше функція рубалась посеред потоку.
+const PARALLEL = 2;
+const PER_BATCH_DELAY_MS = 1100;
+const TIME_BUDGET_MS = 40 * 1000;
 
 function pickPhone(b) {
   if (!b) return null;
@@ -113,7 +119,48 @@ module.exports = async function handler(req, res) {
   const supabase = getSupabase();
   const ctx = { apiCalls: 0 };
   const force = !!(req.query && req.query.force === "true");
-  const limit = Math.max(1, Math.min(2000, parseInt((req.query && req.query.limit) || "300")));
+  const limit = Math.max(1, Math.min(2000, parseInt((req.query && req.query.limit) || "60")));
+  const diag = !!(req.query && (req.query.diag === "1" || req.query.diag === "true"));
+
+  // Діагностичний режим: жодних викликів KeyCRM, тільки перевірка БД.
+  // Корисно щоб одразу побачити, чи накатані міграції 020/021 і скільки
+  // покупців залишилось пробекфілити. Має відповідати за <1s.
+  if (diag) {
+    try {
+      const cnt = await supabase.rpc("pending_buyer_ids_count", { _force: force });
+      if (cnt.error) {
+        return res.status(200).json({
+          diag: true,
+          rpc_ok: false,
+          rpc_error: cnt.error.message,
+          hint: "Накати міграцію 021_pending_buyers_fn.sql у Supabase.",
+        });
+      }
+      const buyersHead = await supabase.from("buyers").select("buyer_id", { count: "exact", head: true });
+      const buyersNamedHead = await supabase
+        .from("buyers")
+        .select("buyer_id", { count: "exact", head: true })
+        .not("full_name", "is", null)
+        .neq("full_name", "");
+      // Тестовий запис для перевірки RLS на buyers.
+      const testRow = { buyer_id: -1, full_name: null, last_synced_at: new Date().toISOString() };
+      const rlsTest = await supabase.from("buyers").upsert(testRow, { onConflict: "buyer_id" });
+      if (!rlsTest.error) await supabase.from("buyers").delete().eq("buyer_id", -1);
+
+      return res.status(200).json({
+        diag: true,
+        rpc_ok: true,
+        rls_ok: !rlsTest.error,
+        rls_error: rlsTest.error ? rlsTest.error.message : null,
+        rls_hint: rlsTest.error ? "Накати міграцію 020_buyers_disable_rls.sql у Supabase." : null,
+        buyers_total: buyersHead.count || 0,
+        buyers_with_name: buyersNamedHead.count || 0,
+        pending_to_backfill: parseInt(cnt.data) || 0,
+      });
+    } catch (err) {
+      return res.status(500).json({ diag: true, error: (err && err.message) || String(err) });
+    }
+  }
 
   let runId = null;
   try {
@@ -152,11 +199,13 @@ module.exports = async function handler(req, res) {
           last_synced_at: new Date().toISOString(),
         });
       }
-      if (rows.length >= 100) {
+      if (rows.length >= 50) {
         const { error } = await supabase.from("buyers").upsert(rows.splice(0, rows.length), { onConflict: "buyer_id" });
         if (error) throw new Error("buyers upsert: " + error.message);
       }
-      await sleep(50);
+      // Throttle: тримаємо ~60 req/min під ліміт KeyCRM. PARALLEL запитів
+      // вже випущено — чекаємо, перш ніж запускати наступний батч.
+      await sleep(PER_BATCH_DELAY_MS);
     }
     if (rows.length) {
       const { error } = await supabase.from("buyers").upsert(rows, { onConflict: "buyer_id" });
