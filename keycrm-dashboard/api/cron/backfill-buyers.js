@@ -88,47 +88,19 @@ async function fetchBuyer(apiKey, id, ctx) {
 }
 
 async function collectTargetIds(supabase, force, limit) {
-  // ID, которые есть в sales и которых нет в buyers (или forced).
-  // Делаем диапазонами по 1000 — Supabase не любит огромный IN.
-  const sales = [];
-  const PAGE = 1000;
-  for (let from = 0; from < 200000; from += PAGE) {
-    const { data, error } = await supabase
-      .from("sales")
-      .select("buyer_id")
-      .not("buyer_id", "is", null)
-      .range(from, from + PAGE - 1);
-    if (error) throw new Error("sales scan: " + error.message);
-    if (!data || !data.length) break;
-    for (const r of data) sales.push(r.buyer_id);
-    if (data.length < PAGE) break;
-  }
-  const uniq = Array.from(new Set(sales));
+  // Один RPC-виклик замість сканування sales + buyers через HTTP.
+  // SQL-функція повертає DISTINCT buyer_id з sales, у яких в buyers ще немає
+  // заповненого full_name (або всіх, якщо force=true).
+  const { data, error } = await supabase.rpc("pending_buyer_ids", { _limit: limit, _force: force });
+  if (error) throw new Error("pending_buyer_ids RPC: " + error.message);
+  const targets = (data || []).map((r) => r.buyer_id);
 
-  // Чьи карточки уже заполнены — пропускаем, если !force.
-  const known = new Set();
-  if (!force) {
-    for (let from = 0; from < 200000; from += PAGE) {
-      const { data, error } = await supabase
-        .from("buyers")
-        .select("buyer_id, full_name")
-        .range(from, from + PAGE - 1);
-      if (error) throw new Error("buyers scan: " + error.message);
-      if (!data || !data.length) break;
-      for (const r of data) {
-        if (r.full_name && r.full_name.trim() !== "") known.add(r.buyer_id);
-      }
-      if (data.length < PAGE) break;
-    }
-  }
+  // Лічильник лишку — окремий швидкий запит для UI.
+  const { data: cntData, error: cntErr } = await supabase.rpc("pending_buyer_ids_count", { _force: force });
+  if (cntErr) throw new Error("pending_buyer_ids_count RPC: " + cntErr.message);
+  const totalPending = cntData == null ? targets.length : parseInt(cntData);
 
-  const targets = [];
-  for (const id of uniq) {
-    if (!force && known.has(id)) continue;
-    targets.push(id);
-    if (targets.length >= limit) break;
-  }
-  return { targets, totalDistinct: uniq.length, alreadyKnown: known.size };
+  return { targets, totalPending };
 }
 
 module.exports = async function handler(req, res) {
@@ -153,7 +125,7 @@ module.exports = async function handler(req, res) {
     if (ins.error) throw new Error("ingest_runs insert: " + ins.error.message);
     runId = ins.data.id;
 
-    const { targets, totalDistinct, alreadyKnown } = await collectTargetIds(supabase, force, limit);
+    const { targets, totalPending } = await collectTargetIds(supabase, force, limit);
 
     const startMs = Date.now();
     const rows = [];
@@ -191,7 +163,12 @@ module.exports = async function handler(req, res) {
       if (error) throw new Error("buyers upsert (tail): " + error.message);
     }
 
-    const remaining = targets.length - processed;
+    // У batch'і ще лишилось — отже наступний виклик підбере залишок.
+    // remaining з RPC більше точний, ніж "targets.length - processed", бо
+    // pending_buyer_ids може повернути менше за limit, якщо в БД мало pending.
+    const remainingInBatch = Math.max(0, targets.length - processed);
+    const pendingAfter = Math.max(0, totalPending - processed);
+
     await supabase
       .from("ingest_runs")
       .update({
@@ -200,11 +177,11 @@ module.exports = async function handler(req, res) {
         api_calls: ctx.apiCalls,
         meta: {
           step: "backfill_buyers",
-          totalDistinct,
-          alreadyKnown,
+          total_pending_before: totalPending,
           processed,
           errors_count: errors.length,
-          remaining,
+          remaining_in_batch: remainingInBatch,
+          pending_after_run: pendingAfter,
         },
       })
       .eq("id", runId);
@@ -212,11 +189,11 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       run_id: runId,
-      total_distinct: totalDistinct,
-      already_known: alreadyKnown,
+      total_pending_before: totalPending,
       processed,
-      remaining,
-      more: remaining > 0,
+      remaining_in_batch: remainingInBatch,
+      pending_after_run: pendingAfter,
+      more: pendingAfter > 0,
       api_calls: ctx.apiCalls,
       errors_count: errors.length,
       errors_sample: errors.slice(0, 5),
