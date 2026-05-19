@@ -533,6 +533,9 @@
       <div class="nav-item" onclick="navigate('reorder')">
         <span class="nav-icon">↻</span> Реордер
       </div>
+      <div class="nav-item" onclick="navigate('clients')">
+        <span class="nav-icon">☎</span> Клієнти
+      </div>
     </nav>
 
     <div class="sidebar-bottom">
@@ -551,6 +554,23 @@
     </div>
   </main>
 
+</div>
+
+<!-- Client modal -->
+<div class="chart-modal-backdrop" id="client-modal" onclick="if(event.target===this) closeClientModal()">
+  <div class="chart-modal-card" style="max-width: 900px">
+    <div class="chart-modal-head">
+      <div style="flex:1; min-width:0">
+        <div class="chart-modal-title" id="client-modal-title">Клієнт</div>
+        <div class="chart-modal-sub" id="client-modal-sub"></div>
+      </div>
+      <button class="chart-modal-close" onclick="closeClientModal()" aria-label="Закрити">✕</button>
+    </div>
+    <div class="chart-modal-stats" id="client-modal-stats"></div>
+    <div class="chart-modal-body" id="client-modal-body" style="min-height: 280px; overflow-y: auto;">
+      <div class="chart-modal-empty">Завантажуємо…</div>
+    </div>
+  </div>
 </div>
 
 <!-- SKU chart modal -->
@@ -693,6 +713,7 @@ async function renderCurrentPage() {
   else if (currentPage === 'orders')   { if (!DATA) await loadData(currentDays); renderOrders(); }
   else if (currentPage === 'sku')      { const ok = await loadSku(); if (ok) renderSku(); }
   else if (currentPage === 'reorder')  { const ok = await loadSku({ reorder: true }); if (ok) renderReorder(); }
+  else if (currentPage === 'clients')  { const ok = await loadClients(); if (ok) renderClients(); }
 }
 
 function destroyCharts() {
@@ -1331,6 +1352,412 @@ function renderReorder() {
       </table>
     </div>
   `;
+}
+
+// ── Clients (RFM + CRM) ─────────────────────────────
+let CLIENTS_DATA = null;
+let CLIENT_STATUSES = [];
+let CLIENT_META = null;
+let CLIENT_FILTER = { wholesale_only: true, status_id: '', segment: '', search: '' };
+let CLIENT_SORT = { col: 'monetary', dir: 'desc' };
+let CURRENT_CLIENT = null;
+
+const SEGMENT_LABEL = {
+  champions: 'Чемпіони', loyal: 'Лояльні', new: 'Нові',
+  at_risk: 'Під ризиком', lost: 'Втрачені', potential: 'Потенційні',
+};
+const SEGMENT_COLOR = {
+  champions: '#a855f7', loyal: '#10b981', new: '#3b82f6',
+  at_risk: '#f59e0b', lost: '#ef4444', potential: '#6b7280',
+};
+
+async function loadClients(opts) {
+  const silent = opts && opts.silent;
+  if (!silent) {
+    document.getElementById('main-area').innerHTML = `
+      <div class="state-wrap"><div class="spinner"></div><div class="state-title">Завантажуємо клієнтів</div></div>`;
+  }
+  try {
+    const params = new URLSearchParams();
+    if (CLIENT_FILTER.wholesale_only) params.set('wholesale_only', '1');
+    if (CLIENT_FILTER.status_id) params.set('status_id', CLIENT_FILTER.status_id);
+    if (CLIENT_FILTER.segment) params.set('segment', CLIENT_FILTER.segment);
+    const url = apiUrl('/api/clients', params.toString());
+    const [listRes, metaRes] = await Promise.all([
+      fetch(url),
+      fetch(apiUrl('/api/clients?meta=true')),
+    ]);
+    if (!listRes.ok) {
+      const e = await listRes.json().catch(() => ({}));
+      throw new Error(e.error || 'HTTP ' + listRes.status);
+    }
+    const list = await listRes.json();
+    const meta = metaRes.ok ? await metaRes.json() : {};
+    CLIENTS_DATA = list.rows || [];
+    CLIENT_META = meta;
+    CLIENT_STATUSES = meta.statuses || [];
+    return true;
+  } catch (err) {
+    document.getElementById('main-area').innerHTML = `
+      <div class="state-wrap"><div class="error-card">
+        <div class="error-title">Не вдалося завантажити клієнтів</div>
+        <div class="state-sub">${(err && err.message) || 'Помилка'}</div>
+      </div></div>`;
+    return false;
+  }
+}
+
+function sortClients(rows) {
+  const { col, dir } = CLIENT_SORT;
+  const mult = dir === 'asc' ? 1 : -1;
+  return rows.slice().sort((a, b) => {
+    const va = a[col], vb = b[col];
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * mult;
+    return String(va).localeCompare(String(vb)) * mult;
+  });
+}
+
+function setClientSort(col) {
+  if (CLIENT_SORT.col === col) CLIENT_SORT.dir = CLIENT_SORT.dir === 'asc' ? 'desc' : 'asc';
+  else { CLIENT_SORT.col = col; CLIENT_SORT.dir = 'desc'; }
+  renderClientsTable();
+}
+
+function applyClientSearch(rows) {
+  const s = CLIENT_FILTER.search.toLowerCase().trim();
+  if (!s) return rows;
+  return rows.filter(r => ((r.full_name || '') + ' ' + (r.phone || '') + ' ' + (r.email || '')).toLowerCase().indexOf(s) !== -1);
+}
+
+function renderClients() {
+  const m = CLIENT_META || {};
+  const total = m.total_buyers || 0;
+  const wholesale = m.wholesale_buyers || 0;
+
+  const statusOptions = ['<option value="">Усі статуси</option>']
+    .concat(CLIENT_STATUSES.map(s => `<option value="${s.id}" ${String(CLIENT_FILTER.status_id) === String(s.id) ? 'selected' : ''}>${s.name}</option>`))
+    .join('');
+  const segmentOptions = ['<option value="">Усі сегменти</option>']
+    .concat(Object.keys(SEGMENT_LABEL).map(k => `<option value="${k}" ${CLIENT_FILTER.segment === k ? 'selected' : ''}>${SEGMENT_LABEL[k]}</option>`))
+    .join('');
+
+  document.getElementById('main-area').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">Клієнти ${staleBadge ? staleBadge() : ''}</div>
+        <div class="page-sub">Усього: ${fmt(total)} · оптових: ${fmt(wholesale)}</div>
+      </div>
+      <button class="refresh-btn" onclick="loadClients().then(ok => ok && renderClients())"><span class="ri">↺</span> Оновити</button>
+    </div>
+
+    <div class="filter-bar">
+      <input type="search" id="client-search" placeholder="Пошук за іменем / телефоном" value="${CLIENT_FILTER.search}">
+      <select id="client-status">${statusOptions}</select>
+      <select id="client-segment">${segmentOptions}</select>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;cursor:pointer">
+        <input type="checkbox" id="client-wholesale" ${CLIENT_FILTER.wholesale_only ? 'checked' : ''}>
+        Тільки опт
+      </label>
+      <div class="spacer"></div>
+      <span style="align-self:center;color:var(--muted);font-size:11px">Показано: <span id="client-count">0</span></span>
+    </div>
+
+    <div class="tbl-scroll">
+      <table id="clients-table">
+        <thead><tr>
+          <th class="sortable" data-col="full_name" onclick="setClientSort('full_name')">Ім'я <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="phone" onclick="setClientSort('phone')">Телефон <span class="arrow">▼</span></th>
+          <th>Статус</th>
+          <th>Сегмент</th>
+          <th class="sortable" data-col="recency_days" onclick="setClientSort('recency_days')" style="text-align:right" title="Днів з останнього замовлення">R <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="frequency" onclick="setClientSort('frequency')" style="text-align:right" title="Кількість замовлень">F <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="monetary" onclick="setClientSort('monetary')" style="text-align:right" title="Сума усіх замовлень">M (₴) <span class="arrow">▼</span></th>
+          <th style="text-align:center" title="R-F-M квінтилі">RFM</th>
+          <th class="sortable" data-col="last_order_date" onclick="setClientSort('last_order_date')">Останнє замовлення <span class="arrow">▼</span></th>
+        </tr></thead>
+        <tbody id="clients-tbody"></tbody>
+      </table>
+    </div>
+  `;
+
+  document.getElementById('client-search').addEventListener('input', e => {
+    CLIENT_FILTER.search = e.target.value;
+    renderClientsTable();
+  });
+  document.getElementById('client-status').addEventListener('change', async e => {
+    CLIENT_FILTER.status_id = e.target.value;
+    if (await loadClients({ silent: true })) renderClients();
+  });
+  document.getElementById('client-segment').addEventListener('change', async e => {
+    CLIENT_FILTER.segment = e.target.value;
+    if (await loadClients({ silent: true })) renderClients();
+  });
+  document.getElementById('client-wholesale').addEventListener('change', async e => {
+    CLIENT_FILTER.wholesale_only = e.target.checked;
+    if (await loadClients({ silent: true })) renderClients();
+  });
+
+  renderClientsTable();
+}
+
+function renderClientsTable() {
+  if (!CLIENTS_DATA) return;
+  const rows = sortClients(applyClientSearch(CLIENTS_DATA));
+  const tbody = document.getElementById('clients-tbody');
+  if (!tbody) return;
+  document.getElementById('client-count').textContent = rows.length;
+  document.querySelectorAll('#clients-table thead th.sortable').forEach(th => {
+    th.classList.remove('asc', 'desc');
+    if (th.dataset.col === CLIENT_SORT.col) th.classList.add(CLIENT_SORT.dir);
+  });
+  const esc = s => (s || '').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  tbody.innerHTML = rows.length === 0
+    ? '<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
+    : rows.map(r => {
+      const statusBadge = r.status_name
+        ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;background:${r.status_color || '#666'}22;color:${r.status_color || '#999'}">${esc(r.status_name)}</span>`
+        : '<span class="muted">—</span>';
+      const segBadge = r.segment
+        ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;background:${SEGMENT_COLOR[r.segment]}22;color:${SEGMENT_COLOR[r.segment]}">${SEGMENT_LABEL[r.segment]}</span>`
+        : '<span class="muted">—</span>';
+      return `
+        <tr onclick="openClientModal(${r.buyer_id})">
+          <td>${esc(r.full_name) || '<span class="muted">— без імені —</span>'}${r.is_wholesale ? ' <span style="color:var(--gold);font-size:10px">★опт</span>' : ''}</td>
+          <td class="muted">${esc(r.phone) || '—'}</td>
+          <td>${statusBadge}</td>
+          <td>${segBadge}</td>
+          <td class="num">${r.recency_days != null ? r.recency_days + 'д' : '—'}</td>
+          <td class="num">${r.frequency || 0}</td>
+          <td class="num">${fmtMoney(r.monetary || 0)}</td>
+          <td class="num muted" style="text-align:center;font-family:'JetBrains Mono',monospace">${r.rfm_code || '—'}</td>
+          <td class="muted">${r.last_order_date || '—'}</td>
+        </tr>`;
+    }).join('');
+}
+
+// ── Client modal ────────────────────────────
+async function openClientModal(buyerId) {
+  const backdrop = document.getElementById('client-modal');
+  backdrop.classList.add('open');
+  document.getElementById('client-modal-title').textContent = 'Завантажуємо…';
+  document.getElementById('client-modal-sub').textContent = '';
+  document.getElementById('client-modal-stats').innerHTML = '';
+  document.getElementById('client-modal-body').innerHTML = '<div class="chart-modal-empty">Завантажуємо дані…</div>';
+  try {
+    const r = await fetch(apiUrl('/api/client', 'buyer_id=' + encodeURIComponent(buyerId)));
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || 'HTTP ' + r.status);
+    }
+    CURRENT_CLIENT = await r.json();
+    renderClientModal();
+  } catch (e) {
+    document.getElementById('client-modal-body').innerHTML = '<div class="chart-modal-empty">⚠ ' + (e.message || 'Помилка') + '</div>';
+  }
+}
+
+function closeClientModal() {
+  document.getElementById('client-modal').classList.remove('open');
+  CURRENT_CLIENT = null;
+}
+
+function renderClientModal() {
+  if (!CURRENT_CLIENT) return;
+  const { buyer, rfm, orders, notes } = CURRENT_CLIENT;
+  const esc = s => (s == null ? '' : String(s)).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+
+  document.getElementById('client-modal-title').textContent = (buyer.full_name || '— без імені —') + (buyer.is_wholesale ? '  ★опт' : '');
+  document.getElementById('client-modal-sub').textContent =
+    (buyer.phone ? '📞 ' + buyer.phone : '') + (buyer.email ? '  ·  ' + buyer.email : '');
+
+  const r_score = rfm ? rfm.r_score : null;
+  const f_score = rfm ? rfm.f_score : null;
+  const m_score = rfm ? rfm.m_score : null;
+  const stats = [
+    { label: 'R · днів', val: rfm ? (rfm.recency_days + 'д') : '—' },
+    { label: 'F · замовлень', val: rfm ? rfm.frequency : 0 },
+    { label: 'M · сума', val: rfm ? fmtMoney(parseFloat(rfm.monetary) || 0) : '—' },
+    { label: 'R-score', val: r_score || '—' },
+    { label: 'F-score', val: f_score || '—' },
+    { label: 'M-score', val: m_score || '—' },
+  ];
+  document.getElementById('client-modal-stats').innerHTML = stats.map(s =>
+    `<div><div class="chart-modal-stat-label">${s.label}</div><div class="chart-modal-stat-val">${s.val}</div></div>`
+  ).join('');
+
+  const statusOpts = ['<option value="">— без статусу —</option>']
+    .concat(CLIENT_STATUSES.map(s => `<option value="${s.id}" ${buyer.status_id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`))
+    .join('');
+
+  const notesHtml = (notes || []).length === 0
+    ? '<div class="muted" style="padding:12px 0">Немає записів. Додайте першу нижче.</div>'
+    : (notes.map(n => {
+        const date = new Date(n.created_at).toLocaleString('uk-UA');
+        return `
+          <div style="border-left:2px solid var(--gold);padding:8px 12px;margin-bottom:8px;background:var(--s2);border-radius:0 8px 8px 0">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">
+              <div style="font-size:11px;color:var(--muted)">${date}${n.outcome ? ' · <b style="color:var(--gold)">' + esc(n.outcome) + '</b>' : ''}</div>
+              <button onclick="deleteNote(${n.id})" style="background:transparent;border:0;color:var(--muted);cursor:pointer;font-size:14px" title="Видалити">✕</button>
+            </div>
+            <div style="white-space:pre-wrap;font-size:12px;color:var(--text)">${esc(n.body)}</div>
+          </div>`;
+      }).join(''));
+
+  const ordersHtml = (orders || []).length === 0
+    ? '<div class="muted">Немає замовлень.</div>'
+    : `<table style="width:100%;font-size:11px">
+        <thead><tr style="color:var(--muted);text-align:left">
+          <th style="padding:4px">Дата</th><th style="padding:4px">№</th><th style="padding:4px">Статус</th>
+          <th style="padding:4px;text-align:right">Шт</th><th style="padding:4px;text-align:right">Сума</th>
+        </tr></thead>
+        <tbody>${orders.map(o => `
+          <tr>
+            <td style="padding:4px">${(o.ordered_at || '').slice(0, 10)}</td>
+            <td style="padding:4px" class="muted">#${o.order_id}</td>
+            <td style="padding:4px" class="muted">${esc(o.order_status) || '—'}</td>
+            <td style="padding:4px;text-align:right">${fmtNum(o.qty)}</td>
+            <td style="padding:4px;text-align:right">${fmtMoney(o.revenue)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+
+  document.getElementById('client-modal-body').innerHTML = `
+    <div style="display:grid;grid-template-columns: 1fr 1fr;gap:24px;align-items:start">
+      <div>
+        <div style="margin-bottom:12px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Статус клієнта</label>
+          <div style="display:flex;gap:6px">
+            <select id="client-status-select" style="flex:1">${statusOpts}</select>
+            <button onclick="addClientStatusPrompt()" title="Додати новий статус" style="padding:4px 10px">+</button>
+          </div>
+        </div>
+        <div style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px;color:var(--text);font-size:12px;cursor:pointer">
+            <input type="checkbox" id="client-wholesale-toggle" ${buyer.is_wholesale ? 'checked' : ''}>
+            Оптовий клієнт
+          </label>
+        </div>
+        <hr style="border:0;border-top:1px solid var(--border);margin:16px 0">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Нова заметка</div>
+        <select id="note-outcome" style="width:100%;margin-bottom:6px">
+          <option value="">— результат —</option>
+          <option>передзвонити</option>
+          <option>замовив</option>
+          <option>думає</option>
+          <option>не відповідає</option>
+          <option>відмова</option>
+          <option>не цікаво зараз</option>
+        </select>
+        <textarea id="note-body" rows="4" placeholder="Що обговорили, домовленості, наступні кроки…" style="width:100%;background:var(--s2);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:8px;font-family:inherit;font-size:12px;resize:vertical"></textarea>
+        <button onclick="submitNote()" style="margin-top:6px;width:100%;padding:8px;background:var(--gold);color:#1a1108;border:0;border-radius:8px;font-weight:600;cursor:pointer">Зберегти заметку</button>
+      </div>
+      <div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Історія дзвінків</div>
+        <div style="max-height:280px;overflow-y:auto;margin-bottom:16px">${notesHtml}</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Останні замовлення</div>
+        <div style="max-height:240px;overflow-y:auto">${ordersHtml}</div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('client-status-select').addEventListener('change', e => {
+    setClientStatus(buyer.buyer_id, e.target.value || null);
+  });
+  document.getElementById('client-wholesale-toggle').addEventListener('change', e => {
+    patchClient(buyer.buyer_id, { is_wholesale: e.target.checked });
+  });
+}
+
+async function setClientStatus(buyerId, statusId) {
+  await patchClient(buyerId, { status_id: statusId ? parseInt(statusId) : null });
+  if (CLIENTS_DATA) {
+    const row = CLIENTS_DATA.find(r => r.buyer_id === buyerId);
+    if (row) {
+      const st = CLIENT_STATUSES.find(s => String(s.id) === String(statusId));
+      row.status_id = st ? st.id : null;
+      row.status_name = st ? st.name : null;
+      row.status_color = st ? st.color : null;
+      renderClientsTable();
+    }
+  }
+}
+
+async function patchClient(buyerId, patch) {
+  try {
+    const r = await fetch(apiUrl('/api/client'), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ buyer_id: buyerId }, patch)),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert('Помилка: ' + (e.error || r.status));
+    }
+  } catch (e) {
+    alert('Помилка: ' + (e.message || e));
+  }
+}
+
+async function submitNote() {
+  if (!CURRENT_CLIENT) return;
+  const body = document.getElementById('note-body').value.trim();
+  const outcome = document.getElementById('note-outcome').value;
+  if (!body) { alert('Введіть текст заметки'); return; }
+  try {
+    const r = await fetch(apiUrl('/api/client-note'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ buyer_id: CURRENT_CLIENT.buyer.buyer_id, outcome, body }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || r.status);
+    }
+    const resp = await r.json();
+    CURRENT_CLIENT.notes.unshift(resp.note);
+    renderClientModal();
+  } catch (e) {
+    alert('Помилка: ' + (e.message || e));
+  }
+}
+
+async function deleteNote(noteId) {
+  if (!confirm('Видалити заметку?')) return;
+  try {
+    const r = await fetch(apiUrl('/api/client-note', 'id=' + noteId), { method: 'DELETE' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (CURRENT_CLIENT) {
+      CURRENT_CLIENT.notes = CURRENT_CLIENT.notes.filter(n => n.id !== noteId);
+      renderClientModal();
+    }
+  } catch (e) {
+    alert('Помилка: ' + (e.message || e));
+  }
+}
+
+async function addClientStatusPrompt() {
+  const name = prompt('Назва нового статусу:');
+  if (!name) return;
+  try {
+    const r = await fetch(apiUrl('/api/client-statuses'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || r.status);
+    }
+    const resp = await r.json();
+    CLIENT_STATUSES.push(resp.status);
+    CLIENT_STATUSES.sort((a, b) => a.sort_order - b.sort_order);
+    if (CURRENT_CLIENT) renderClientModal();
+  } catch (e) {
+    alert('Помилка: ' + (e.message || e));
+  }
 }
 
 // ── Init ─────────────────────────────

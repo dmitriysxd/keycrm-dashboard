@@ -242,6 +242,113 @@ function pickBuyerId(order) {
   return null;
 }
 
+function pickBuyerObject(order) {
+  if (!order || typeof order !== "object") return null;
+  return order.buyer || order.client || order.customer || null;
+}
+
+function pickPhone(b) {
+  if (!b) return null;
+  const candidates = [b.phone, b.phone_number, b.mobile, b.tel];
+  for (const v of candidates) {
+    if (v != null && String(v).trim() !== "") return String(v).trim();
+  }
+  if (Array.isArray(b.phones) && b.phones.length) {
+    const f = b.phones[0];
+    if (typeof f === "string") return f;
+    if (f && typeof f === "object") return f.value || f.phone || f.number || null;
+  }
+  return null;
+}
+
+function pickEmail(b) {
+  if (!b) return null;
+  if (b.email && String(b.email).trim() !== "") return String(b.email).trim();
+  if (Array.isArray(b.emails) && b.emails.length) {
+    const f = b.emails[0];
+    if (typeof f === "string") return f;
+    if (f && typeof f === "object") return f.value || f.email || null;
+  }
+  return null;
+}
+
+function pickFullName(b) {
+  if (!b) return null;
+  if (b.full_name) return String(b.full_name).trim();
+  if (b.name) return String(b.name).trim();
+  const fn = b.first_name || b.firstName || "";
+  const ln = b.last_name || b.lastName || "";
+  const composed = (fn + " " + ln).trim();
+  return composed || null;
+}
+
+// KeyCRM may return custom_fields as either a flat object { "опт": true } or
+// as an array of {name, value} pairs. We accept both shapes. The flag is
+// "wholesale" if the field name contains "опт" (case-insensitive) and the
+// value is truthy: true / 1 / "так" / "да" / non-empty string other than 0/false/no.
+function parseWholesaleFlag(buyer) {
+  if (!buyer) return false;
+  const cf = buyer.custom_fields || buyer.customFields || buyer.fields;
+  if (!cf) return false;
+  const entries = Array.isArray(cf)
+    ? cf.map((x) => [String(x.name || x.label || x.key || "").toLowerCase(), x.value])
+    : Object.entries(cf).map(([k, v]) => [String(k).toLowerCase(), v]);
+  for (const [name, value] of entries) {
+    if (!name.includes("опт")) continue;
+    if (value === true || value === 1) return true;
+    if (value == null) return false;
+    const s = String(value).trim().toLowerCase();
+    if (s === "" || s === "0" || s === "false" || s === "no" || s === "ні") return false;
+    return true;
+  }
+  return false;
+}
+
+async function upsertBuyersFromOrders(supabase, orders) {
+  const byId = new Map();
+  for (const order of orders) {
+    const id = pickBuyerId(order);
+    if (!id) continue;
+    const b = pickBuyerObject(order) || {};
+    const orderedAt = order.ordered_at || order.created_at;
+    const row = {
+      buyer_id: id,
+      full_name: pickFullName(b),
+      phone: pickPhone(b),
+      email: pickEmail(b),
+      is_wholesale: parseWholesaleFlag(b),
+      custom_fields_raw: b.custom_fields || b.customFields || b.fields || null,
+      first_seen_at: orderedAt || null,
+      last_synced_at: new Date().toISOString(),
+    };
+    const prev = byId.get(id);
+    if (!prev) byId.set(id, row);
+    else {
+      // Накапливаем наибольший набор данных + самую раннюю first_seen_at в батче.
+      prev.full_name = prev.full_name || row.full_name;
+      prev.phone = prev.phone || row.phone;
+      prev.email = prev.email || row.email;
+      prev.is_wholesale = prev.is_wholesale || row.is_wholesale;
+      prev.custom_fields_raw = prev.custom_fields_raw || row.custom_fields_raw;
+      if (row.first_seen_at && (!prev.first_seen_at || row.first_seen_at < prev.first_seen_at)) {
+        prev.first_seen_at = row.first_seen_at;
+      }
+    }
+  }
+  const rows = Array.from(byId.values());
+  if (!rows.length) return 0;
+  // onConflict=buyer_id: новые покупатели вставляются, существующие обновляются.
+  // first_seen_at не затираем, если он уже стоит и в строке более поздняя дата —
+  // делаем это отдельным UPDATE … COALESCE через RPC было бы дороже; здесь
+  // upsert принимает текущее значение first_seen_at из заказа. Для абсолютной
+  // точности backfill-buyers.js пересчитает min(ordered_at) одним SQL.
+  const { error } = await supabase
+    .from("buyers")
+    .upsert(rows, { onConflict: "buyer_id" });
+  if (error) throw new Error("buyers upsert: " + error.message);
+  return rows.length;
+}
+
 async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate, toDate) {
   let page = 1;
   let total = 0;
@@ -293,6 +400,17 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
         .upsert(lines, { onConflict: "order_id,line_idx" });
       if (error) throw new Error("sales upsert: " + error.message);
       upserted += lines.length;
+    }
+
+    // Покупатели — отдельный UPSERT, чтобы карточка клиента подтягивалась
+    // ежедневно из новых/обновлённых заказов (имя, телефон, флаг "опт").
+    try {
+      await upsertBuyersFromOrders(supabase, rows);
+    } catch (e) {
+      // Не валим инжест из-за проблем со схемой клиентов — таблица buyers
+      // может ещё не существовать (миграция не накатана). Логируем и едем
+      // дальше.
+      if (ctx) ctx.buyersUpsertError = (e && e.message) || String(e);
     }
 
     if (rows.length < 50) break;
