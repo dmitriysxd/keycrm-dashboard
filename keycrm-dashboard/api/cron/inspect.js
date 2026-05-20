@@ -285,6 +285,25 @@ async function inspectHealth(supabase) {
     .order("last_synced_at", { ascending: false })
     .limit(1);
 
+  // 7. pg_cron статус — чи активні нічні refresh-задачі і коли остання
+  //    спроба. Якщо pg_cron не доступний (extension не включена), функція
+  //    повертає порожній масив (без помилки).
+  const { data: pgCronJobs } = await supabase.rpc("pg_cron_status");
+
+  // 8. Свіжість sku_metrics — порівнюємо MAX(last_sold_at) в matview з
+  //    MAX(ordered_at) в сирому sales. Якщо matview значно відстає,
+  //    значить refresh не відпрацював.
+  const { data: latestSale } = await supabase
+    .from("sales").select("ordered_at").order("ordered_at", { ascending: false }).limit(1);
+  const { data: latestMetricSold } = await supabase
+    .from("sku_metrics").select("last_sold_at").not("last_sold_at", "is", null)
+    .order("last_sold_at", { ascending: false }).limit(1);
+  const lagSales = latestSale && latestSale[0] ? new Date(latestSale[0].ordered_at).getTime() : null;
+  const lagMatview = latestMetricSold && latestMetricSold[0] ? new Date(latestMetricSold[0].last_sold_at).getTime() : null;
+  const matviewLagHours = (lagSales && lagMatview)
+    ? Math.round((lagSales - lagMatview) / 3600000)
+    : null;
+
   // Аналіз і висновки.
   const hints = [];
   if (!lastAuto) {
@@ -296,6 +315,19 @@ async function inspectHealth(supabase) {
   }
   if (autoRunsWeekCount != null && autoRunsWeekCount < 5) {
     hints.push(`⚠ За останній тиждень лише ${autoRunsWeekCount} auto-runs (очікувано ~7, по одному на день). Cron може пропускати дні.`);
+  }
+  if (matviewLagHours != null && matviewLagHours > 30) {
+    hints.push(`⚠ sku_metrics відстає від sales на ${matviewLagHours} год. Refresh не відпрацював. Запусти REFRESH MATERIALIZED VIEW sku_metrics; вручну.`);
+  }
+  if (pgCronJobs && pgCronJobs.length === 0) {
+    hints.push("⚠ pg_cron jobs не знайдено. Перевір що міграції 017 (sku_metrics refresh) і 018 (buyer_rfm refresh) накатані.");
+  } else if (pgCronJobs) {
+    for (const job of pgCronJobs) {
+      if (!job.active) hints.push(`⚠ pg_cron job '${job.jobname}' inactive — refresh не запускається.`);
+      else if (job.last_status && job.last_status !== "succeeded") {
+        hints.push(`⚠ pg_cron job '${job.jobname}' last run: ${job.last_status}`);
+      }
+    }
   }
   if (state && state.status === "running") {
     const stateAge = state.last_chunk_at ? (Date.now() - new Date(state.last_chunk_at).getTime()) / 3600000 : null;
@@ -320,6 +352,10 @@ async function inspectHealth(supabase) {
       not_yet_restocked: (newSkus || []).filter(s => !s.last_restock_at).length,
     },
     sku_metrics_row_count: metricsTotal || 0,
+    sku_metrics_lag_from_sales_hours: matviewLagHours,
+    last_sale_in_sales: latestSale && latestSale[0] ? latestSale[0].ordered_at : null,
+    last_sale_in_sku_metrics: latestMetricSold && latestMetricSold[0] ? latestMetricSold[0].last_sold_at : null,
+    pg_cron_jobs: pgCronJobs || [],
     last_buyer_sync: lastBuyer && lastBuyer[0] ? lastBuyer[0].last_synced_at : null,
     recent_runs_summary: (runs || []).slice(0, 10).map(r => ({
       kind: r.kind, status: r.status, started_at: r.started_at,
