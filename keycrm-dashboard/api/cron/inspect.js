@@ -214,6 +214,105 @@ async function inspectSku(apiKey, supabase, sku, offerId) {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// target=health: загальний health-check автоматичного оновлення
+// ────────────────────────────────────────────────────────────────────
+async function inspectHealth(supabase) {
+  const now = new Date();
+  const todayISO = now.toISOString().slice(0, 10);
+
+  // 1. Останні ingest_runs (всі типи).
+  const cutoffWeek = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+  const { data: runs } = await supabase
+    .from("ingest_runs")
+    .select("id, kind, status, started_at, finished_at, products_seen, orders_seen, sales_upserted, error_message, meta")
+    .gte("started_at", cutoffWeek)
+    .order("started_at", { ascending: false })
+    .limit(50);
+
+  const autoRuns = (runs || []).filter(r => r.kind === "auto");
+  const lastAuto = autoRuns[0] || null;
+
+  // 2. ingest_state.
+  const { data: state } = await supabase
+    .from("ingest_state").select("*").eq("id", 1).maybeSingle();
+
+  // 3. Свіжість snapshots — за останні 7 днів, по днях.
+  const { data: snapStats } = await supabase
+    .from("stock_snapshots")
+    .select("snapshot_date")
+    .gte("snapshot_date", cutoffWeek.slice(0, 10))
+    .order("snapshot_date", { ascending: false });
+  const snapsByDay = {};
+  for (const s of snapStats || []) {
+    snapsByDay[s.snapshot_date] = (snapsByDay[s.snapshot_date] || 0) + 1;
+  }
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+    days.push({ date: d, snapshots_count: snapsByDay[d] || 0 });
+  }
+  const missingSnapshotDays = days.filter(d => d.snapshots_count === 0).map(d => d.date);
+
+  // 4. Скільки нових товарів за останні 7 днів і скільки з оприбуткуванням.
+  const { data: newSkus, count: newSkusCount } = await supabase
+    .from("skus")
+    .select("offer_id, sku, name, keycrm_created_at, first_stock_at, last_restock_at", { count: "exact" })
+    .gte("keycrm_created_at", cutoffWeek)
+    .limit(20);
+
+  // 5. Скільки рядків у sku_metrics і коли остання активність.
+  const { count: metricsTotal } = await supabase
+    .from("sku_metrics")
+    .select("offer_id", { count: "exact", head: true });
+
+  // 6. Buyer_rfm свіжість — коли остання last_synced_at в buyers.
+  const { data: lastBuyer } = await supabase
+    .from("buyers")
+    .select("buyer_id, last_synced_at")
+    .order("last_synced_at", { ascending: false })
+    .limit(1);
+
+  // Аналіз і висновки.
+  const hints = [];
+  if (!lastAuto) {
+    hints.push("⚠ За останній тиждень не було жодного 'auto' інгесту. Перевір Vercel cron schedule.");
+  } else {
+    const lastAutoAge = (Date.now() - new Date(lastAuto.started_at).getTime()) / 3600000;
+    if (lastAutoAge > 30) hints.push(`⚠ Останній auto-ingest був ${Math.round(lastAutoAge)} год тому — мав би пройти сьогодні в 03:00 UTC.`);
+    if (lastAuto.status !== "ok") hints.push(`⚠ Останній auto-ingest завершився зі статусом '${lastAuto.status}': ${lastAuto.error_message || '—'}`);
+  }
+  if (state && state.status === "running") {
+    const stateAge = state.last_chunk_at ? (Date.now() - new Date(state.last_chunk_at).getTime()) / 3600000 : null;
+    if (stateAge && stateAge > 2) hints.push(`⚠ ingest_state застряг у 'running' вже ${Math.round(stateAge)} год — щось зависло на step '${state.current_step}'.`);
+  }
+  if (missingSnapshotDays.length > 1) {
+    hints.push(`⚠ Пропущені дні snapshots: ${missingSnapshotDays.join(", ")} — за ці дні немає даних про залишки.`);
+  }
+  if (hints.length === 0) hints.push("✓ Все працює нормально.");
+
+  return {
+    target: "health",
+    today_utc: todayISO,
+    last_auto_ingest: lastAuto,
+    ingest_state: state,
+    snapshots_per_day_last_7: days,
+    missing_snapshot_days: missingSnapshotDays,
+    new_skus_last_7d: {
+      count: newSkusCount || 0,
+      sample: (newSkus || []).slice(0, 10),
+      not_yet_restocked: (newSkus || []).filter(s => !s.last_restock_at).length,
+    },
+    sku_metrics_row_count: metricsTotal || 0,
+    last_buyer_sync: lastBuyer && lastBuyer[0] ? lastBuyer[0].last_synced_at : null,
+    recent_runs_summary: (runs || []).slice(0, 10).map(r => ({
+      kind: r.kind, status: r.status, started_at: r.started_at,
+      products_seen: r.products_seen, orders_seen: r.orders_seen, error: r.error_message,
+    })),
+    hints,
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────
 module.exports = async function handler(req, res) {
   const auth = checkCronAuth(req);
   if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
@@ -225,6 +324,11 @@ module.exports = async function handler(req, res) {
   const target = (req.query && req.query.target) || "keycrm";
 
   try {
+    if (target === "health") {
+      const result = await inspectHealth(supabase);
+      return res.status(200).json(result);
+    }
+
     if (target === "sku") {
       const sku = req.query && req.query.sku ? String(req.query.sku).trim() : null;
       const offerId = req.query && req.query.offer_id ? parseInt(req.query.offer_id) : null;

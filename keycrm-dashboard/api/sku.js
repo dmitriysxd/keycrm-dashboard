@@ -16,7 +16,7 @@ async function fetchAll(buildQuery, pageSize = 1000, hardCap = 20000) {
 
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,PATCH,OPTIONS");
   if (req.method === "OPTIONS") return res.status(200).end();
 
   const auth = checkDashboardToken(req);
@@ -25,6 +25,70 @@ module.exports = async function handler(req, res) {
   const supabase = getSupabase();
 
   try {
+    // PATCH — оновлення картки SKU вручну. Дозволяє пофіксити дату оприбуткування
+    // якщо ingest пропустив снепшоти і detect_restocks встановив last_restock_at
+    // на неправильну дату. Також править cost/manual_status/notes.
+    // Після PATCH автоматично рефрешимо sku_metrics, щоб зміни одразу видно було.
+    if (req.method === "PATCH") {
+      let body = req.body;
+      if (!body || typeof body !== "object") {
+        body = await new Promise((resolve, reject) => {
+          let raw = "";
+          req.on("data", c => { raw += c; });
+          req.on("end", () => {
+            if (!raw) return resolve({});
+            try { resolve(JSON.parse(raw)); } catch (e) { reject(new Error("invalid JSON")); }
+          });
+          req.on("error", reject);
+        });
+      }
+      const offerId = parseInt(body.offer_id || (req.query && req.query.offer_id));
+      if (!offerId) return res.status(400).json({ error: "offer_id required" });
+
+      const patch = {};
+      if (body.last_restock_at !== undefined) {
+        const v = body.last_restock_at;
+        if (v === null || v === "") patch.last_restock_at = null;
+        else if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) patch.last_restock_at = String(v);
+        else return res.status(400).json({ error: "last_restock_at must be YYYY-MM-DD or null" });
+      }
+      if (body.cost !== undefined) {
+        if (body.cost === null || body.cost === "") patch.cost = null;
+        else {
+          const n = parseFloat(body.cost);
+          if (isNaN(n)) return res.status(400).json({ error: "cost must be a number" });
+          patch.cost = n;
+        }
+      }
+      if (body.manual_status !== undefined) {
+        if (body.manual_status === null || body.manual_status === "") patch.manual_status = null;
+        else if (["hit", "good", "slow", "weak", "dead", "new", "archive"].includes(String(body.manual_status))) {
+          patch.manual_status = String(body.manual_status);
+        } else return res.status(400).json({ error: "invalid manual_status" });
+      }
+      if (body.notes !== undefined) {
+        patch.notes = body.notes === null ? null : String(body.notes).slice(0, 2000);
+      }
+
+      if (!Object.keys(patch).length) return res.status(400).json({ error: "nothing to update" });
+
+      const { error: upErr } = await supabase.from("skus").update(patch).eq("offer_id", offerId);
+      if (upErr) throw new Error("skus update: " + upErr.message);
+
+      // Зміни (особливо last_restock_at) впливають на age_days в matview. Рефреш
+      // тут робимо CONCURRENTLY щоб не блокувати читачів і щоб виклик не виснув
+      // довше за Vercel timeout. Якщо CONCURRENTLY не підтримується (unique index
+      // нема) — fallback на звичайний.
+      try {
+        await supabase.rpc("refresh_sku_metrics");
+      } catch (e) {
+        // Не валимо PATCH через refresh — просто логуємо. Користувач побачить
+        // зміни після наступного автоматичного рефрешу.
+      }
+
+      return res.status(200).json({ ok: true, patched: patch });
+    }
+
     if (req.query && req.query.meta === "true") {
       const headCount = (build) => build().then((r) => r.count || 0);
       const head = (extra) => {

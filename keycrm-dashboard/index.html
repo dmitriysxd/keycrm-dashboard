@@ -622,6 +622,7 @@
       <button class="chart-modal-close" onclick="closeChartModal()" aria-label="Закрити">✕</button>
     </div>
     <div class="chart-modal-stats" id="chart-modal-stats"></div>
+    <div id="chart-modal-edit" style="padding: 0 24px 12px"></div>
     <div class="chart-modal-body" id="chart-modal-body">
       <canvas id="chart-modal-canvas"></canvas>
     </div>
@@ -2118,6 +2119,46 @@ function closeChartModal() {
   chartModalData = null;
 }
 
+async function saveSkuEdits(offerId) {
+  const msg = document.getElementById('edit-status-msg');
+  if (msg) { msg.textContent = 'Зберігаємо…'; msg.style.color = 'var(--muted)'; }
+  const restock = document.getElementById('edit-restock').value || null;
+  const costRaw = document.getElementById('edit-cost').value;
+  const cost = costRaw === '' ? null : parseFloat(costRaw);
+  const manualStatus = document.getElementById('edit-status').value || null;
+  const notes = document.getElementById('edit-notes').value || null;
+  const body = {
+    offer_id: offerId,
+    last_restock_at: restock,
+    cost,
+    manual_status: manualStatus,
+    notes,
+  };
+  try {
+    const r = await fetch(apiUrl('/api/sku'), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || 'HTTP ' + r.status);
+    }
+    if (msg) { msg.textContent = '✓ Збережено. Оновлюю графік…'; msg.style.color = 'var(--green)'; }
+    // Перезавантажуємо чарт щоб побачити нові age_days і т.д.
+    const cr = await fetch(apiUrl('/api/sku-chart', 'offer_id=' + encodeURIComponent(offerId)));
+    if (cr.ok) {
+      chartModalData = await cr.json();
+      renderChartModalContent();
+    }
+    if (msg) { msg.textContent = '✓ Збережено'; setTimeout(() => { if (msg) msg.textContent = ''; }, 3000); }
+    // Інвалідуємо кеш SKU-сторінки щоб табличка теж оновилась при наступному рендері.
+    SKU_DATA = null;
+  } catch (e) {
+    if (msg) { msg.textContent = '⚠ ' + (e.message || e); msg.style.color = 'var(--red)'; }
+  }
+}
+
 function chartModalSetPeriod(days) {
   chartModalPeriod = days;
   document.querySelectorAll('.chart-modal-period button').forEach(b => b.classList.toggle('active', b.dataset.days === days));
@@ -2209,6 +2250,56 @@ function renderChartModalContent() {
       <div class="chart-modal-stat-label">${s.label}</div>
       <div class="chart-modal-stat-val">${s.val}</div>
     </div>`).join('');
+
+  // Edit controls — щоб руками поправити last_restock_at, cost, manual_status,
+  // notes. Корисно коли ingest пропустив снепшоти і age_days показує не ту дату.
+  const editPanel = document.getElementById('chart-modal-edit');
+  if (editPanel) {
+    const restockIso = sku.last_restock_at
+      ? String(sku.last_restock_at).slice(0, 10)
+      : (sku.first_stock_at ? String(sku.first_stock_at).slice(0, 10) : '');
+    const statusOptions = ['', 'hit', 'good', 'slow', 'weak', 'dead', 'new', 'archive']
+      .map(s => `<option value="${s}" ${(sku.manual_status || '') === s ? 'selected' : ''}>${s ? (STATUS_LABEL[s] || s) : '— авто —'}</option>`).join('');
+    editPanel.innerHTML = `
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0">
+        <summary style="cursor:pointer;padding:8px 12px;font-size:11px;color:var(--muted);user-select:none">
+          ⚙ Редагувати картку SKU (last_restock_at, cost, статус, notes)
+        </summary>
+        <div style="padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted)">
+            Дата оприбуткування (last_restock_at)
+            <input type="date" id="edit-restock" value="${restockIso}"
+                   style="background:var(--s2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px;font-family:inherit;font-size:12px">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted)">
+            Cost (закупка, ₴)
+            <input type="number" step="0.01" id="edit-cost" value="${sku.cost != null ? sku.cost : ''}"
+                   style="background:var(--s2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px;font-family:inherit;font-size:12px">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted)">
+            Manual статус (перебиває авто-логіку)
+            <select id="edit-status" style="background:var(--s2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px;font-family:inherit;font-size:12px">${statusOptions}</select>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted);grid-column:1 / -1">
+            Нотатки
+            <textarea id="edit-notes" rows="2"
+                      style="background:var(--s2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px;font-family:inherit;font-size:12px;resize:vertical">${(sku.notes || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</textarea>
+          </label>
+          <div style="grid-column:1 / -1;display:flex;gap:8px;align-items:center">
+            <button onclick="saveSkuEdits(${sku.offer_id})"
+                    style="padding:8px 16px;background:var(--gold);color:#1a1108;border:0;border-radius:6px;font-weight:600;cursor:pointer">
+              Зберегти
+            </button>
+            <span id="edit-status-msg" style="font-size:11px;color:var(--muted)"></span>
+          </div>
+          <div style="grid-column:1 / -1;font-size:10px;color:var(--muted);line-height:1.5">
+            Якщо ingest пропустив снепшоти, дата оприбуткування могла зафіксуватись не правильно.
+            Можеш вписати реальну дату приходу — age_days і початок циклу одразу перераховаються.
+          </div>
+        </div>
+      </details>
+    `;
+  }
 
   // Determine date range based on period
   const today = new Date().toISOString().slice(0, 10);
