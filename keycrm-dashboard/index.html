@@ -1853,7 +1853,7 @@ async function openClientsDocs() {
   if (!CLIENTS_DOCS_CACHE) {
     document.getElementById('clients-docs-body').innerHTML = '<div class="chart-modal-empty">Завантажуємо довідку…</div>';
     try {
-      const r = await fetch(apiUrl('/api/clients-docs', 'v=' + Math.floor(Date.now() / 60000)));
+      const r = await fetch(apiUrl('/api/docs', 'type=clients&v=' + Math.floor(Date.now() / 60000)));
       if (!r.ok) throw new Error('HTTP ' + r.status);
       CLIENTS_DOCS_CACHE = await r.json();
     } catch (e) {
@@ -1962,7 +1962,7 @@ async function openSkuDocs() {
   if (!SKU_DOCS_CACHE) {
     document.getElementById('sku-docs-body').innerHTML = '<div class="chart-modal-empty">Завантажуємо довідку…</div>';
     try {
-      const r = await fetch(apiUrl('/api/sku-docs', 'v=' + Math.floor(Date.now() / 60000)));
+      const r = await fetch(apiUrl('/api/docs', 'type=sku&v=' + Math.floor(Date.now() / 60000)));
       if (!r.ok) throw new Error('HTTP ' + r.status);
       SKU_DOCS_CACHE = await r.json();
     } catch (e) {
