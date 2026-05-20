@@ -236,20 +236,17 @@ async function inspectHealth(supabase) {
   const { data: state } = await supabase
     .from("ingest_state").select("*").eq("id", 1).maybeSingle();
 
-  // 3. Свіжість snapshots — за останні 7 днів, по днях.
-  const { data: snapStats } = await supabase
-    .from("stock_snapshots")
-    .select("snapshot_date")
-    .gte("snapshot_date", cutoffWeek.slice(0, 10))
-    .order("snapshot_date", { ascending: false });
-  const snapsByDay = {};
-  for (const s of snapStats || []) {
-    snapsByDay[s.snapshot_date] = (snapsByDay[s.snapshot_date] || 0) + 1;
-  }
+  // 3. Свіжість snapshots — по днях. Кожен день — окремий count, бо
+  //    Supabase JS без явного .limit() обмежує вибірку 1000 рядків,
+  //    а реально снепшотів за день стільки, скільки SKU (3000-4000).
   const days = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
-    days.push({ date: d, snapshots_count: snapsByDay[d] || 0 });
+    const { count } = await supabase
+      .from("stock_snapshots")
+      .select("offer_id", { count: "exact", head: true })
+      .eq("snapshot_date", d);
+    days.push({ date: d, snapshots_count: count || 0 });
   }
   const missingSnapshotDays = days.filter(d => d.snapshots_count === 0).map(d => d.date);
 
