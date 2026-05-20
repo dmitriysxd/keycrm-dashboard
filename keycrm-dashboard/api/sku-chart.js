@@ -43,7 +43,7 @@ module.exports = async function handler(req, res) {
     // SKU summary from materialized view (latest metrics)
     const skuRes = await supabase
       .from("sku_metrics")
-      .select("offer_id, product_id, sku, name, category_name, current_stock, sold_total, sold_30d, status, lifetime_velocity, buyers_count, age_days, last_cycle_start")
+      .select("offer_id, product_id, sku, name, category_name, current_stock, sold_total, sold_30d, status, lifetime_velocity, buyers_count, age_days, last_cycle_start, last_restock_at, cost, manual_status, notes, first_stock_at")
       .eq("offer_id", offerId)
       .maybeSingle();
     if (skuRes.error) throw new Error("sku_metrics: " + skuRes.error.message);
@@ -71,25 +71,48 @@ module.exports = async function handler(req, res) {
       .map(([date, qty]) => ({ date, qty }))
       .sort((a, b) => a.date.localeCompare(b.date));
 
-    // Daily stock snapshots for this offer
+    // Daily stock snapshots for this offer. total_quantity / reserved
+    // з'явились з міграції 028 — для старих снепшотів NULL, тоді fallback на quantity (net).
     const snapsRows = await fetchAll(
       () => supabase
         .from("stock_snapshots")
-        .select("snapshot_date, quantity")
+        .select("snapshot_date, quantity, total_quantity, reserved")
         .eq("offer_id", offerId)
         .order("snapshot_date", { ascending: true })
     );
     const stockByDay = snapsRows.map((s) => ({
       date: s.snapshot_date,
       qty: parseFloat(s.quantity) || 0,
+      total_qty: s.total_quantity != null ? parseFloat(s.total_quantity) : null,
+      reserved: s.reserved != null ? parseFloat(s.reserved) : null,
     }));
 
-    // Restock event dates (0 → >0 transitions in our snapshot history)
-    const restockDates = [];
-    let prevQty = null;
-    for (const s of stockByDay) {
-      if (prevQty === 0 && s.qty > 0) restockDates.push(s.date);
-      prevQty = s.qty;
+    // Restock events. Пріоритет:
+    //   1) Якщо last_restock_at в skus встановлено вручну через UI — це
+    //      єдиний джерело правди. Графік показує саме цю дату.
+    //   2) Якщо ні — детектимо переходи в total_quantity (не net), щоб
+    //      ігнорувати "приріст" від звільнення резерву при відмові клієнта.
+    //   3) Якщо total_quantity недоступне (старі снепшоти) — fallback на
+    //      переходи 0→positive в quantity (net).
+    let restockDates = [];
+    if (sku.last_restock_at) {
+      restockDates = [String(sku.last_restock_at).slice(0, 10)];
+    } else {
+      let prevTotal = null;
+      let prevQty = null;
+      for (const s of stockByDay) {
+        if (s.total_qty != null) {
+          // Реальний приход = total_quantity збільшилось значно (≥3, щоб
+          // ігнорувати випадкові коливання типу 1 одиничного руху).
+          if (prevTotal != null && s.total_qty - prevTotal >= 3) restockDates.push(s.date);
+          else if (prevTotal === 0 && s.total_qty > 0) restockDates.push(s.date);
+          prevTotal = s.total_qty;
+        } else {
+          // Fallback для історичних снепшотів: переход 0→positive в net.
+          if (prevQty === 0 && s.qty > 0) restockDates.push(s.date);
+        }
+        prevQty = s.qty;
+      }
     }
 
     return res.status(200).json({
@@ -97,6 +120,7 @@ module.exports = async function handler(req, res) {
       sales_by_day: salesByDay,
       stock_by_day: stockByDay,
       restock_dates: restockDates,
+      restock_source: sku.last_restock_at ? "manual_last_restock_at" : "auto_detected_from_snapshots",
     });
   } catch (err) {
     return res.status(500).json({ error: (err && err.message) || String(err) });

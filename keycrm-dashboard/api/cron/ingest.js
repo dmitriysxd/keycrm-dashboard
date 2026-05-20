@@ -109,6 +109,8 @@ async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
           snapshot_date: today,
           offer_id: p.id,
           quantity: safeQty,
+          total_quantity: totalQty,
+          reserved: reservedQty,
           price: safePrice,
         });
         if (safeQty > 0) positives.push(p.id);
@@ -193,6 +195,8 @@ async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
         snapshot_date: today,
         offer_id: offerId,
         quantity: isNaN(qty) ? 0 : qty,
+        total_quantity: isNaN(qtyTotal) ? 0 : qtyTotal,
+        reserved: isNaN(qtyReserved) ? 0 : qtyReserved,
         price: isNaN(price) ? null : price,
       });
     }
