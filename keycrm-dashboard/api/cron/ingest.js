@@ -311,20 +311,19 @@ async function upsertBuyersFromOrders(supabase, orders) {
     if (!id) continue;
     const b = pickBuyerObject(order) || {};
     const orderedAt = order.ordered_at || order.created_at;
+    const customFields = b.custom_fields || b.customFields || b.fields || null;
     const row = {
       buyer_id: id,
       full_name: pickFullName(b),
       phone: pickPhone(b),
       email: pickEmail(b),
       is_wholesale: parseWholesaleFlag(b),
-      custom_fields_raw: b.custom_fields || b.customFields || b.fields || null,
+      custom_fields_raw: customFields,
       first_seen_at: orderedAt || null,
-      last_synced_at: new Date().toISOString(),
     };
     const prev = byId.get(id);
     if (!prev) byId.set(id, row);
     else {
-      // Накапливаем наибольший набор данных + самую раннюю first_seen_at в батче.
       prev.full_name = prev.full_name || row.full_name;
       prev.phone = prev.phone || row.phone;
       prev.email = prev.email || row.email;
@@ -337,15 +336,23 @@ async function upsertBuyersFromOrders(supabase, orders) {
   }
   const rows = Array.from(byId.values());
   if (!rows.length) return 0;
-  // onConflict=buyer_id: новые покупатели вставляются, существующие обновляются.
-  // first_seen_at не затираем, если он уже стоит и в строке более поздняя дата —
-  // делаем это отдельным UPDATE … COALESCE через RPC было бы дороже; здесь
-  // upsert принимает текущее значение first_seen_at из заказа. Для абсолютной
-  // точности backfill-buyers.js пересчитает min(ordered_at) одним SQL.
-  const { error } = await supabase
-    .from("buyers")
-    .upsert(rows, { onConflict: "buyer_id" });
-  if (error) throw new Error("buyers upsert: " + error.message);
+
+  // Merge-UPSERT через RPC: COALESCE на стороні SQL не дає затерти існуючі
+  // повні дані пустим order.buyer. Без RPC простий upsert переписував
+  // is_wholesale=true → false щоразу, як клієнт робив новий заказ і
+  // KeyCRM повертав мінімальний buyer-об'єкт без custom_fields.
+  for (const r of rows) {
+    const { error } = await supabase.rpc("upsert_buyer_merge", {
+      _buyer_id: r.buyer_id,
+      _full_name: r.full_name,
+      _phone: r.phone,
+      _email: r.email,
+      _is_wholesale: r.is_wholesale,
+      _custom_fields_raw: r.custom_fields_raw,
+      _first_seen_at: r.first_seen_at,
+    });
+    if (error) throw new Error("upsert_buyer_merge: " + error.message);
+  }
   return rows.length;
 }
 
