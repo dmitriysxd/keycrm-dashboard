@@ -11,7 +11,7 @@
 
 const { getSupabase } = require("../lib/supabase");
 const { checkDashboardToken } = require("../lib/auth");
-const { enrichRfmRow, isNegativeOutcome } = require("../lib/clients");
+const { enrichRfmRow } = require("../lib/clients");
 
 async function fetchAll(buildQuery, pageSize = 1000, hardCap = 50000) {
   const out = [];
@@ -88,28 +88,13 @@ module.exports = async function handler(req, res) {
     const statusById = new Map();
     for (const s of statusRows) statusById.set(s.id, s);
 
-    // Свежие "негативные" заметки за последние 30 дней — сигнал в churn.
-    // Берём один запрос на всех (а не per-buyer), фильтруем в JS.
-    const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
-    const { data: recentNotes, error: notesErr } = await supabase
-      .from("buyer_notes")
-      .select("buyer_id, outcome, created_at")
-      .gte("created_at", cutoff);
-    if (notesErr) throw new Error("notes scan: " + notesErr.message);
-    const negNotesByBuyer = new Map();
-    for (const n of recentNotes || []) {
-      if (!isNegativeOutcome(n.outcome)) continue;
-      negNotesByBuyer.set(n.buyer_id, (negNotesByBuyer.get(n.buyer_id) || 0) + 1);
-    }
-
     const merged = buyers.map((b) => {
       const m = rfmById.get(b.buyer_id) || {};
       const r_score = m.r_score || null;
       const f_score = m.f_score || null;
       const m_score = m.m_score || null;
       const st = b.status_id ? statusById.get(b.status_id) : null;
-      const negCount = negNotesByBuyer.get(b.buyer_id) || 0;
-      const enriched = enrichRfmRow(m, { negNotes30d: negCount });
+      const enriched = enrichRfmRow(m);
       const monetary = m.monetary == null ? 0 : parseFloat(m.monetary);
 
       return {
@@ -127,6 +112,9 @@ module.exports = async function handler(req, res) {
         recency_days: m.recency_days == null ? null : m.recency_days,
         frequency: m.frequency || 0,
         monetary,
+        // ltv = monetary (історичний LTV). Поле залишаємо у відповіді для
+        // зворотньої сумісності з UI/скриптами, але в таблиці окремої
+        // колонки немає — користувач бачить це як "LTV (₴)" замість "M (₴)".
         ltv: monetary,
         aov: m.aov == null ? null : parseFloat(m.aov),
         aov_last_90d: m.aov_last_90d == null ? null : parseFloat(m.aov_last_90d),
@@ -144,7 +132,6 @@ module.exports = async function handler(req, res) {
         overdue: enriched.overdue,
         churn_pct: enriched.churn_pct,
         churn_reasons: enriched.churn_reasons,
-        recent_negative_notes: negCount,
       };
     });
 

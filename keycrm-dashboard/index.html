@@ -1491,12 +1491,11 @@ function renderClients() {
           <th class="sortable" data-col="last_order_date" onclick="setClientSort('last_order_date')">Останнє замовлення <span class="arrow">▼</span></th>
           <th class="sortable" data-col="recency_days" onclick="setClientSort('recency_days')" style="text-align:right" title="Днів з останнього замовлення">R <span class="arrow">▼</span></th>
           <th class="sortable" data-col="frequency" onclick="setClientSort('frequency')" style="text-align:right" title="Кількість замовлень">F <span class="arrow">▼</span></th>
-          <th class="sortable" data-col="monetary" onclick="setClientSort('monetary')" style="text-align:right" title="Сума усіх замовлень">M (₴) <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="monetary" onclick="setClientSort('monetary')" style="text-align:right" title="Сумарна виручка від клієнта = LTV (з урахуванням знижок)">LTV (₴) <span class="arrow">▼</span></th>
           <th class="sortable" data-col="aov" onclick="setClientSort('aov')" style="text-align:right" title="Середній чек">AOV <span class="arrow">▼</span></th>
           <th class="sortable" data-col="avg_interval_days" onclick="setClientSort('avg_interval_days')" style="text-align:right" title="Середній інтервал між замовленнями">Цикл <span class="arrow">▼</span></th>
           <th style="text-align:center" title="Динаміка частоти покупок">Velocity</th>
           <th class="sortable" data-col="churn_pct" onclick="setClientSort('churn_pct')" style="text-align:right" title="Ймовірність відтоку">Churn <span class="arrow">▼</span></th>
-          <th class="sortable" data-col="ltv" onclick="setClientSort('ltv')" style="text-align:right" title="Сумарна виручка від клієнта">LTV <span class="arrow">▼</span></th>
           <th style="text-align:center" title="R-F-M квінтилі">RFM</th>
         </tr></thead>
         <tbody id="clients-tbody"></tbody>
@@ -1532,7 +1531,7 @@ function renderClientsTable() {
   });
   const esc = s => (s || '').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
   tbody.innerHTML = rows.length === 0
-    ? '<tr><td colspan="14" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
+    ? '<tr><td colspan="13" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
     : rows.map(r => {
       const statusBadge = r.status_name
         ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;background:${r.status_color || '#666'}22;color:${r.status_color || '#999'}">${esc(r.status_name)}</span>`
@@ -1567,7 +1566,6 @@ function renderClientsTable() {
           <td class="num">${r.avg_interval_days != null ? Math.round(r.avg_interval_days) + 'д' : '<span class="muted">—</span>'}</td>
           <td style="text-align:center;font-size:11px">${velocityCell}</td>
           <td class="num">${churnCell}</td>
-          <td class="num">${fmtMoney(r.ltv || 0)}</td>
           <td class="num muted" style="text-align:center;font-family:'JetBrains Mono',monospace">${r.rfm_code || '—'}</td>
         </tr>`;
     }).join('');
@@ -1622,10 +1620,9 @@ function renderClientModal() {
   const stats = [
     { label: 'R · днів', val: m.recency_days != null ? m.recency_days + 'д' : '—', color: en.overdue ? '#ef4444' : null },
     { label: 'F · замовлень', val: m.frequency || 0 },
-    { label: 'M · сума', val: m.monetary != null ? fmtMoney(parseFloat(m.monetary) || 0) : '—' },
+    { label: 'LTV · сума замовлень', val: m.monetary != null ? fmtMoney(parseFloat(m.monetary) || 0) : '—' },
     { label: 'AOV · середній чек', val: aov != null ? fmtMoney(aov) : '—' },
     { label: 'Цикл закупки', val: m.avg_interval_days != null ? Math.round(parseFloat(m.avg_interval_days)) + 'д' : '—' },
-    { label: 'LTV', val: en.ltv != null ? fmtMoney(en.ltv) : '—' },
     { label: 'Velocity', val: velocityLabel, color: velocityColor },
     { label: 'Churn-ризик', val: (en.churn_pct != null ? en.churn_pct + '%' : '—'), color: churnColor },
   ];
@@ -1687,7 +1684,6 @@ function renderClientModal() {
     aov_dropped_30pct:      'Середній чек просів на 30%+',
     category_narrowing:     'Звузив асортимент категорій',
     velocity_decelerating:  'Інтервали між заказами збільшуються',
-    recent_negative_notes:  'Свіжі негативні заметки дзвінків',
   };
   const reasonsHtml = (en.churn_reasons && en.churn_reasons.length)
     ? en.churn_reasons.map(r => `<li style="font-size:11px;color:var(--text);margin-bottom:2px">${CHURN_REASON_LABEL[r] || r}</li>`).join('')

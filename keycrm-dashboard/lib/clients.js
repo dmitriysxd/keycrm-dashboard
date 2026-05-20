@@ -14,13 +14,21 @@ function classifyVelocity(recent, prior) {
   const r = recent == null ? null : parseFloat(recent);
   const p = prior == null ? null : parseFloat(prior);
   if (!r || !p || p <= 0) return null;
+  // Поправка на шум: природна варіація замовлень — кілька днів. Якщо
+  // абсолютна різниця < 14 днів — це не тренд, а похибка. Чекаємо мінімум
+  // 2-тижневу зміну І значущого ratio, щоб сказати "прискорюється/сповільнюється".
+  const absDiff = Math.abs(r - p);
+  if (absDiff < 14) return "stable";
   const ratio = r / p;
-  if (ratio < 0.8) return "accelerating";
-  if (ratio > 1.25) return "decelerating";
+  if (ratio < 0.7) return "accelerating";
+  if (ratio > 1.4) return "decelerating";
   return "stable";
 }
 
-function computeChurnPct(row, recentNegativeNotes) {
+function computeChurnPct(row, _legacyNotesArg) {
+  // _legacyNotesArg раніше містив кількість негативних заметок за 30 днів.
+  // Більше не використовується (фактор прибрано на запит користувача) —
+  // параметр зберігаю в сигнатурі для зворотньої сумісності з enrichRfmRow.
   let score = 0;
   const reasons = [];
 
@@ -58,15 +66,16 @@ function computeChurnPct(row, recentNegativeNotes) {
     score += 8; reasons.push("category_narrowing");
   }
 
+  // Velocity-сповільнення: ratio > 1.3 АЛЕ також абсолютна різниця > 14 днів
+  // (узгоджено з classifyVelocity, не караємо за шум).
   const recentInt = row.recent_interval_days == null ? null : parseFloat(row.recent_interval_days);
   const priorInt  = row.prior_interval_days  == null ? null : parseFloat(row.prior_interval_days);
-  if (recentInt && priorInt && priorInt > 0 && recentInt / priorInt > 1.3) {
-    score += 10; reasons.push("velocity_decelerating");
-  }
-
-  if (recentNegativeNotes > 0) {
-    score += Math.min(15, recentNegativeNotes * 8);
-    reasons.push("recent_negative_notes");
+  if (recentInt && priorInt && priorInt > 0) {
+    const ratio = recentInt / priorInt;
+    const absDiff = recentInt - priorInt;
+    if (ratio > 1.3 && absDiff > 14) {
+      score += 10; reasons.push("velocity_decelerating");
+    }
   }
 
   if (score < 0) score = 0;
@@ -96,7 +105,14 @@ function enrichRfmRow(rfm, opts) {
   }
   const avgInt = rfm.avg_interval_days == null ? null : parseFloat(rfm.avg_interval_days);
   const recency = rfm.recency_days == null ? null : rfm.recency_days;
-  const overdue = !!(avgInt && recency != null && avgInt > 0 && recency > avgInt * 1.5);
+  // Overdue: одночасно (a) recency перевищує цикл у 2× і (b) абсолютна
+  // затримка > 30 днів. Це дає простір для сезонних розтягувань (січневий
+  // провал у ювелірці нормальний) і ловить лише реально пропалих клієнтів.
+  const overdue = !!(
+    avgInt && recency != null && avgInt > 0
+    && recency > avgInt * 2
+    && (recency - avgInt) > 30
+  );
   const churn = computeChurnPct({
     recency_days: recency,
     avg_interval_days: avgInt,
