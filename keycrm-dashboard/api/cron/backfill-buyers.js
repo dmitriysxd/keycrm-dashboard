@@ -62,20 +62,30 @@ function pickFullName(b) {
   return composed || null;
 }
 
+// KeyCRM custom field "Опт/Роздріб" має UUID="CT_1005", type=select.
+// Значення приходить як масив, напр. ["Опт"] або ["Системні"].
+// Підтверджено інспекцією на бойових даних 2026-05-21.
+const WHOLESALE_FIELD_UUID = "CT_1005";
+const WHOLESALE_FIELD_VALUE = "опт";
+
 function parseWholesaleFlag(buyer) {
   if (!buyer) return false;
   const cf = buyer.custom_fields || buyer.customFields || buyer.fields;
   if (!cf) return false;
-  const entries = Array.isArray(cf)
-    ? cf.map((x) => [String(x.name || x.label || x.key || "").toLowerCase(), x.value])
-    : Object.entries(cf).map(([k, v]) => [String(k).toLowerCase(), v]);
-  for (const [name, value] of entries) {
-    if (!name.includes("опт")) continue;
-    if (value === true || value === 1) return true;
-    if (value == null) return false;
-    const s = String(value).trim().toLowerCase();
-    if (s === "" || s === "0" || s === "false" || s === "no" || s === "ні") return false;
-    return true;
+  const list = Array.isArray(cf)
+    ? cf
+    : Object.entries(cf).map(([k, v]) => ({ uuid: k, value: v }));
+  for (const item of list) {
+    const uuid = item && (item.uuid || item.id || item.key);
+    if (uuid !== WHOLESALE_FIELD_UUID) continue;
+    const v = item.value;
+    if (v == null) return false;
+    const values = Array.isArray(v) ? v : [v];
+    for (const val of values) {
+      if (val == null) continue;
+      if (String(val).trim().toLowerCase() === WHOLESALE_FIELD_VALUE) return true;
+    }
+    return false;
   }
   return false;
 }
