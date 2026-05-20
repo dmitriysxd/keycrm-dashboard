@@ -1358,7 +1358,7 @@ function renderReorder() {
 let CLIENTS_DATA = null;
 let CLIENT_STATUSES = [];
 let CLIENT_META = null;
-let CLIENT_FILTER = { wholesale_only: true, status_id: '', segment: '', search: '' };
+let CLIENT_FILTER = { status_id: '', segment: '', search: '' };
 let CLIENT_SORT = { col: 'monetary', dir: 'desc' };
 let CURRENT_CLIENT = null;
 
@@ -1379,7 +1379,6 @@ async function loadClients(opts) {
   }
   try {
     const params = new URLSearchParams();
-    if (CLIENT_FILTER.wholesale_only) params.set('wholesale_only', '1');
     if (CLIENT_FILTER.status_id) params.set('status_id', CLIENT_FILTER.status_id);
     if (CLIENT_FILTER.segment) params.set('segment', CLIENT_FILTER.segment);
     const url = apiUrl('/api/clients', params.toString());
@@ -1447,8 +1446,8 @@ function renderClients() {
   document.getElementById('main-area').innerHTML = `
     <div class="page-header">
       <div>
-        <div class="page-title">Клієнти ${staleBadge ? staleBadge() : ''}</div>
-        <div class="page-sub">Усього: ${fmt(total)} · оптових: ${fmt(wholesale)}</div>
+        <div class="page-title">Опт-клієнти ${staleBadge ? staleBadge() : ''}</div>
+        <div class="page-sub">Показано: тільки клієнти з прапором "Опт" у KeyCRM (всього ${fmt(wholesale)} з ${fmt(total)})</div>
       </div>
       <button class="refresh-btn" onclick="loadClients().then(ok => ok && renderClients())"><span class="ri">↺</span> Оновити</button>
     </div>
@@ -1457,10 +1456,6 @@ function renderClients() {
       <input type="search" id="client-search" placeholder="Пошук за іменем / телефоном" value="${CLIENT_FILTER.search}">
       <select id="client-status">${statusOptions}</select>
       <select id="client-segment">${segmentOptions}</select>
-      <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;cursor:pointer">
-        <input type="checkbox" id="client-wholesale" ${CLIENT_FILTER.wholesale_only ? 'checked' : ''}>
-        Тільки опт
-      </label>
       <div class="spacer"></div>
       <span style="align-self:center;color:var(--muted);font-size:11px">Показано: <span id="client-count">0</span></span>
     </div>
@@ -1498,10 +1493,6 @@ function renderClients() {
   });
   document.getElementById('client-segment').addEventListener('change', async e => {
     CLIENT_FILTER.segment = e.target.value;
-    if (await loadClients({ silent: true })) renderClients();
-  });
-  document.getElementById('client-wholesale').addEventListener('change', async e => {
-    CLIENT_FILTER.wholesale_only = e.target.checked;
     if (await loadClients({ silent: true })) renderClients();
   });
 

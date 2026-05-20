@@ -40,7 +40,10 @@ module.exports = async function handler(req, res) {
 
   try {
     const q = req.query || {};
-    const wholesaleOnly = q.wholesale_only === "1" || q.wholesale_only === "true";
+    // Сторінка завжди показує тільки опт-клієнтів. ?show_all=1 — лише для дебагу
+    // (наприклад, перевірити, хто не помічений як опт у CRM).
+    const showAll = q.show_all === "1" || q.show_all === "true";
+    const wholesaleOnly = !showAll;
     const statusId = q.status_id ? parseInt(q.status_id) : null;
     const segment = q.segment || null;
     const search = q.search ? String(q.search).toLowerCase().trim() : "";

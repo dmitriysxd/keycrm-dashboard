@@ -282,24 +282,31 @@ function pickFullName(b) {
   return composed || null;
 }
 
-// KeyCRM may return custom_fields as either a flat object { "опт": true } or
-// as an array of {name, value} pairs. We accept both shapes. The flag is
-// "wholesale" if the field name contains "опт" (case-insensitive) and the
-// value is truthy: true / 1 / "так" / "да" / non-empty string other than 0/false/no.
+// KeyCRM custom field "Опт/Роздріб" має UUID="CT_1005", тип select.
+// Значення приходить як масив, наприклад ["Опт"] або ["Системні"].
+// is_wholesale = true ⟺ масив містить значення "Опт" (case-insensitive).
+// Inспекція /api/cron/inspect-keycrm підтвердила цей UUID на бойових даних.
+const WHOLESALE_FIELD_UUID = "CT_1005";
+const WHOLESALE_FIELD_VALUE = "опт";
+
 function parseWholesaleFlag(buyer) {
   if (!buyer) return false;
   const cf = buyer.custom_fields || buyer.customFields || buyer.fields;
   if (!cf) return false;
-  const entries = Array.isArray(cf)
-    ? cf.map((x) => [String(x.name || x.label || x.key || "").toLowerCase(), x.value])
-    : Object.entries(cf).map(([k, v]) => [String(k).toLowerCase(), v]);
-  for (const [name, value] of entries) {
-    if (!name.includes("опт")) continue;
-    if (value === true || value === 1) return true;
-    if (value == null) return false;
-    const s = String(value).trim().toLowerCase();
-    if (s === "" || s === "0" || s === "false" || s === "no" || s === "ні") return false;
-    return true;
+  const list = Array.isArray(cf)
+    ? cf
+    : Object.entries(cf).map(([k, v]) => ({ uuid: k, value: v }));
+  for (const item of list) {
+    const uuid = item && (item.uuid || item.id || item.key);
+    if (uuid !== WHOLESALE_FIELD_UUID) continue;
+    const v = item.value;
+    if (v == null) return false;
+    const values = Array.isArray(v) ? v : [v];
+    for (const val of values) {
+      if (val == null) continue;
+      if (String(val).trim().toLowerCase() === WHOLESALE_FIELD_VALUE) return true;
+    }
+    return false;
   }
   return false;
 }
@@ -379,6 +386,15 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
       const orderedAt = order.ordered_at || order.created_at;
       if (!orderedAt) continue;
       const buyerId = pickBuyerId(order);
+      // Сума замовлення з урахуванням знижок (KeyCRM накладає знижки на весь
+      // заказ, не на позицію). Записуємо однакове значення для всіх рядків
+      // одного order_id; в buyer_rfm беремо MAX per order_id.
+      const grandTotal = order.grand_total != null && !isNaN(parseFloat(order.grand_total))
+        ? parseFloat(order.grand_total) : null;
+      const orderDiscount = order.total_discount != null && !isNaN(parseFloat(order.total_discount))
+        ? parseFloat(order.total_discount)
+        : (order.discount_amount != null && !isNaN(parseFloat(order.discount_amount))
+            ? parseFloat(order.discount_amount) : null);
       const items = order.products || [];
       items.forEach((item, idx) => {
         const qty = lineQty(item);
@@ -397,6 +413,8 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
           order_status: status,
           ordered_at: orderedAt,
           buyer_id: buyerId,
+          order_grand_total: grandTotal,
+          order_discount: orderDiscount,
         });
       });
     }

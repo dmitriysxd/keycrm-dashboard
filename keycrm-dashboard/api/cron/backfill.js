@@ -85,6 +85,12 @@ module.exports = async function handler(req, res) {
         const orderedAt = order.ordered_at || order.created_at;
         if (!orderedAt) continue;
         const buyerId = pickBuyerId(order);
+        const grandTotal = order.grand_total != null && !isNaN(parseFloat(order.grand_total))
+          ? parseFloat(order.grand_total) : null;
+        const orderDiscount = order.total_discount != null && !isNaN(parseFloat(order.total_discount))
+          ? parseFloat(order.total_discount)
+          : (order.discount_amount != null && !isNaN(parseFloat(order.discount_amount))
+              ? parseFloat(order.discount_amount) : null);
         const items = order.products || [];
         items.forEach((item, idx) => {
           const qty = lineQty(item);
@@ -103,6 +109,8 @@ module.exports = async function handler(req, res) {
             order_status: status,
             ordered_at: orderedAt,
             buyer_id: buyerId,
+            order_grand_total: grandTotal,
+            order_discount: orderDiscount,
           });
         });
       }
