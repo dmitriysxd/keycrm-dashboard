@@ -556,6 +556,22 @@
 
 </div>
 
+<!-- Clients docs modal -->
+<div class="chart-modal-backdrop" id="clients-docs-modal" onclick="if(event.target===this) closeClientsDocs()">
+  <div class="chart-modal-card" style="max-width: 1000px">
+    <div class="chart-modal-head">
+      <div style="flex:1; min-width:0">
+        <div class="chart-modal-title">Довідка: показники аналітики клієнтів</div>
+        <div class="chart-modal-sub">Як рахуються метрики, за які періоди, коли оновлюються</div>
+      </div>
+      <button class="chart-modal-close" onclick="closeClientsDocs()" aria-label="Закрити">✕</button>
+    </div>
+    <div class="chart-modal-body" id="clients-docs-body" style="min-height: 300px; overflow-y: auto; padding: 20px 24px">
+      <div class="chart-modal-empty">Завантажуємо…</div>
+    </div>
+  </div>
+</div>
+
 <!-- Client modal -->
 <div class="chart-modal-backdrop" id="client-modal" onclick="if(event.target===this) closeClientModal()">
   <div class="chart-modal-card" style="max-width: 900px">
@@ -1449,7 +1465,12 @@ function renderClients() {
         <div class="page-title">Опт-клієнти ${staleBadge ? staleBadge() : ''}</div>
         <div class="page-sub">Показано: тільки клієнти з прапором "Опт" у KeyCRM (всього ${fmt(wholesale)} з ${fmt(total)})</div>
       </div>
-      <button class="refresh-btn" onclick="loadClients().then(ok => ok && renderClients())"><span class="ri">↺</span> Оновити</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="refresh-btn" onclick="openClientsDocs()" title="Довідка з показниками">
+          <span class="ri" style="font-weight:bold">?</span> Довідка
+        </button>
+        <button class="refresh-btn" onclick="loadClients().then(ok => ok && renderClients())"><span class="ri">↺</span> Оновити</button>
+      </div>
     </div>
 
     <div class="filter-bar">
@@ -1801,6 +1822,116 @@ async function deleteNote(noteId) {
   } catch (e) {
     alert('Помилка: ' + (e.message || e));
   }
+}
+
+// ── Clients docs modal ───────────────────────────
+let CLIENTS_DOCS_CACHE = null;
+
+async function openClientsDocs() {
+  const backdrop = document.getElementById('clients-docs-modal');
+  backdrop.classList.add('open');
+  if (!CLIENTS_DOCS_CACHE) {
+    document.getElementById('clients-docs-body').innerHTML = '<div class="chart-modal-empty">Завантажуємо довідку…</div>';
+    try {
+      const r = await fetch(apiUrl('/api/clients-docs'));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      CLIENTS_DOCS_CACHE = await r.json();
+    } catch (e) {
+      document.getElementById('clients-docs-body').innerHTML =
+        '<div class="chart-modal-empty">⚠ Не вдалося завантажити довідку: ' + (e.message || e) + '</div>';
+      return;
+    }
+  }
+  renderClientsDocs();
+}
+
+function closeClientsDocs() {
+  document.getElementById('clients-docs-modal').classList.remove('open');
+}
+
+function renderClientsDocs() {
+  const docs = CLIENTS_DOCS_CACHE;
+  if (!docs) return;
+  const esc = s => (s == null ? '' : String(s)).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+
+  // Групуємо для зручного перегляду.
+  const groups = [
+    { title: 'Базові RFM', keys: ['recency', 'frequency', 'monetary', 'aov', 'aov_last_90d'] },
+    { title: 'Інтервали і velocity', keys: ['avg_interval', 'recent_interval', 'prior_interval', 'velocity_trend'] },
+    { title: 'Поведінкові показники (вікна 90 днів)', keys: ['freq_last_90d', 'freq_prior_90d', 'categories_lifetime', 'categories_90d'] },
+    { title: 'Скори, квінтилі і сегмент', keys: ['r_score', 'f_score', 'm_score', 'rfm_code', 'segment'] },
+    { title: 'Похідні і ризики', keys: ['overdue', 'ltv', 'churn_pct'] },
+    { title: 'Профіль і CRM', keys: ['is_wholesale', 'status', 'notes'] },
+  ];
+
+  const metricCard = (m) => {
+    if (!m) return '';
+    return `
+      <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;background:var(--s2)">
+        <div style="font-weight:600;color:var(--text);font-size:13px;margin-bottom:4px">${esc(m.label)}</div>
+        <div style="color:var(--muted);font-size:11px;margin-bottom:8px">${esc(m.short || '')}</div>
+        <table style="width:100%;font-size:11px;border-collapse:collapse">
+          ${m.formula ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top;width:90px">Формула</td><td style="color:var(--text);font-family:'JetBrains Mono',monospace">${esc(m.formula)}</td></tr>` : ''}
+          ${m.period ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top">Період</td><td style="color:var(--text)">${esc(m.period)}</td></tr>` : ''}
+          ${m.freshness ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top">Свіжість</td><td style="color:var(--text)">${esc(m.freshness)}</td></tr>` : ''}
+          ${m.notes ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top">Примітки</td><td style="color:var(--text)">${esc(m.notes)}</td></tr>` : ''}
+        </table>
+      </div>`;
+  };
+
+  // Окремий блок для churn-факторів — це таблиця.
+  const churnFactors = docs.metrics && docs.metrics.churn_factors && docs.metrics.churn_factors.factors;
+  const churnTable = churnFactors ? `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;background:var(--s2)">
+      <div style="font-weight:600;color:var(--text);font-size:13px;margin-bottom:8px">${esc(docs.metrics.churn_factors.label)}</div>
+      <table style="width:100%;font-size:11px;border-collapse:collapse">
+        <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
+          <th style="padding:4px 8px 4px 0">Фактор</th>
+          <th style="padding:4px 8px;text-align:right">Вага</th>
+          <th style="padding:4px 8px">Вікно</th>
+          <th style="padding:4px 0">Тригер</th>
+        </tr></thead>
+        <tbody>${churnFactors.map(f => `
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <td style="padding:4px 8px 4px 0;color:var(--text)">${esc(f.name)}</td>
+            <td style="padding:4px 8px;text-align:right;color:var(--gold);font-family:'JetBrains Mono',monospace">${esc(f.weight)}</td>
+            <td style="padding:4px 8px;color:var(--muted)">${esc(f.period)}</td>
+            <td style="padding:4px 0;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:10px">${esc(f.trigger)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <div style="margin-top:8px;font-size:11px;color:var(--muted)">
+        Сума всіх вагових сигналів, обрізана до діапазону 0–95%. Колір рядка в таблиці: 0–20% зелений, 20–40% сірий, 40–70% жовтий, 70–95% червоний.
+      </div>
+    </div>
+  ` : '';
+
+  const generalHtml = docs.general ? `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:16px;background:var(--gold2)">
+      <div style="font-weight:600;color:var(--gold);font-size:12px;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">Загальні правила</div>
+      <div style="font-size:11px;color:var(--text);margin-bottom:8px">${esc(docs.general.refresh_schedule)}</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">З розрахунку виключаються замовлення зі статусами:</div>
+      <div style="font-size:11px;color:var(--text);font-family:'JetBrains Mono',monospace">${(docs.general.excluded_statuses || []).map(s => esc(s)).join(', ')}</div>
+    </div>
+  ` : '';
+
+  const groupsHtml = groups.map(g => `
+    <div style="margin-bottom:16px">
+      <div style="font-size:12px;color:var(--gold);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;font-weight:600">${esc(g.title)}</div>
+      ${g.keys.map(k => metricCard(docs.metrics && docs.metrics[k])).join('')}
+    </div>
+  `).join('');
+
+  // Churn-секція окремо в кінці.
+  const churnSection = `
+    <div style="margin-bottom:16px">
+      <div style="font-size:12px;color:var(--gold);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;font-weight:600">Churn-ризик: формула</div>
+      ${metricCard(docs.metrics && docs.metrics.churn_pct)}
+      ${churnTable}
+    </div>
+  `;
+
+  document.getElementById('clients-docs-body').innerHTML = generalHtml + groupsHtml + churnSection;
 }
 
 async function addClientStatusPrompt() {
