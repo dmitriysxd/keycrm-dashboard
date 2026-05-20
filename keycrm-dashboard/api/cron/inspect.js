@@ -229,8 +229,24 @@ async function inspectHealth(supabase) {
     .order("started_at", { ascending: false })
     .limit(50);
 
-  const autoRuns = (runs || []).filter(r => r.kind === "auto");
-  const lastAuto = autoRuns[0] || null;
+  // ОКРЕМИЙ запит за останнім auto-run — щоб не загубитись в .limit(50)
+  // у випадку, коли користувач робив багато ручних backfill'ів і вони
+  // витіснили auto-record з вибірки.
+  const { data: lastAutoArr } = await supabase
+    .from("ingest_runs")
+    .select("id, kind, status, started_at, finished_at, products_seen, orders_seen, sales_upserted, error_message, meta")
+    .eq("kind", "auto")
+    .order("started_at", { ascending: false })
+    .limit(1);
+  const lastAuto = (lastAutoArr && lastAutoArr[0]) || null;
+
+  // Усі auto-runs за тиждень — порахуємо count, щоб знати, чи стабільно
+  // cron виконується.
+  const { count: autoRunsWeekCount } = await supabase
+    .from("ingest_runs")
+    .select("id", { count: "exact", head: true })
+    .eq("kind", "auto")
+    .gte("started_at", cutoffWeek);
 
   // 2. ingest_state.
   const { data: state } = await supabase
@@ -272,11 +288,14 @@ async function inspectHealth(supabase) {
   // Аналіз і висновки.
   const hints = [];
   if (!lastAuto) {
-    hints.push("⚠ За останній тиждень не було жодного 'auto' інгесту. Перевір Vercel cron schedule.");
+    hints.push("⚠ Жодного 'auto' інгесту не знайдено в БД взагалі. Перевір Vercel cron schedule і CRON_SECRET.");
   } else {
     const lastAutoAge = (Date.now() - new Date(lastAuto.started_at).getTime()) / 3600000;
     if (lastAutoAge > 30) hints.push(`⚠ Останній auto-ingest був ${Math.round(lastAutoAge)} год тому — мав би пройти сьогодні в 03:00 UTC.`);
     if (lastAuto.status !== "ok") hints.push(`⚠ Останній auto-ingest завершився зі статусом '${lastAuto.status}': ${lastAuto.error_message || '—'}`);
+  }
+  if (autoRunsWeekCount != null && autoRunsWeekCount < 5) {
+    hints.push(`⚠ За останній тиждень лише ${autoRunsWeekCount} auto-runs (очікувано ~7, по одному на день). Cron може пропускати дні.`);
   }
   if (state && state.status === "running") {
     const stateAge = state.last_chunk_at ? (Date.now() - new Date(state.last_chunk_at).getTime()) / 3600000 : null;
@@ -291,6 +310,7 @@ async function inspectHealth(supabase) {
     target: "health",
     today_utc: todayISO,
     last_auto_ingest: lastAuto,
+    auto_runs_last_7d_count: autoRunsWeekCount,
     ingest_state: state,
     snapshots_per_day_last_7: days,
     missing_snapshot_days: missingSnapshotDays,
