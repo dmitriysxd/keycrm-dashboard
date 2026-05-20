@@ -78,8 +78,15 @@ function computeChurnPct(row, _legacyNotesArg) {
     }
   }
 
+  // Нормуємо в діапазон 0–100%. Ваги факторів підібрані так, що теоретичний
+  // max у клієнта з повною історією дорівнює саме 100%:
+  //   recency_3x (+45) + freq_drop_to_zero (+25) + aov_50% (+12)
+  //   + categories_narrow (+8) + velocity_decel (+10) = 100.
+  // Cap на 100 — захист від випадкових збігів кількох мутуально-виключних
+  // сигналів (recency_3x і recency_180d не можуть бути одночасно — обидва
+  // в окремих гілках if/else; залишаємо як safety).
   if (score < 0) score = 0;
-  if (score > 95) score = 95;
+  if (score > 100) score = 100;
   return { pct: Math.round(score), reasons };
 }
 

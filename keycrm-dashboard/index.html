@@ -572,6 +572,22 @@
   </div>
 </div>
 
+<!-- SKU docs modal -->
+<div class="chart-modal-backdrop" id="sku-docs-modal" onclick="if(event.target===this) closeSkuDocs()">
+  <div class="chart-modal-card" style="max-width: 1000px">
+    <div class="chart-modal-head">
+      <div style="flex:1; min-width:0">
+        <div class="chart-modal-title">Довідка: показники SKU-аналітики</div>
+        <div class="chart-modal-sub">Як рахуються метрики, за які періоди, коли оновлюються</div>
+      </div>
+      <button class="chart-modal-close" onclick="closeSkuDocs()" aria-label="Закрити">✕</button>
+    </div>
+    <div class="chart-modal-body" id="sku-docs-body" style="min-height: 300px; overflow-y: auto; padding: 20px 24px">
+      <div class="chart-modal-empty">Завантажуємо…</div>
+    </div>
+  </div>
+</div>
+
 <!-- Client modal -->
 <div class="chart-modal-backdrop" id="client-modal" onclick="if(event.target===this) closeClientModal()">
   <div class="chart-modal-card" style="max-width: 900px">
@@ -1186,7 +1202,12 @@ function renderSku() {
         <div class="page-title">SKU-аналітика ${staleBadge()}</div>
         <div class="page-sub">Усього активних: ${totalActive}</div>
       </div>
-      <button class="refresh-btn" onclick="reloadSkuPage()"><span class="ri">↺</span> Оновити</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="refresh-btn" onclick="openSkuDocs()" title="Довідка з показниками">
+          <span class="ri" style="font-weight:bold">?</span> Довідка
+        </button>
+        <button class="refresh-btn" onclick="reloadSkuPage()"><span class="ri">↺</span> Оновити</button>
+      </div>
     </div>
 
     <div class="kpi-grid">
@@ -1826,10 +1847,13 @@ let CLIENTS_DOCS_CACHE = null;
 async function openClientsDocs() {
   const backdrop = document.getElementById('clients-docs-modal');
   backdrop.classList.add('open');
+  // Завжди тягнемо свіжу версію (в межах хвилини), щоб не показувати застарілу
+  // довідку коли я щойно оновив формули. CLIENTS_DOCS_CACHE діє лише в межах
+  // однієї сесії дашборду.
   if (!CLIENTS_DOCS_CACHE) {
     document.getElementById('clients-docs-body').innerHTML = '<div class="chart-modal-empty">Завантажуємо довідку…</div>';
     try {
-      const r = await fetch(apiUrl('/api/clients-docs'));
+      const r = await fetch(apiUrl('/api/clients-docs', 'v=' + Math.floor(Date.now() / 60000)));
       if (!r.ok) throw new Error('HTTP ' + r.status);
       CLIENTS_DOCS_CACHE = await r.json();
     } catch (e) {
@@ -1928,6 +1952,101 @@ function renderClientsDocs() {
   `;
 
   document.getElementById('clients-docs-body').innerHTML = generalHtml + groupsHtml + churnSection;
+}
+
+// ── SKU docs modal ───────────────────────────
+let SKU_DOCS_CACHE = null;
+
+async function openSkuDocs() {
+  document.getElementById('sku-docs-modal').classList.add('open');
+  if (!SKU_DOCS_CACHE) {
+    document.getElementById('sku-docs-body').innerHTML = '<div class="chart-modal-empty">Завантажуємо довідку…</div>';
+    try {
+      const r = await fetch(apiUrl('/api/sku-docs', 'v=' + Math.floor(Date.now() / 60000)));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      SKU_DOCS_CACHE = await r.json();
+    } catch (e) {
+      document.getElementById('sku-docs-body').innerHTML =
+        '<div class="chart-modal-empty">⚠ Не вдалося завантажити довідку: ' + (e.message || e) + '</div>';
+      return;
+    }
+  }
+  renderSkuDocs();
+}
+
+function closeSkuDocs() {
+  document.getElementById('sku-docs-modal').classList.remove('open');
+}
+
+function renderSkuDocs() {
+  const docs = SKU_DOCS_CACHE;
+  if (!docs) return;
+  const esc = s => (s == null ? '' : String(s)).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+
+  const groups = [
+    { title: 'Базова інформація', keys: ['current_stock', 'price', 'cost'] },
+    { title: 'Продажі', keys: ['sold_30d', 'velocity_7d', 'velocity_30d', 'velocity_90d', 'lifetime_velocity', 'sold_total', 'buyers_count'] },
+    { title: 'Метрики для реордеру', keys: ['days_of_supply', 'sell_through_30d', 'suggested_qty', 'estimated_cost'] },
+    { title: 'Вік і цикли', keys: ['age_days', 'first_stock_at', 'keycrm_created_at', 'last_sold_at'] },
+    { title: 'Статуси і архів', keys: ['status', 'archive_tier'] },
+  ];
+
+  const metricCard = (m) => {
+    if (!m) return '';
+    return `
+      <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;background:var(--s2)">
+        <div style="font-weight:600;color:var(--text);font-size:13px;margin-bottom:4px">${esc(m.label)}</div>
+        <div style="color:var(--muted);font-size:11px;margin-bottom:8px">${esc(m.short || '')}</div>
+        <table style="width:100%;font-size:11px;border-collapse:collapse">
+          ${m.formula ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top;width:90px">Формула</td><td style="color:var(--text);font-family:'JetBrains Mono',monospace">${esc(m.formula)}</td></tr>` : ''}
+          ${m.period ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top">Період</td><td style="color:var(--text)">${esc(m.period)}</td></tr>` : ''}
+          ${m.freshness ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top">Свіжість</td><td style="color:var(--text)">${esc(m.freshness)}</td></tr>` : ''}
+          ${m.notes ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top">Примітки</td><td style="color:var(--text)">${esc(m.notes)}</td></tr>` : ''}
+        </table>
+      </div>`;
+  };
+
+  const statusLegendHtml = docs.statuses ? `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;background:var(--s2)">
+      <div style="font-weight:600;color:var(--text);font-size:13px;margin-bottom:8px">Легенда статусів (порядок перевірки умов)</div>
+      <table style="width:100%;font-size:11px;border-collapse:collapse">
+        <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
+          <th style="padding:4px 8px 4px 0;width:90px">Статус</th>
+          <th style="padding:4px 0">Критерій</th>
+        </tr></thead>
+        <tbody>${Object.values(docs.statuses).map(s => `
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <td style="padding:6px 8px 6px 0">
+              <span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:10px;background:${s.color}22;color:${s.color};font-weight:600">${esc(s.label)}</span>
+            </td>
+            <td style="padding:6px 0;color:var(--text)">${esc(s.criteria)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <div style="margin-top:8px;font-size:11px;color:var(--muted)">
+        Умови перевіряються по черзі зверху вниз — спрацьовує перша. manual_status (виставлений вручну) переважає всю auto-логіку.
+      </div>
+    </div>
+  ` : '';
+
+  const generalHtml = docs.general ? `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:16px;background:var(--gold2)">
+      <div style="font-weight:600;color:var(--gold);font-size:12px;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">Загальні правила</div>
+      <div style="font-size:11px;color:var(--text);margin-bottom:8px">${esc(docs.general.refresh_schedule)}</div>
+      ${docs.general.vlife_explained ? `<div style="font-size:11px;color:var(--text);margin-bottom:8px"><b>Про Vlife:</b> ${esc(docs.general.vlife_explained)}</div>` : ''}
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">З розрахунку виключаються замовлення зі статусами:</div>
+      <div style="font-size:11px;color:var(--text);font-family:'JetBrains Mono',monospace">${(docs.general.excluded_statuses || []).map(s => esc(s)).join(', ')}</div>
+    </div>
+  ` : '';
+
+  const groupsHtml = groups.map(g => `
+    <div style="margin-bottom:16px">
+      <div style="font-size:12px;color:var(--gold);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;font-weight:600">${esc(g.title)}</div>
+      ${g.keys.map(k => metricCard(docs.metrics && docs.metrics[k])).join('')}
+    </div>
+  `).join('');
+
+  document.getElementById('sku-docs-body').innerHTML = generalHtml + statusLegendHtml + groupsHtml;
 }
 
 async function addClientStatusPrompt() {

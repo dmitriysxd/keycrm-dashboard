@@ -13,7 +13,9 @@ module.exports = async function handler(req, res) {
   const auth = checkDashboardToken(req);
   if (!auth.ok) return res.status(auth.status).json({ status: auth.status, error: auth.error });
 
-  // 1 година кеша на стороні CDN — документи рідко змінюються.
-  res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
+  // 60 секунд CDN-кешу — щоб зміни в lib/clients-docs.js швидко
+  // підхоплювались після деплою. Документація рідко змінюється, але якщо
+  // вже змінилась — користувач не повинен годину дивитись стару.
+  res.setHeader("Cache-Control", "public, max-age=60, s-maxage=60");
   return res.status(200).json({ metrics: METRIC_DOCS, general: GENERAL_NOTES });
 };
