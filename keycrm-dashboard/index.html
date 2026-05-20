@@ -540,7 +540,14 @@
 
     <div class="sidebar-bottom">
       <div class="update-info" id="update-info">
-        Дані оновлено<br><span id="updated-at">—</span>
+        <div>Дані оновлено<br><span id="updated-at">—</span></div>
+        <div id="freshness-status" style="margin-top:8px;font-size:10px"></div>
+        <button id="refresh-data-btn" onclick="triggerIngestManually()"
+                style="display:none;margin-top:8px;width:100%;padding:6px 8px;
+                       background:var(--gold);color:#1a1108;border:0;border-radius:6px;
+                       font-weight:600;font-size:10px;cursor:pointer">
+          ↻ Оновити зараз
+        </button>
       </div>
     </div>
   </aside>
@@ -694,10 +701,65 @@ async function loadSku(opts) {
     if (!results[0].ok) throw new Error(skuJson.error || 'Помилка сервера');
     SKU_DATA = skuJson.rows || [];
     if (results[1]) SKU_META = await results[1].json();
+    updateFreshnessStatus();
     return true;
   } catch(e) {
     showError(e.message);
     return false;
+  }
+}
+
+// ── Свіжість даних ────────────────────────────────────────
+// Показує в sidebar коли востаннє був snapshot, і якщо дані застарілі
+// (> 1 день) — пропонує кнопку ручного запуску ingest.
+function updateFreshnessStatus() {
+  const statusEl = document.getElementById('freshness-status');
+  const btnEl = document.getElementById('refresh-data-btn');
+  if (!statusEl || !btnEl) return;
+  const lastDate = SKU_META && SKU_META.last_snapshot_date;
+  if (!lastDate) {
+    statusEl.innerHTML = '<span style="color:var(--red)">⚠ Немає snapshots</span>';
+    btnEl.style.display = 'block';
+    return;
+  }
+  const last = new Date(lastDate + 'T00:00:00Z');
+  const today = new Date();
+  const ageDays = Math.floor((today - last) / 86400000);
+  if (ageDays >= 2) {
+    statusEl.innerHTML = `<span style="color:var(--red)">⚠ Snapshot ${ageDays}-денної давнини</span>`;
+    btnEl.style.display = 'block';
+  } else if (ageDays === 1) {
+    statusEl.innerHTML = '<span style="color:#f59e0b">↻ Snapshot вчорашній</span>';
+    btnEl.style.display = 'block';
+  } else {
+    statusEl.innerHTML = '<span style="color:var(--green)">✓ Свіжий snapshot</span>';
+    btnEl.style.display = 'none';
+  }
+}
+
+async function triggerIngestManually() {
+  const btn = document.getElementById('refresh-data-btn');
+  const statusEl = document.getElementById('freshness-status');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Запускаю…'; }
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--muted)">Запускаю ingest, чекаю ~60с…</span>';
+  try {
+    // CRON_SECRET не доступен з браузера. Використовуємо token dashboard
+    // на endpoint /api/cron/ingest — він має fallback на token? Ні, він
+    // тільки checkCronAuth. Тому робимо просто: відкриваємо в новій вкладці,
+    // і користувач сам бачить результат.
+    const url = 'https://keycrm-dashboard.vercel.app/api/cron/ingest?step=auto';
+    alert(
+      'Для ручного запуску ingest потрібен CRON_SECRET, якого немає в браузері.\n\n' +
+      'Способи запустити:\n' +
+      '1. Vercel Dashboard → Settings → Cron Jobs → кнопка "Run"\n' +
+      '2. Terminal: curl "' + url + '&secret=ВАШ_CRON_SECRET"\n' +
+      '3. GitHub Actions → "Backup daily ingest" → "Run workflow"\n\n' +
+      'GitHub Actions workflow вже налаштований на щоденний запуск о 03:30 UTC\n' +
+      'як резерв, якщо Vercel cron пропустить день.'
+    );
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Оновити зараз'; }
+    if (statusEl) updateFreshnessStatus();
   }
 }
 
