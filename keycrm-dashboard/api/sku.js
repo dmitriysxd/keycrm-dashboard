@@ -111,7 +111,7 @@ module.exports = async function handler(req, res) {
         .map(([id, name]) => ({ id, name }))
         .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
-      const [snap, run, totalAll, totalActive, hits, good, slow, weak, dead, isnew, archive, inStock] = await Promise.all([
+      const [snap, run, totalAll, totalActive, hits, good, slow, weak, dead, isnew, archive, inStock, season] = await Promise.all([
         supabase.from("stock_snapshots").select("snapshot_date").order("snapshot_date", { ascending: false }).limit(1),
         supabase.from("ingest_runs").select("id, kind, status, started_at, finished_at, error_message").order("started_at", { ascending: false }).limit(1),
         head(),
@@ -124,6 +124,8 @@ module.exports = async function handler(req, res) {
         head((q) => q.eq("is_active", true).eq("status", "new")),
         head((q) => q.eq("is_active", true).eq("status", "archive")),
         head((q) => q.eq("is_active", true).gt("current_stock", 0)),
+        // current_season_info() RPC — повертає назву/мультиплікатор активного сезону.
+        supabase.rpc("current_season_info"),
       ]);
       return res.status(200).json({
         last_snapshot_date: (snap.data && snap.data[0] && snap.data[0].snapshot_date) || null,
@@ -140,6 +142,7 @@ module.exports = async function handler(req, res) {
           new:     isnew.count || 0,
           archive: archive.count || 0,
         },
+        current_season: (season && season.data && season.data[0]) || null,
         categories,
         now: new Date().toISOString(),
       });

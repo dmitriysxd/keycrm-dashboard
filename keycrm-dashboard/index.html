@@ -1096,6 +1096,22 @@ const STATUS_LABEL = { hit: 'Хіт', good: 'Хороший', slow: 'Повіл�
 const STATUS_COLOR = { hit: 'var(--green)', good: '#9ed1b3', slow: 'var(--gold)', weak: '#e0a060', dead: 'var(--red)', new: 'var(--purple)', archive: 'var(--muted)' };
 const ARCHIVE_TIER_LABEL = { hit: 'Хіт', good: 'Хороший', slow: 'Слабкий', dead: 'Мертвий' };
 
+// BCG-ролі (стратегічна класифікація): топ-виручка × тренд.
+const BCG_LABEL = { star: '🌟 Зірка', cash_cow: '🐄 Дойна корова', question: '❓ Знак питання', dog: '🐶 Собака' };
+const BCG_COLOR = { star: '#a855f7', cash_cow: '#10b981', question: '#3b82f6', dog: '#6b7280' };
+
+// Actionable теги для сигналізації що робити з товаром.
+const TAG_LABEL = {
+  trend_up:        { icon: '📈', short: 'Тренд ↑',     full: 'V7/V30 > 1.5 — продажі прискорюються' },
+  trend_down:      { icon: '📉', short: 'Тренд ↓',     full: 'V7/V30 < 0.5 — продажі сповільнюються' },
+  stockout_risk:   { icon: '❄️', short: 'Stockout',    full: 'DoS < 7 днів — закінчиться скоро, треба реордер' },
+  overstocked:     { icon: '📦', short: 'Залежався',   full: 'DoS > 180 днів — занадто багато на складі' },
+  hero:            { icon: '💎', short: 'Hero',        full: 'Топ-20% по виручці за 30 днів' },
+  comeback:        { icon: '🔁', short: 'Comeback',    full: 'Був без продажів 30+ днів, тільки почав продаватись' },
+  above_baseline:  { icon: '📊', short: '+vs історія', full: 'Продає 20%+ краще за свою історичну норму' },
+  below_baseline:  { icon: '📊', short: '-vs історія', full: 'Продає 20%+ гірше за свою історичну норму' },
+};
+
 function statusPill(r) {
   const cls   = STATUS_PILL[r.status] || 'y';
   const label = STATUS_LABEL[r.status] || r.status || '—';
@@ -1103,6 +1119,22 @@ function statusPill(r) {
     return `<span class="pill ${cls}">${label} · ${ARCHIVE_TIER_LABEL[r.archive_tier]}</span>`;
   }
   return `<span class="pill ${cls}">${label}</span>`;
+}
+
+// Рендер тегів + BCG ролі поряд зі статусом — компактні бейджи.
+function signalsCell(r) {
+  const items = [];
+  if (r.bcg_role && BCG_LABEL[r.bcg_role]) {
+    items.push(`<span title="BCG-роль: ${BCG_LABEL[r.bcg_role]}" style="font-size:14px">${BCG_LABEL[r.bcg_role].split(' ')[0]}</span>`);
+  }
+  if (Array.isArray(r.tags)) {
+    for (const t of r.tags) {
+      const def = TAG_LABEL[t];
+      if (!def) continue;
+      items.push(`<span title="${def.full}" style="font-size:13px">${def.icon}</span>`);
+    }
+  }
+  return items.length ? items.join('') : '<span class="muted">—</span>';
 }
 
 function staleBadge() {
@@ -1168,7 +1200,7 @@ function renderSkuTable() {
     if (th.dataset.col === SKU_SORT.col) th.classList.add(SKU_SORT.dir);
   });
   tbody.innerHTML = rows.length === 0
-    ? '<tr><td colspan="14" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
+    ? '<tr><td colspan="15" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
     : rows.map(r => `
       <tr onclick="openChartModal(${r.offer_id})">
         <td>${(r.name || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</td>
@@ -1185,6 +1217,7 @@ function renderSkuTable() {
         <td class="num">${fmtPct(r.sell_through_30d)}</td>
         <td class="num muted">${r.age_days != null ? r.age_days + 'д' : '—'}</td>
         <td>${statusPill(r)}</td>
+        <td style="white-space:nowrap;letter-spacing:2px">${signalsCell(r)}</td>
       </tr>`).join('');
 }
 
@@ -1263,7 +1296,10 @@ function renderSku() {
     <div class="page-header">
       <div>
         <div class="page-title">SKU-аналітика ${staleBadge()}</div>
-        <div class="page-sub">Усього активних: ${totalActive}</div>
+        <div class="page-sub">
+          Усього активних: ${totalActive}
+          ${m.current_season ? `<span style="margin-left:12px;padding:2px 8px;border-radius:10px;background:var(--gold2);color:var(--gold);font-size:11px">🗓 Сезон: ${m.current_season.name} · × ${m.current_season.multiplier}</span>` : `<span style="margin-left:12px;color:var(--muted);font-size:11px">🗓 Базовий сезон (× 1.0)</span>`}
+        </div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <button class="refresh-btn" onclick="openSkuDocs()" title="Довідка з показниками">
@@ -1350,6 +1386,7 @@ function renderSku() {
           <th class="sortable" data-col="sell_through_30d" onclick="setSort('sell_through_30d')" style="text-align:right">Sell-through <span class="arrow">▼</span></th>
           <th class="sortable" data-col="age_days" onclick="setSort('age_days')" style="text-align:right">Вік <span class="arrow">▼</span></th>
           <th class="sortable" data-col="status" onclick="setSort('status')">Статус <span class="arrow">▼</span></th>
+          <th title="BCG роль (🌟🐄❓🐶) + actionable теги (📈📉❄️📦💎🔁📊)">Сигнали</th>
         </tr></thead>
         <tbody id="sku-tbody"></tbody>
       </table>
@@ -2051,7 +2088,8 @@ function renderSkuDocs() {
     { title: 'Продажі', keys: ['sold_30d', 'velocity_7d', 'velocity_30d', 'velocity_90d', 'lifetime_velocity', 'sold_total', 'buyers_count'] },
     { title: 'Метрики для реордеру', keys: ['days_of_supply', 'sell_through_30d', 'suggested_qty', 'estimated_cost'] },
     { title: 'Вік і цикли', keys: ['age_days', 'first_stock_at', 'keycrm_created_at', 'last_sold_at'] },
-    { title: 'Статуси і архів', keys: ['status', 'archive_tier'] },
+    { title: 'Сезонність і ранжування', keys: ['current_season_multiplier', 'category_quintile', 'relative_performance', 'revenue_rank'] },
+    { title: 'Статуси, BCG, сигнали', keys: ['status', 'bcg_role', 'tags', 'archive_tier'] },
   ];
 
   const metricCard = (m) => {
@@ -2097,8 +2135,55 @@ function renderSkuDocs() {
       <div style="font-weight:600;color:var(--gold);font-size:12px;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">Загальні правила</div>
       <div style="font-size:11px;color:var(--text);margin-bottom:8px">${esc(docs.general.refresh_schedule)}</div>
       ${docs.general.vlife_explained ? `<div style="font-size:11px;color:var(--text);margin-bottom:8px"><b>Про Vlife:</b> ${esc(docs.general.vlife_explained)}</div>` : ''}
+      ${docs.general.seasonality_explained ? `<div style="font-size:11px;color:var(--text);margin-bottom:8px"><b>Сезонність:</b> ${esc(docs.general.seasonality_explained)}</div>` : ''}
+      ${docs.general.bcg_matrix_explained ? `<div style="font-size:11px;color:var(--text);margin-bottom:8px"><b>BCG-роль:</b> ${esc(docs.general.bcg_matrix_explained)}</div>` : ''}
       <div style="font-size:11px;color:var(--muted);margin-bottom:6px">З розрахунку виключаються замовлення зі статусами:</div>
       <div style="font-size:11px;color:var(--text);font-family:'JetBrains Mono',monospace">${(docs.general.excluded_statuses || []).map(s => esc(s)).join(', ')}</div>
+    </div>
+  ` : '';
+
+  const bcgHtml = docs.bcg_roles ? `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;background:var(--s2)">
+      <div style="font-weight:600;color:var(--text);font-size:13px;margin-bottom:8px">BCG-ролі (стратегічна класифікація)</div>
+      <table style="width:100%;font-size:11px;border-collapse:collapse">
+        <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
+          <th style="padding:4px 8px 4px 0;width:140px">Роль</th>
+          <th style="padding:4px 8px">Критерій</th>
+          <th style="padding:4px 0">Що робити</th>
+        </tr></thead>
+        <tbody>${Object.values(docs.bcg_roles).map(r => `
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <td style="padding:6px 8px 6px 0;font-weight:600;color:var(--text)">${esc(r.label)}</td>
+            <td style="padding:6px 8px;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:10px">${esc(r.criteria)}</td>
+            <td style="padding:6px 0;color:var(--text)">${esc(r.action)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  ` : '';
+
+  const tagsHtml = docs.tags ? `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;background:var(--s2)">
+      <div style="font-weight:600;color:var(--text);font-size:13px;margin-bottom:8px">Сигнали (actionable теги в колонці таблиці)</div>
+      <table style="width:100%;font-size:11px;border-collapse:collapse">
+        <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
+          <th style="padding:4px 8px 4px 0;width:40px">Icon</th>
+          <th style="padding:4px 8px;width:140px">Назва</th>
+          <th style="padding:4px 8px">Критерій</th>
+          <th style="padding:4px 0">Що робити</th>
+        </tr></thead>
+        <tbody>${Object.values(docs.tags).map(t => `
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <td style="padding:6px 8px 6px 0;font-size:16px;text-align:center">${t.icon}</td>
+            <td style="padding:6px 8px;font-weight:600;color:var(--text)">${esc(t.label)}</td>
+            <td style="padding:6px 8px;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:10px">${esc(t.criteria)}</td>
+            <td style="padding:6px 0;color:var(--text)">${esc(t.action)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <div style="margin-top:8px;font-size:11px;color:var(--muted)">
+        Один SKU може мати кілька тегів одночасно. Hover над іконкою показує опис.
+      </div>
     </div>
   ` : '';
 
@@ -2109,7 +2194,8 @@ function renderSkuDocs() {
     </div>
   `).join('');
 
-  document.getElementById('sku-docs-body').innerHTML = generalHtml + statusLegendHtml + groupsHtml;
+  document.getElementById('sku-docs-body').innerHTML =
+    generalHtml + statusLegendHtml + bcgHtml + tagsHtml + groupsHtml;
 }
 
 async function addClientStatusPrompt() {

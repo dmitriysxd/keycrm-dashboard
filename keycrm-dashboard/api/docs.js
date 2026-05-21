@@ -26,6 +26,8 @@ module.exports = async function handler(req, res) {
       type: "sku",
       metrics: skuDocs.METRIC_DOCS,
       statuses: skuDocs.STATUS_LEGEND,
+      bcg_roles: skuDocs.BCG_LEGEND,
+      tags: skuDocs.TAG_LEGEND,
       general: skuDocs.GENERAL_NOTES,
     });
   }
