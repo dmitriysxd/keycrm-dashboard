@@ -1910,7 +1910,7 @@ async function submitNote() {
   const outcome = document.getElementById('note-outcome').value;
   if (!body) { alert('Введіть текст заметки'); return; }
   try {
-    const r = await fetch(apiUrl('/api/client-note'), {
+    const r = await fetch(apiUrl('/api/client-crm', 'type=note'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ buyer_id: CURRENT_CLIENT.buyer.buyer_id, outcome, body }),
@@ -1930,7 +1930,7 @@ async function submitNote() {
 async function deleteNote(noteId) {
   if (!confirm('Видалити заметку?')) return;
   try {
-    const r = await fetch(apiUrl('/api/client-note', 'id=' + noteId), { method: 'DELETE' });
+    const r = await fetch(apiUrl('/api/client-crm', 'type=note&id=' + noteId), { method: 'DELETE' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     if (CURRENT_CLIENT) {
       CURRENT_CLIENT.notes = CURRENT_CLIENT.notes.filter(n => n.id !== noteId);
@@ -2202,7 +2202,7 @@ async function addClientStatusPrompt() {
   const name = prompt('Назва нового статусу:');
   if (!name) return;
   try {
-    const r = await fetch(apiUrl('/api/client-statuses'), {
+    const r = await fetch(apiUrl('/api/client-crm', 'type=statuses'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: name.trim() }),
