@@ -138,6 +138,27 @@ module.exports = async function handler(req, res) {
       })
       .eq("id", runId);
 
+    // Авто-refresh sku_metrics після backfill — інакше нові sales не
+    // потраплять в матвью до наступного pg_cron run o 03:10 UTC.
+    // Soft timeout 15s: на великих об'ємах refresh може бути довгим, але
+    // не валимо backfill якщо не встигло — pg_cron на 03:10 потім добʼє.
+    let matviewRefreshed = false;
+    let matviewSkipped = null;
+    try {
+      await Promise.race([
+        (async () => {
+          const r = await supabase.rpc("refresh_sku_metrics");
+          if (r && r.error) throw new Error(r.error.message);
+        })(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("refresh timeout, deferring to pg_cron")), 15000)
+        ),
+      ]);
+      matviewRefreshed = true;
+    } catch (err) {
+      matviewSkipped = (err && err.message) || String(err);
+    }
+
     return res.status(200).json({
       ok: true,
       run_id: runId,
@@ -146,6 +167,8 @@ module.exports = async function handler(req, res) {
       orders: total,
       sales_upserted: upserted,
       api_calls: ctx.apiCalls,
+      sku_metrics_refreshed: matviewRefreshed,
+      sku_metrics_skipped: matviewSkipped,
     });
   } catch (err) {
     const msg = (err && err.message) || String(err);
