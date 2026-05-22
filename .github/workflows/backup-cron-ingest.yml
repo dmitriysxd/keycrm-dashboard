@@ -55,6 +55,25 @@ jobs:
           echo "::error::All 3 attempts failed"
           exit 1
 
+      - name: Backfill new buyers (опт-флаг)
+        if: success()
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          # Нові клієнти з'являються при ingest замовлень, але без custom_fields
+          # (KeyCRM в order.buyer їх не передає). Цей крок робить 2 виклики
+          # backfill-buyers по 60 кожен — підтягне до 120 нових клієнтів за день.
+          # Якщо їх більше — наступний день добере.
+          sleep 5
+          for i in 1 2; do
+            echo "=== backfill-buyers batch $i ==="
+            curl -s --max-time 90 \
+              "https://keycrm-dashboard.vercel.app/api/cron/backfill-buyers?secret=$CRON_SECRET" \
+              | head -c 400
+            echo ""
+            sleep 3
+          done
+
       - name: Verify ingest completed
         if: success()
         env:
@@ -69,17 +88,21 @@ jobs:
           d = json.load(sys.stdin)
           state = d.get('ingest_state') or {}
           last_auto = d.get('last_auto_ingest') or {}
-          import datetime, time
+          ws = d.get('wholesale_status') or {}
+          import datetime
           today = datetime.datetime.utcnow().strftime('%Y-%m-%d')
           cycle_date = state.get('cycle_date')
           status = state.get('status')
           print(f'cycle_date={cycle_date} status={status}')
           print(f'last_auto={last_auto.get(\"started_at\")} status={last_auto.get(\"status\")}')
+          print(f'wholesale: opt={ws.get(\"wholesale_true\")} retail={ws.get(\"wholesale_false\")} unknown={ws.get(\"wholesale_unknown\")} pending={ws.get(\"pending_backfill\")}')
           if cycle_date != today:
               print('::warning::cycle_date is not today — ingest may not have completed')
               sys.exit(0)
           if status != 'done':
               print(f'::warning::ingest_state.status is {status}, not done')
               sys.exit(0)
+          if ws.get('pending_backfill', 0) > 100:
+              print(f'::warning::{ws.get(\"pending_backfill\")} buyers still pending — backfill not catching up')
           print('✓ ingest cycle completed successfully for today')
           "
