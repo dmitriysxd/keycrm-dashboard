@@ -68,19 +68,23 @@ async function analyzeOne(sku, apiKey, ctx) {
     const attrs = await analyzeProductImage(imageUrl, sku.name);
     const embedText = buildEmbeddingText(attrs, sku.name);
     const embedding = await createEmbedding(embedText);
-    // visual_description в БД — використовуємо distinctive (це той опис, який
-    // юзер бачитиме в UI як головну характеристику товару). general_description
-    // зберігається в design_attributes цілком, доступний для UI/фільтрів.
-    const visualDesc = attrs.distinctive_description
-      || attrs.general_description
-      || attrs.description  // зворотна сумісність
-      || embedText.substring(0, 1000);
+    // visual_description в БД = visual_summary (концентрований технічний опис).
+    // visual_tags = similarity_keys + recommendation_vectors (для фільтрів в UI).
+    const visualDesc = attrs.visual_summary
+      || attrs.distinctive_description  // зворотна сумісність з попередньою схемою
+      || attrs.description
+      || embedText.substring(0, 500);
+    const tagsArr = [
+      ...(Array.isArray(attrs.similarity_keys) ? attrs.similarity_keys : []),
+      ...(Array.isArray(attrs.recommendation_vectors) ? attrs.recommendation_vectors : []),
+      ...(Array.isArray(attrs.tags) ? attrs.tags : []),  // зворотна сумісність
+    ].slice(0, 30);
     return {
       offer_id: sku.offer_id,
       ok: true,
       image_url: imageUrl,
       visual_description: visualDesc,
-      visual_tags: Array.isArray(attrs.tags) ? attrs.tags.slice(0, 20) : [],
+      visual_tags: tagsArr,
       design_attributes: attrs,
       image_embedding: embedding,
     };
