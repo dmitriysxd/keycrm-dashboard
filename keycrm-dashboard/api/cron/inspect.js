@@ -290,6 +290,9 @@ async function inspectHealth(supabase) {
   //    повертає порожній масив (без помилки).
   const { data: pgCronJobs } = await supabase.rpc("pg_cron_status");
 
+  // 7b. Wholesale-статус клієнтів — скільки опт, не-опт, невизначено
+  const { data: wholesaleStatus } = await supabase.rpc("buyers_wholesale_status_breakdown");
+
   // 8. Свіжість sku_metrics — порівнюємо MAX(last_sold_at) в matview з
   //    MAX(ordered_at) в сирому sales. Якщо matview значно відстає,
   //    значить refresh не відпрацював.
@@ -318,6 +321,16 @@ async function inspectHealth(supabase) {
   }
   if (matviewLagHours != null && matviewLagHours > 30) {
     hints.push(`⚠ sku_metrics відстає від sales на ${matviewLagHours} год. Refresh не відпрацював. Запусти REFRESH MATERIALIZED VIEW sku_metrics; вручну.`);
+  }
+  // Пomічаємо клієнтів з невизначеним wholesale-статусом
+  if (wholesaleStatus && wholesaleStatus[0]) {
+    const ws = wholesaleStatus[0];
+    if (ws.pending_backfill > 0) {
+      hints.push(`⚠ ${ws.pending_backfill} клієнтів чекають на бекфіл /buyer/{id} (опт-флаг не визначено). Запусти /api/cron/backfill-buyers.`);
+    }
+    if (ws.wholesale_unknown > 0) {
+      hints.push(`ℹ ${ws.wholesale_unknown} клієнтів з is_wholesale=NULL — нові, ще не отримали повну картку з KeyCRM.`);
+    }
   }
   if (pgCronJobs && pgCronJobs.length === 0) {
     hints.push("⚠ pg_cron jobs не знайдено. Перевір що міграції 017 (sku_metrics refresh) і 018 (buyer_rfm refresh) накатані.");
@@ -356,6 +369,7 @@ async function inspectHealth(supabase) {
     last_sale_in_sales: latestSale && latestSale[0] ? latestSale[0].ordered_at : null,
     last_sale_in_sku_metrics: latestMetricSold && latestMetricSold[0] ? latestMetricSold[0].last_sold_at : null,
     pg_cron_jobs: pgCronJobs || [],
+    wholesale_status: (wholesaleStatus && wholesaleStatus[0]) || null,
     last_buyer_sync: lastBuyer && lastBuyer[0] ? lastBuyer[0].last_synced_at : null,
     recent_runs_summary: (runs || []).slice(0, 10).map(r => ({
       kind: r.kind, status: r.status, started_at: r.started_at,
