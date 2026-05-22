@@ -55,20 +55,29 @@ jobs:
           echo "::error::All 3 attempts failed"
           exit 1
 
-      - name: Backfill new buyers (опт-флаг)
+      - name: Backfill all buyers (ім'я, телефон, опт-флаг)
         if: success()
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          # Нові клієнти з'являються при ingest замовлень, але без custom_fields
-          # (KeyCRM в order.buyer їх не передає). Цей крок робить 2 виклики
-          # backfill-buyers по 60 кожен — підтягне до 120 нових клієнтів за день.
-          # Якщо їх більше — наступний день добере.
+          # Щоденно оновлюємо ~600 клієнтів через /buyer/{id} API.
+          # force=true бере тих, чий last_synced_at старіший за 2 години
+          # (тобто практично всіх крім тих, кого щойно оновили в цьому
+          # ж циклі). Сортування "найдавніші перші" → автоматична ротація.
+          #
+          # 20 викликів × 60 buyers = 1200 клієнтів/день.
+          # Повний каталог ~3500 проходить за ~3 дні.
+          #
+          # Це покриває:
+          # - Нові клієнти (з custom_fields_raw=NULL) — підхопляться першими
+          # - Зміни в KeyCRM (ім'я, телефон, опт→роздріб) — підхопляться
+          #   протягом тижня
+          # - Стейл-протекція якщо щось упало раніше
           sleep 5
-          for i in 1 2; do
-            echo "=== backfill-buyers batch $i ==="
+          for i in $(seq 1 20); do
+            echo "=== backfill-buyers batch $i/20 ==="
             curl -s --max-time 90 \
-              "https://keycrm-dashboard.vercel.app/api/cron/backfill-buyers?secret=$CRON_SECRET" \
+              "https://keycrm-dashboard.vercel.app/api/cron/backfill-buyers?secret=$CRON_SECRET&force=true" \
               | head -c 400
             echo ""
             sleep 3
