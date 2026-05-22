@@ -38,6 +38,25 @@ function pickImageUrl(p) {
   return null;
 }
 
+// KeyCRM обгортає всі картинки в file-storage/remote?url=ENCODED proxy.
+// OpenAI Vision іноді не може скачати через цей проксі (особливо при
+// дрібному кодуванні типу %2B). Розпаковуємо до прямого URL на джерело.
+function unwrapKeycrmImageUrl(url) {
+  if (!url || typeof url !== "string") return url;
+  // Шукаємо &url= або ?url= з закодованим URL
+  const m = url.match(/[?&]url=([^&]+)/);
+  if (m) {
+    try {
+      const decoded = decodeURIComponent(m[1]);
+      // Якщо декодований починається з http — це валідний пряму URL
+      if (decoded.startsWith("http")) return decoded;
+    } catch (e) {
+      // ignore — повернемо оригінал
+    }
+  }
+  return url;
+}
+
 async function fetchImageUrlFromKeycrm(productId, apiKey, ctx) {
   if (!productId || !apiKey) return null;
   try {
@@ -63,6 +82,10 @@ async function analyzeOne(sku, apiKey, ctx) {
       };
     }
   }
+
+  // Розпаковуємо KeyCRM proxy URL → прямий URL на джерело.
+  // OpenAI Vision краще скачує прямі URL без додаткового кодування.
+  imageUrl = unwrapKeycrmImageUrl(imageUrl);
 
   try {
     const attrs = await analyzeProductImage(imageUrl, sku.name);
