@@ -39,17 +39,23 @@ function pickImageUrl(p) {
 }
 
 // KeyCRM обгортає всі картинки в file-storage/remote?url=ENCODED proxy.
-// OpenAI Vision іноді не може скачати через цей проксі (особливо при
-// дрібному кодуванні типу %2B). Розпаковуємо до прямого URL на джерело.
+// OpenAI Vision іноді не може скачати через цей проксі. Розпаковуємо до
+// прямого URL на джерело + пере-кодуємо проблемні символи у шляху
+// (особливо + який часто є в іменах файлів та інтерпретується як пробіл).
 function unwrapKeycrmImageUrl(url) {
   if (!url || typeof url !== "string") return url;
-  // Шукаємо &url= або ?url= з закодованим URL
   const m = url.match(/[?&]url=([^&]+)/);
   if (m) {
     try {
       const decoded = decodeURIComponent(m[1]);
-      // Якщо декодований починається з http — це валідний пряму URL
-      if (decoded.startsWith("http")) return decoded;
+      if (decoded.startsWith("http")) {
+        // ВАЖЛИВО: пере-кодуємо + в %2B у шляху URL. Деякі HTTP клієнти/
+        // сервери інтерпретують бare + як пробіл (старий form-encoding
+        // standard), що ламає завантаження файлу типу
+        // "...12345_+abc.jpg" → сервер шукає "...12345_ abc.jpg" і не
+        // знаходить. Цю проблему має OpenAI Vision fetcher.
+        return decoded.replace(/\+/g, "%2B");
+      }
     } catch (e) {
       // ignore — повернемо оригінал
     }
@@ -83,12 +89,41 @@ async function analyzeOne(sku, apiKey, ctx) {
     }
   }
 
-  // Розпаковуємо KeyCRM proxy URL → прямий URL на джерело.
-  // OpenAI Vision краще скачує прямі URL без додаткового кодування.
-  imageUrl = unwrapKeycrmImageUrl(imageUrl);
+  // Готуємо два варіанти URL для retry:
+  // 1) Прямий URL з джерела (швидше, надійніше)
+  // 2) Оригінальний KeyCRM proxy URL (fallback якщо джерело недоступне)
+  const directUrl = unwrapKeycrmImageUrl(imageUrl);
+  const candidateUrls = directUrl !== imageUrl ? [directUrl, imageUrl] : [directUrl];
+
+  let attrs = null;
+  let usedUrl = directUrl;
+  let lastErr = null;
+  for (const tryUrl of candidateUrls) {
+    try {
+      attrs = await analyzeProductImage(tryUrl, sku.name);
+      usedUrl = tryUrl;
+      break;
+    } catch (err) {
+      lastErr = err;
+      const msg = (err && err.message) || String(err);
+      // Якщо помилка не пов'язана з URL (rate limit, server error) —
+      // не пробуємо інший URL, кидаємо одразу.
+      if (!/invalid_image_url|Failed to download|Error while downloading/i.test(msg)) {
+        throw err;
+      }
+      // Інакше переходимо до наступного URL у списку.
+    }
+  }
+  if (!attrs) {
+    return {
+      offer_id: sku.offer_id,
+      ok: false,
+      image_url: imageUrl,
+      error: (lastErr && lastErr.message) || "all image URLs failed",
+    };
+  }
 
   try {
-    const attrs = await analyzeProductImage(imageUrl, sku.name);
     const embedText = buildEmbeddingText(attrs, sku.name);
     const embedding = await createEmbedding(embedText);
     // visual_description в БД = visual_summary (концентрований технічний опис).
@@ -105,7 +140,7 @@ async function analyzeOne(sku, apiKey, ctx) {
     return {
       offer_id: sku.offer_id,
       ok: true,
-      image_url: imageUrl,
+      image_url: usedUrl,  // зберігаємо саме той URL, який спрацював
       visual_description: visualDesc,
       visual_tags: tagsArr,
       design_attributes: attrs,
