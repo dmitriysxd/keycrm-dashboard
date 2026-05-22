@@ -563,6 +563,20 @@
 
 </div>
 
+<!-- Clients playbook (Скрипт) modal -->
+<div class="chart-modal-backdrop" id="clients-script-modal" onclick="if(event.target===this) closeClientsScript()">
+  <div class="chart-modal-card" style="max-width: 1000px">
+    <div class="chart-modal-head">
+      <div style="flex:1; min-width:0">
+        <div class="chart-modal-title">Скрипт: робота з клієнтами та повернення</div>
+        <div class="chart-modal-sub">Щоденна рутина, фрази для дзвінків, правила статусів</div>
+      </div>
+      <button class="chart-modal-close" onclick="closeClientsScript()" aria-label="Закрити">✕</button>
+    </div>
+    <div class="chart-modal-body" id="clients-script-body" style="min-height: 300px; overflow-y: auto; padding: 20px 24px"></div>
+  </div>
+</div>
+
 <!-- Clients docs modal -->
 <div class="chart-modal-backdrop" id="clients-docs-modal" onclick="if(event.target===this) closeClientsDocs()">
   <div class="chart-modal-card" style="max-width: 1000px">
@@ -1498,6 +1512,7 @@ let CLIENT_META = null;
 let CLIENT_FILTER = { status_id: '', segment: '', search: '', overdue_only: false };
 let CLIENT_SORT = { col: 'monetary', dir: 'desc' };
 let CURRENT_CLIENT = null;
+let EDITING_NOTE_ID = null;
 
 const SEGMENT_LABEL = {
   champions: 'Чемпіони', loyal: 'Лояльні', new: 'Нові',
@@ -1593,6 +1608,9 @@ function renderClients() {
         <div class="page-sub">Показано: тільки клієнти з прапором "Опт" у KeyCRM (всього ${fmt(wholesale)} з ${fmt(total)})</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
+        <button class="refresh-btn" onclick="openClientsScript()" title="Скрипт роботи з клієнтами">
+          <span class="ri">▶</span> Скрипт
+        </button>
         <button class="refresh-btn" onclick="openClientsDocs()" title="Довідка з показниками">
           <span class="ri" style="font-weight:bold">?</span> Довідка
         </button>
@@ -1721,6 +1739,7 @@ async function openClientModal(buyerId) {
       throw new Error(e.error || 'HTTP ' + r.status);
     }
     CURRENT_CLIENT = await r.json();
+    EDITING_NOTE_ID = null;
     renderClientModal();
   } catch (e) {
     document.getElementById('client-modal-body').innerHTML = '<div class="chart-modal-empty">⚠ ' + (e.message || 'Помилка') + '</div>';
@@ -1730,6 +1749,7 @@ async function openClientModal(buyerId) {
 function closeClientModal() {
   document.getElementById('client-modal').classList.remove('open');
   CURRENT_CLIENT = null;
+  EDITING_NOTE_ID = null;
 }
 
 function renderClientModal() {
@@ -1772,15 +1792,35 @@ function renderClientModal() {
     .concat(CLIENT_STATUSES.map(s => `<option value="${s.id}" ${buyer.status_id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`))
     .join('');
 
+  const OUTCOME_OPTS = ['', 'передзвонити', 'замовив', 'думає', 'не відповідає', 'відмова', 'не цікаво зараз'];
   const notesHtml = (notes || []).length === 0
     ? '<div class="muted" style="padding:12px 0">Немає записів. Додайте першу нижче.</div>'
     : (notes.map(n => {
         const date = new Date(n.created_at).toLocaleString('uk-UA');
+        const editing = EDITING_NOTE_ID === n.id;
+        if (editing) {
+          const optsHtml = OUTCOME_OPTS.map(o =>
+            `<option value="${esc(o)}" ${o === (n.outcome || '') ? 'selected' : ''}>${o ? esc(o) : '— результат —'}</option>`
+          ).join('');
+          return `
+            <div style="border-left:2px solid var(--gold);padding:8px 12px;margin-bottom:8px;background:var(--s2);border-radius:0 8px 8px 0">
+              <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${date}</div>
+              <select id="edit-outcome-${n.id}" style="width:100%;margin-bottom:6px">${optsHtml}</select>
+              <textarea id="edit-body-${n.id}" rows="4" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px;border-radius:6px;font-family:inherit;font-size:12px;resize:vertical">${esc(n.body)}</textarea>
+              <div style="display:flex;gap:6px;margin-top:6px">
+                <button onclick="saveEditNote(${n.id})" style="flex:1;padding:6px;background:var(--gold);color:#1a1108;border:0;border-radius:6px;font-weight:600;cursor:pointer">Зберегти</button>
+                <button onclick="cancelEditNote()" style="padding:6px 12px;background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:6px;cursor:pointer">Скасувати</button>
+              </div>
+            </div>`;
+        }
         return `
           <div style="border-left:2px solid var(--gold);padding:8px 12px;margin-bottom:8px;background:var(--s2);border-radius:0 8px 8px 0">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">
               <div style="font-size:11px;color:var(--muted)">${date}${n.outcome ? ' · <b style="color:var(--gold)">' + esc(n.outcome) + '</b>' : ''}</div>
-              <button onclick="deleteNote(${n.id})" style="background:transparent;border:0;color:var(--muted);cursor:pointer;font-size:14px" title="Видалити">✕</button>
+              <div style="display:flex;gap:4px">
+                <button onclick="startEditNote(${n.id})" style="background:transparent;border:0;color:var(--muted);cursor:pointer;font-size:12px" title="Редагувати">✎</button>
+                <button onclick="deleteNote(${n.id})" style="background:transparent;border:0;color:var(--muted);cursor:pointer;font-size:14px" title="Видалити">✕</button>
+              </div>
             </div>
             <div style="white-space:pre-wrap;font-size:12px;color:var(--text)">${esc(n.body)}</div>
           </div>`;
@@ -1941,6 +1981,42 @@ async function submitNote() {
   }
 }
 
+function startEditNote(noteId) {
+  EDITING_NOTE_ID = noteId;
+  renderClientModal();
+}
+
+function cancelEditNote() {
+  EDITING_NOTE_ID = null;
+  renderClientModal();
+}
+
+async function saveEditNote(noteId) {
+  const body = (document.getElementById('edit-body-' + noteId).value || '').trim();
+  const outcome = document.getElementById('edit-outcome-' + noteId).value;
+  if (!body) { alert('Текст заметки не може бути порожнім'); return; }
+  try {
+    const r = await fetch(apiUrl('/api/client-crm', 'type=note&id=' + noteId), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body, outcome }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || r.status);
+    }
+    const resp = await r.json();
+    if (CURRENT_CLIENT) {
+      const idx = CURRENT_CLIENT.notes.findIndex(n => n.id === noteId);
+      if (idx !== -1) CURRENT_CLIENT.notes[idx] = resp.note;
+    }
+    EDITING_NOTE_ID = null;
+    renderClientModal();
+  } catch (e) {
+    alert('Помилка: ' + (e.message || e));
+  }
+}
+
 async function deleteNote(noteId) {
   if (!confirm('Видалити заметку?')) return;
   try {
@@ -1953,6 +2029,142 @@ async function deleteNote(noteId) {
   } catch (e) {
     alert('Помилка: ' + (e.message || e));
   }
+}
+
+// ── Clients playbook (Скрипт) ──────────────────
+function openClientsScript() {
+  document.getElementById('clients-script-modal').classList.add('open');
+  document.getElementById('clients-script-body').innerHTML = clientsScriptHtml();
+}
+function closeClientsScript() {
+  document.getElementById('clients-script-modal').classList.remove('open');
+}
+
+function clientsScriptHtml() {
+  return `
+  <style>
+    .pb h3 { color: var(--gold); font-size: 14px; margin: 18px 0 8px; text-transform: uppercase; letter-spacing: 0.5px }
+    .pb h4 { color: var(--text); font-size: 13px; margin: 14px 0 6px }
+    .pb p, .pb li { font-size: 12px; line-height: 1.55; color: var(--text) }
+    .pb ul, .pb ol { padding-left: 20px; margin: 6px 0 10px }
+    .pb table { width: 100%; font-size: 12px; border-collapse: collapse; margin: 8px 0 12px }
+    .pb th, .pb td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; text-align: left }
+    .pb th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px }
+    .pb .quote { border-left: 3px solid var(--gold); background: var(--s2); padding: 8px 12px; margin: 6px 0 10px; border-radius: 0 8px 8px 0; font-style: italic; color: var(--text); font-size: 12px; line-height: 1.5 }
+    .pb code { background: var(--s2); padding: 1px 6px; border-radius: 4px; font-size: 11px; color: var(--gold) }
+    .pb .warn { color: #ef4444 }
+  </style>
+  <div class="pb">
+
+    <h3>1. Логіка пріоритезації</h3>
+    <p>Дашборд автоматично рахує три ключові сигнали:</p>
+    <table>
+      <thead><tr><th>Сигнал</th><th>Де дивитись</th><th>Що означає</th></tr></thead>
+      <tbody>
+        <tr><td><b>Прострочений</b> (червоний рядок)</td><td>колонка R · "⚠"</td><td>Не купував у N× раз довше за свій цикл</td></tr>
+        <tr><td><b>Сегмент</b></td><td>колонка "Сегмент"</td><td>RFM-сегмент: champions / loyal / at_risk / lost</td></tr>
+        <tr><td><b>Churn %</b></td><td>колонка "Churn"</td><td>0–100% — комбінований ризик відтоку</td></tr>
+        <tr><td><b>Velocity</b></td><td>колонка "Velocity"</td><td>Прискорюється / стабільно / сповільнюється</td></tr>
+      </tbody>
+    </table>
+    <p><b>Правило пріоритету:</b> спочатку працюємо там, де <b>гроші на столі</b> — високий LTV + прострочка + середній churn. "Lost" з низьким LTV — у кінець списку.</p>
+
+    <h3>2. Щоденний скрипт (15–30 хв/день)</h3>
+    <h4>Крок 1. Ранковий фільтр (3 хв)</h4>
+    <ol>
+      <li>Відкрий <b>Клієнти</b> → постав "⚠ Тільки прострочені"</li>
+      <li>Сортуй по <b>LTV ↓</b> (клік по колонці)</li>
+      <li>Візьми <b>топ-10</b> рядків — це план на сьогодні</li>
+    </ol>
+    <h4>Крок 2. Перед дзвінком (1–2 хв)</h4>
+    <p>Відкрий картку клієнта → подивись:</p>
+    <ul>
+      <li><b>Цикл закупки</b> — раз на скільки днів зазвичай бере</li>
+      <li><b>Останнє замовлення</b> — дата + сума</li>
+      <li><b>Категорії</b> — що брав (90д vs весь час)</li>
+      <li><b>Velocity</b> — якщо "↓ сповільнюється" → готуй пропозицію</li>
+      <li><b>Заметки</b> — що обговорювали минулого разу</li>
+    </ul>
+    <h4>Крок 3. Дзвінок → фіксуй результат</h4>
+    <table>
+      <thead><tr><th>Outcome</th><th>Коли ставити</th><th>Що далі</th></tr></thead>
+      <tbody>
+        <tr><td><code>передзвонити</code></td><td>Не взяла трубку / попросила пізніше</td><td>Через 2–3 дні повторити</td></tr>
+        <tr><td><code>замовив</code></td><td>Зробила замовлення або обіцяла</td><td>Статус "Активний"</td></tr>
+        <tr><td><code>думає</code></td><td>Цікавиться, але не готова</td><td>Через 5–7 днів — follow-up</td></tr>
+        <tr><td><code>не відповідає</code></td><td>2-й раз мовчить</td><td>3-й раз → статус "Спящий"</td></tr>
+        <tr><td><code>відмова</code></td><td>"Не працюю / закрилась"</td><td>Статус "Відмова", не дзвонити</td></tr>
+      </tbody>
+    </table>
+    <h4>Крок 4. Після дзвінка</h4>
+    <ul>
+      <li>Онови <b>статус клієнта</b> (dropdown у шапці картки)</li>
+      <li>Якщо "замовив" — заметка обов'язкова (що саме цікавить)</li>
+    </ul>
+
+    <h3>3. Скрипти розмов (опт-ювелірка)</h3>
+    <h4>A. Просто зник — 1× циклу</h4>
+    <div class="quote">«Доброго дня, [ім'я]! Це [твоє ім'я] з [магазин]. Звертаюсь, бо ви зазвичай раз на [N днів] оновлюєте вітрину, а зараз вже [X] днів — все в порядку? Можу прислати фото новинок, які зайшли цього тижня?»</div>
+    <p><b>Ціль:</b> не тиснути, спровокувати "пришли подивлюсь".</p>
+
+    <h4>B. Прострочка 2× циклу (Velocity ↓)</h4>
+    <div class="quote">«Привіт, [ім'я]. Бачу, що минулого разу ви брали [категорія] — як продається? Може, щось не зайшло і треба замінити асортимент? У нас цього тижня прийшло [нова колекція / сезонне], можу підібрати під ваш магазин.»</div>
+    <p><b>Ціль:</b> показати, що пам'ятаєш її асортимент → лояльність.</p>
+
+    <h4>C. At Risk (3+ цикли, раніше VIP)</h4>
+    <div class="quote">«[Ім'я], добрий день. Чесно — переживаю, бо ви були одним з наших [VIP/постійних] клієнтів, а зараз вже [X] днів тиша. Щось пішло не так з нашого боку? Готова зробити персональну добірку + [бонус: безкоштовна доставка / промо-ціна на тестову партію].»</div>
+    <p><b>Ціль:</b> прямо назвати проблему, дати причину повернутись.</p>
+
+    <h4>D. Lost (3+ місяці мовчання)</h4>
+    <p>Спочатку <b>НЕ дзвонимо</b> — пишемо у Viber/Telegram (м'якше):</p>
+    <div class="quote">«Доброго дня! [Ім'я], це [магазин]. Давно вас не бачили — просто хочу нагадати, що у нас [новина: новинки/акція/новий каталог]. Якщо цікаво — кину фото або каталог. Якщо вже не працюєте з цим напрямком — напишіть, я приберу вас зі списку, щоб не турбувати.»</div>
+    <p><b>Ціль:</b> або реактивація, або чесна "відмова" → почистити базу.</p>
+
+    <h4>E. Champions / VIP (не зниклі, але потребують уваги)</h4>
+    <p>Раз на 2 тижні — коротке торкання:</p>
+    <div class="quote">«[Ім'я], привіт! Скинула вам у вайбер топ-5 новинок цього тижня, гляньте. Якщо щось зайшло — притримаю.»</div>
+
+    <h3>4. Тижневий план (1 раз/тиждень, 30 хв)</h3>
+    <p><b>Понеділок зранку:</b></p>
+    <ol>
+      <li><b>Клієнти → "Champions" + "VIP"</b> → перевір, у кого Velocity = ↓ → 3–5 проактивних торкань</li>
+      <li><b>Клієнти → "At Risk" по LTV ↓</b> → топ-10 → розплануй на тиждень по 2/день</li>
+      <li><b>Клієнти → "Lost" + Churn &gt; 70%</b> → пакет у Viber-розсилку (не дзвонити особисто)</li>
+      <li><b>Клієнти → "Новий"</b> → welcome-повідомлення протягом 48 годин</li>
+    </ol>
+
+    <h3>5. Правила роботи зі статусами</h3>
+    <table>
+      <thead><tr><th>Статус</th><th>Коли ставити</th><th>Дія</th></tr></thead>
+      <tbody>
+        <tr><td><b>Новий</b></td><td>Перша закупка &lt; 30 днів</td><td>Welcome + follow-up через 2 тижні</td></tr>
+        <tr><td><b>Активний</b></td><td>Купує у своєму циклі</td><td>Не чіпати, лише реакція на запит</td></tr>
+        <tr><td><b>Тёплий</b></td><td>Прострочка 1–1.5× циклу</td><td>Дзвінок раз на тиждень</td></tr>
+        <tr><td><b>VIP</b></td><td>Топ 20% по LTV</td><td>Персональне торкання раз на 2 тижні</td></tr>
+        <tr><td><b>Спящий</b></td><td>2× циклу, не відповідає</td><td>Раз на місяць — розсилка, не дзвінок</td></tr>
+        <tr><td><b>Відмова</b></td><td>Сказала "не працюю"</td><td>Не чіпати мінімум 6 міс</td></tr>
+      </tbody>
+    </table>
+    <p><b>Важливо:</b> статус — це <i>мій</i> маркер, а сегмент (champions/loyal/...) рахується автоматично з RFM. Вони доповнюють одне одного.</p>
+
+    <h3>6. Метрики для самоконтролю</h3>
+    <p>Відкрий картку клієнта після кампанії — дивись:</p>
+    <ul>
+      <li><b>R впав</b> (був 90д → став 5д) → повернення спрацювало ✅</li>
+      <li><b>Velocity: accelerating</b> → активне повернення</li>
+      <li><b>Churn %</b> знизився на 20+ пп → лід "вилікувався"</li>
+    </ul>
+    <p>Якщо за місяць <b>&gt;30% "Тёплих" перейшли в "Активних"</b> — система працює.</p>
+
+    <h3>7. Чого <span class="warn">НЕ</span> робити</h3>
+    <ul>
+      <li class="warn">Не дзвонити "Lost" з LTV &lt; 1000 ₴ — вигідніше холодні нові ліди</li>
+      <li class="warn">Не ставити outcome "замовив" авансом — лише коли заявка реально прийшла</li>
+      <li class="warn">Не ігнорувати "Активних" — вони дають 80% обороту, втрата болючіша</li>
+      <li class="warn">Не дзвонити одному клієнту частіше 1 разу на 5 днів — дратує</li>
+    </ul>
+
+  </div>`;
 }
 
 // ── Clients docs modal ───────────────────────────

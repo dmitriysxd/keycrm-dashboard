@@ -5,6 +5,7 @@
 //
 // === НОТАТКИ ДЗВІНКІВ ===
 // POST   /api/client-crm?type=note         body: { buyer_id, outcome?, body }
+// PATCH  /api/client-crm?type=note&id=...  body: { outcome?, body? }
 // DELETE /api/client-crm?type=note&id=...
 //
 // === ДОВІДНИК СТАТУСІВ ===
@@ -43,6 +44,30 @@ async function handleNote(req, res, supabase) {
       .select("id, created_at, outcome, body")
       .single();
     if (error) throw new Error("notes insert: " + error.message);
+    return res.status(200).json({ ok: true, note: data });
+  }
+
+  if (req.method === "PATCH") {
+    const id = req.query && req.query.id ? parseInt(req.query.id) : null;
+    if (!id) return res.status(400).json({ error: "id required" });
+    const body = await readBody(req);
+    const patch = {};
+    if (body.body != null) {
+      const text = String(body.body).trim();
+      if (!text) return res.status(400).json({ error: "body cannot be empty" });
+      patch.body = text.slice(0, 4000);
+    }
+    if (body.outcome !== undefined) {
+      patch.outcome = body.outcome ? String(body.outcome).trim().slice(0, 80) : null;
+    }
+    if (Object.keys(patch).length === 0) return res.status(400).json({ error: "nothing to update" });
+    const { data, error } = await supabase
+      .from("buyer_notes")
+      .update(patch)
+      .eq("id", id)
+      .select("id, created_at, outcome, body")
+      .single();
+    if (error) throw new Error("notes update: " + error.message);
     return res.status(200).json({ ok: true, note: data });
   }
 
@@ -95,7 +120,7 @@ async function handleStatuses(req, res, supabase) {
 
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
   if (req.method === "OPTIONS") return res.status(200).end();
 
   const auth = checkDashboardToken(req);
