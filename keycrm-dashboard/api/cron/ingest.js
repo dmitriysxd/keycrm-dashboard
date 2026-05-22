@@ -563,21 +563,28 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
     : 0;
   const isStaleError = state && state.status === "error"
     && (Date.now() - lastChunkMs) > 12 * 3600 * 1000;
-  if (isStaleDone || isStaleIdle || isStaleError) {
+  // Recover from stuck "running" state: якщо стан "running" і last_chunk_at
+  // старіший за 1 годину — значить Vercel функція впала по таймауту (60s)
+  // не встигнувши оновити статус. Скидаємо на свіжий цикл — наступний
+  // тригер (cron / manual / GitHub Actions backup) почне з products.
+  const isStaleRunning = state && state.status === "running"
+    && lastChunkMs > 0
+    && (Date.now() - lastChunkMs) > 60 * 60 * 1000;
+  if (isStaleDone || isStaleIdle || isStaleError || isStaleRunning) {
     const fresh = {
       cycle_date: today,
       cycle_started_at: new Date().toISOString(),
       current_step: "products",
       current_page: 1,
       status: "running",
-      last_error: null,
+      last_error: isStaleRunning ? "stale-running auto-recovered" : null,
     };
     await writeState(supabase, fresh);
     state = Object.assign({ id: 1 }, fresh);
   } else if (state.status === "done") {
     return { phase: "noop", reason: "already_done_today", state };
   }
-  // status === "running" → resume from saved cursor.
+  // status === "running" з свіжим last_chunk_at → resume from saved cursor.
 
   const stepName = state.current_step;
   const cycleStartIso = state.cycle_started_at;
