@@ -326,7 +326,7 @@ async function inspectHealth(supabase) {
   if (wholesaleStatus && wholesaleStatus[0]) {
     const ws = wholesaleStatus[0];
     if (ws.pending_backfill > 0) {
-      hints.push(`⚠ ${ws.pending_backfill} клієнтів чекають на бекфіл /buyer/{id} (опт-флаг не визначено). Запусти /api/cron/backfill-buyers.`);
+      hints.push(`ℹ ${ws.pending_backfill} нових клієнтів чекають на бекфіл /buyer/{id} (нема повної картки). GitHub Actions обробляє автоматично щодня.`);
     }
     if (ws.wholesale_unknown > 0) {
       hints.push(`ℹ ${ws.wholesale_unknown} клієнтів з is_wholesale=NULL — нові, ще не отримали повну картку з KeyCRM.`);
