@@ -82,7 +82,15 @@ const SCHEMA = {
     geometry: {
       type: "object", additionalProperties: false,
       properties: {
-        primary_shape: arrEnum(["round","oval","square","rounded_square","rectangle","teardrop","marquise","heart","floral","geometric","cross","abstract","braided","knot","spiral","layered","chain_based","medallion","icon_frame","shield","elongated","star","celestial","infinity","symbolic"]),
+        primary_shape: arrEnum([
+          // базові геометричні
+          "round","oval","square","rounded_square","rectangle","teardrop","marquise","heart","cross","shield","star","infinity","elongated",
+          // органічні / тематичні мотиви (важливо для нашого каталогу Xuping)
+          "floral","leaf","butterfly","bird","animal","feather","bow",
+          "crown","key","arrow","lock","letter","numeral","religious_symbol","celestial","zodiac_symbol",
+          // абстрактні / структурні
+          "geometric","abstract","braided","knot","spiral","layered","chain_based","medallion","icon_frame","symbolic",
+        ]),
         secondary_shapes: { type: "array", items: { type: "string" } },
         line_style: arrEnum(["smooth","sharp","angular","flowing","interwoven","braided","twisted","layered","architectural","soft_curves","rigid","symmetrical_lines","organic"]),
         symmetry: enumStr(["perfect","near_perfect","asymmetrical"]),
@@ -334,6 +342,30 @@ CRITICAL DISTINCTIONS the system must capture:
 - lightweight vs visually heavy
 - feminine vs architectural
 - timeless vs trend-driven
+
+PRODUCT NAME IS A STRONG CONTEXT SIGNAL:
+The catalog uses Ukrainian terms in product names. ALWAYS use them to inform primary_shape:
+- "метелик" / "метелики" → primary_shape MUST include "butterfly"
+- "корона" / "корони" / "крона" → primary_shape MUST include "crown"
+- "квітка" / "квіти" / "роза" / "лілія" → primary_shape MUST include "floral" (or "leaf" for leaves)
+- "серце" / "сердечко" → primary_shape MUST include "heart"
+- "хрест" / "хрестик" → primary_shape MUST include "cross"
+- "птах" / "пташка" / "сова" / "лебідь" → primary_shape MUST include "bird"
+- "звір" / "тварина" / "кіт" / "лев" → primary_shape MUST include "animal"
+- "зірка" / "зірочка" / "зорі" → primary_shape MUST include "star"
+- "ангел" / "ікона" / "святий" → primary_shape MUST include "religious_symbol"
+- "знак нескінченності" / "infinity" → "infinity"
+- "ключ" → "key"
+- "стрілка" → "arrow"
+- "бантик" / "бант" → "bow"
+- "перо" / "пір'я" → "feather"
+- "лист" / "листочок" → "leaf"
+- "цвяшки" / "пусети" → це earring_type=stud_earrings, але primary_shape визначай за зображенням (часто round/circular або симолічна форма)
+- "кільця" (про сережки) → primary_shape "round" + earring_type=hoop_earrings
+- "ладанка" / "медальйон" → "medallion"
+- "ажур" → openness="openwork"
+
+If product name explicitly says метелик/корона/etc — that motif IS the primary shape. Don't fall back to "floral" because it looks decorative. Use the exact motif.
 
 The goal is NOT to describe products beautifully.
 The goal is to create stable embeddings, strong similarity matching, accurate recommendations,
