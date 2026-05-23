@@ -174,6 +174,10 @@ async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
       const qtyReserved = parseFloat(o.in_reserve != null ? o.in_reserve : 0);
       const qty = Math.max(0, (isNaN(qtyTotal) ? 0 : qtyTotal) - (isNaN(qtyReserved) ? 0 : qtyReserved));
       const price = parseFloat(o.price);
+      // Закупівельна ціна з KeyCRM — синхронізуємо в skus.cost щоб рахувати
+      // заморожений капітал (cost × current_stock) і маржу. KeyCRM зберігає
+      // це поле на рівні offer (варіанту), а не master-продукту.
+      const purchasedPrice = parseFloat(o.purchased_price);
       const productName = product.name || o.product_name || o.name;
       const variantSuffix = o.sku && productName && !productName.includes(o.sku)
         ? " · " + o.sku
@@ -195,6 +199,7 @@ async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
         category_id: categoryId,
         category_name: categoryName,
         price: isNaN(price) ? null : price,
+        cost: isNaN(purchasedPrice) || purchasedPrice <= 0 ? null : purchasedPrice,
         keycrm_created_at: keycrmCreatedAt,
         last_seen_at: new Date().toISOString(),
         is_active: true,
@@ -489,6 +494,7 @@ async function deactivateMissing(supabase, runStartIso) {
 }
 
 const PRODUCTS_CHUNK_PAGES = 8;
+const OFFERS_CHUNK_PAGES = 6; // offers важчі (більше полів) — менше сторінок за чанк
 
 async function readState(supabase) {
   const { data, error } = await supabase
@@ -603,12 +609,33 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
           last_chunk_at: new Date().toISOString(),
         });
       } else {
-        // Products done — deactivate stale SKUs, flag restocks, advance to sales.
+        // Products done — deactivate stale SKUs, flag restocks, advance to offers
+        // (де лежить purchased_price для собівартості).
         await deactivateMissing(supabase, cycleStartIso);
         try {
           const rs = await supabase.rpc("detect_restocks", { target_date: todayUTC() });
           if (!rs.error) result.restocks_flagged = rs.data;
         } catch (_) {}
+        await writeState(supabase, {
+          current_step: "offers",
+          current_page: 1,
+          last_chunk_at: new Date().toISOString(),
+        });
+        result.advanced = "offers";
+      }
+    } else if (stepName === "offers") {
+      // Тягнемо /offers щоб синхронізувати cost (purchased_price з KeyCRM) і
+      // variant-рівневі дані. Без цього кроку variants залишались тільки у
+      // sales, але не у skus — і вартість стоку не рахувалась.
+      const r = await ingestOffers(apiKey, supabase, ctx, state.current_page, OFFERS_CHUNK_PAGES);
+      result.offers = r.offersSeen;
+      result.lastPage = r.lastPage;
+      if (r.more) {
+        await writeState(supabase, {
+          current_page: r.lastPage + 1,
+          last_chunk_at: new Date().toISOString(),
+        });
+      } else {
         await writeState(supabase, {
           current_step: "sales",
           current_page: 1,

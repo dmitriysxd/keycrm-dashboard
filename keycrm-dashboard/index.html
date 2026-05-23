@@ -1199,8 +1199,14 @@ function applySkuFilters(rows) {
 function sortSku(rows) {
   const { col, dir } = SKU_SORT;
   const sign = dir === 'asc' ? 1 : -1;
+  const getVal = (r) => {
+    if (col === 'stock_cost') {
+      return (r.cost != null && r.current_stock) ? r.cost * r.current_stock : null;
+    }
+    return r[col];
+  };
   return rows.slice().sort((a, b) => {
-    const av = a[col], bv = b[col];
+    const av = getVal(a), bv = getVal(b);
     if (av === null || av === undefined) return 1;
     if (bv === null || bv === undefined) return -1;
     if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * sign;
@@ -1225,13 +1231,16 @@ function renderSkuTable() {
     if (th.dataset.col === SKU_SORT.col) th.classList.add(SKU_SORT.dir);
   });
   tbody.innerHTML = rows.length === 0
-    ? '<tr><td colspan="15" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
-    : rows.map(r => `
+    ? '<tr><td colspan="16" class="muted" style="text-align:center;padding:24px">Нічого не знайдено</td></tr>'
+    : rows.map(r => {
+        const stockCost = (r.cost != null && r.current_stock) ? r.cost * r.current_stock : null;
+        return `
       <tr onclick="openChartModal(${r.offer_id})">
         <td>${(r.name || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</td>
         <td class="muted">${r.sku || '—'}</td>
         <td class="muted">${r.category_name || '—'}</td>
         <td class="num">${fmtNum(r.current_stock)}</td>
+        <td class="num">${stockCost != null ? fmtMoney(stockCost) : '<span class="muted">—</span>'}</td>
         <td class="num">${fmtNum(r.sold_30d)}</td>
         <td class="num">${fmtNum(r.velocity_7d, 2)}</td>
         <td class="num">${fmtNum(r.velocity_30d, 2)}</td>
@@ -1243,7 +1252,8 @@ function renderSkuTable() {
         <td class="num muted">${r.age_days != null ? r.age_days + 'д' : '—'}</td>
         <td>${statusPill(r)}</td>
         <td style="white-space:nowrap;letter-spacing:2px">${signalsCell(r)}</td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
 }
 
 const XLS_COLS = [
@@ -1251,6 +1261,7 @@ const XLS_COLS = [
   { key: 'sku',                label: 'Артикул' },
   { key: 'category_name',      label: 'Категорія' },
   { key: 'current_stock',      label: 'Склад' },
+  { key: 'stock_cost_xls',     label: 'Вартість стоку (UAH)' },
   { key: 'sold_30d',           label: 'Продано за 30 днів' },
   { key: 'velocity_7d',        label: 'V7' },
   { key: 'velocity_30d',       label: 'V30' },
@@ -1272,6 +1283,9 @@ function exportSkuXlsx(rows, baseName) {
   const aoa = [XLS_COLS.map(c => c.label)];
   rows.forEach(r => {
     aoa.push(XLS_COLS.map(c => {
+      if (c.key === 'stock_cost_xls') {
+        return (r.cost != null && r.current_stock) ? Math.round(r.cost * r.current_stock * 100) / 100 : '';
+      }
       const v = r[c.key];
       if (v == null || v === '') return '';
       if (c.key === 'status') return STATUS_LABEL[v] || v;
@@ -1304,10 +1318,13 @@ function exportSkuXlsx(rows, baseName) {
 // ── SKU page ─────────────────────────
 function skuKpi(key, label, color, count) {
   const active = SKU_FILTER.status === key;
+  const costByStatus = (SKU_META && SKU_META.stock_cost_by_status) || {};
+  const stockCost = costByStatus[key];
   return `<div class="kpi" style="cursor:pointer;${active ? 'outline:2px solid ' + color + ';' : ''}" onclick="setSkuStatusFilter('${key === SKU_FILTER.status ? '' : key}')" title="Клік: фільтрувати по статусу">
     <div class="kpi-accent" style="background:${color}"></div>
     <div class="kpi-label">${label}</div>
     <div class="kpi-val" style="color:${color}">${fmt(count)}</div>
+    ${stockCost ? `<div style="font-size:10px;color:var(--muted);margin-top:2px;letter-spacing:0.3px" title="Заморожений капітал — сума cost × склад по цьому статусу">💰 ${fmtMoney(stockCost)}</div>` : ''}
   </div>`;
 }
 
@@ -1408,6 +1425,7 @@ function renderSku() {
           <th class="sortable" data-col="sku" onclick="setSort('sku')">Артикул <span class="arrow">▼</span></th>
           <th class="sortable" data-col="category_name" onclick="setSort('category_name')">Категорія <span class="arrow">▼</span></th>
           <th class="sortable" data-col="current_stock" onclick="setSort('current_stock')" style="text-align:right">Склад <span class="arrow">▼</span></th>
+          <th class="sortable" data-col="stock_cost" onclick="setSort('stock_cost')" style="text-align:right" title="Заморожений капітал = cost × склад">Вартість стоку <span class="arrow">▼</span></th>
           <th class="sortable" data-col="sold_30d" onclick="setSort('sold_30d')" style="text-align:right">S30d <span class="arrow">▼</span></th>
           <th class="sortable" data-col="velocity_7d" onclick="setSort('velocity_7d')" style="text-align:right">V7 <span class="arrow">▼</span></th>
           <th class="sortable" data-col="velocity_30d" onclick="setSort('velocity_30d')" style="text-align:right">V30 <span class="arrow">▼</span></th>
@@ -2953,6 +2971,7 @@ function skuDocsHtml() {
       <tbody>
         <tr><td><b>Назва · Артикул · Категорія</b></td><td>З KeyCRM. Артикул = SKU-код.</td></tr>
         <tr><td><b>Склад</b></td><td>Скільки штук зараз доступно для продажу (без зарезервованих в активних замовленнях).</td></tr>
+        <tr><td><b>Вартість стоку</b></td><td><b>Заморожений капітал</b> по цьому SKU = cost × склад. Сума по статусу видно під кожним лічильником у KPI-картках (💰).</td></tr>
         <tr><td><b>S30d</b></td><td>Скільки штук продано за останні 30 днів.</td></tr>
         <tr><td><b>V7 / V30 / V90</b></td><td>Швидкість продажу (шт/день) на різних вікнах. <b>Порівняння V7 і V30 показує тренд</b>: V7 &gt; V30 → товар прискорюється; V7 &lt; V30 → сповільнюється.</td></tr>
         <tr><td><b>Vlife</b></td><td>Швидкість за весь час життя товару (тільки дні, коли він був у наявності). Найчесніша метрика "як товар взагалі продається".</td></tr>
@@ -3055,9 +3074,10 @@ function skuDocsHtml() {
     <h2>7. Звідки беруться дані і коли оновлюються</h2>
     <ul>
       <li><b>KeyCRM API</b> — кожну ніч ingest забирає замовлення, склади, оновлення карток товарів.</li>
+      <li><b>Cost (закупівельна ціна)</b> — підтягується щоночі з KeyCRM (поле <code>purchased_price</code> у offer). Якщо хочеш перетерти ціну вручну — це можливо в картці SKU, але наступний ingest повторно перетягне з KeyCRM.</li>
       <li><b>sku_metrics</b> (вся аналітика) — перераховується одразу після ingest.</li>
       <li><b>Квінтилі / ранги</b> — рахуються заново щоночі. <b>Твій товар може поміняти ранг навіть якщо ти нічого не робив</b> — бо інші товари перемішало.</li>
-      <li><b>Cost / manual_status</b> — миттєво при збереженні в картці.</li>
+      <li><b>manual_status</b> — миттєво при збереженні в картці.</li>
     </ul>
 
     <div class="tip">
