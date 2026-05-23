@@ -62,6 +62,12 @@ async function handleTrends(req, res, supabase) {
     return res.status(400).json({ error: "bucket must be week|month|year" });
   }
 
+  // Виключаємо роздрібних клієнтів — сторінка про опт-бізнес.
+  const wholesaleBuyers = await fetchAll(() =>
+    supabase.from("buyers").select("buyer_id").eq("is_wholesale", true)
+  );
+  const wholesaleSet = new Set(wholesaleBuyers.map(b => b.buyer_id));
+
   // Беремо grand_total з sales (як в /api/clients) — це сума замовлення з
   // урахуванням знижок. Group by order_id робимо вже у Node, бо sales —
   // рядки замовлень.
@@ -80,6 +86,9 @@ async function handleTrends(req, res, supabase) {
   for (const r of rows) {
     if (isExcluded(r.order_status)) continue;
     if (!r.ordered_at) continue;
+    // Фільтр по опт-клієнтах. Замовлення без buyer_id (анонімні / тільки що
+    // створені) виключаємо — статистика опт-бізнесу.
+    if (!r.buyer_id || !wholesaleSet.has(r.buyer_id)) continue;
     if (!seenOrders.has(r.order_id)) {
       seenOrders.set(r.order_id, {
         ordered_at: r.ordered_at,
@@ -120,15 +129,24 @@ async function handleTrends(req, res, supabase) {
 }
 
 async function handleCohorts(req, res, supabase) {
+  // Параметр periodMonths: 12 / 24 / 36 / all. Скільки місячних когорт показати.
+  const periodParam = (req.query && req.query.months) || "24";
+  const periodMonths = periodParam === "all" ? null : parseInt(periodParam);
+
   // Тільки опт-клієнти (як на сторінці клієнтів).
   const buyers = await fetchAll(() =>
     supabase.from("buyers").select("buyer_id").eq("is_wholesale", true)
   );
   const wholesaleSet = new Set(buyers.map(b => b.buyer_id));
 
-  // Завантажуємо ВСІ продажі з buyer_id (за 3 роки максимум).
+  // Завантажуємо продажі з buyer_id. Якщо обрано period — обмежуємо вікно.
   const since = new Date();
-  since.setUTCFullYear(since.getUTCFullYear() - 3);
+  if (periodMonths) {
+    // +12 міс запасу щоб поміряти retention для самих ранніх когорт
+    since.setUTCMonth(since.getUTCMonth() - periodMonths - 12);
+  } else {
+    since.setUTCFullYear(since.getUTCFullYear() - 5);
+  }
   const sales = await fetchAll(() =>
     supabase
       .from("sales")
@@ -188,10 +206,14 @@ async function handleCohorts(req, res, supabase) {
     return { cohort, size, retention };
   });
 
+  // Якщо обрано period — обрізаємо до останніх N когорт.
+  const trimmed = periodMonths ? out.slice(-periodMonths) : out;
+
   return res.status(200).json({
-    cohorts: out,
+    cohorts: trimmed,
     total_buyers: buyerFirst.size,
     max_months_window: maxMonths,
+    period_months: periodMonths,
   });
 }
 

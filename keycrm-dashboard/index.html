@@ -1827,8 +1827,8 @@ function renderTrendsView() {
   document.getElementById('main-area').innerHTML = `
     <div class="page-header">
       <div>
-        <div class="page-title">Тренди обороту</div>
-        <div class="page-sub">${series.length} ${bucketLabel.toLowerCase()}-бакетів · ${fmt(data.total_orders || 0)} замовлень в історії</div>
+        <div class="page-title">Тренди обороту · опт</div>
+        <div class="page-sub">${series.length} ${bucketLabel.toLowerCase()}-бакетів · ${fmt(data.total_orders || 0)} опт-замовлень в історії</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden">
@@ -1861,15 +1861,15 @@ function renderTrendsView() {
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
       <div class="card"><div class="card-title">Виручка по періодах</div>
-        <canvas id="trends-revenue-chart" height="120"></canvas>
+        <div style="position:relative;height:280px"><canvas id="trends-revenue-chart"></canvas></div>
       </div>
       <div class="card"><div class="card-title">Замовлення і покупці</div>
-        <canvas id="trends-orders-chart" height="120"></canvas>
+        <div style="position:relative;height:280px"><canvas id="trends-orders-chart"></canvas></div>
       </div>
     </div>
 
     <div class="card"><div class="card-title">Середній чек (AOV)</div>
-      <canvas id="trends-aov-chart" height="80"></canvas>
+      <div style="position:relative;height:240px"><canvas id="trends-aov-chart"></canvas></div>
     </div>
 
     <div class="card" style="margin-top:16px">
@@ -1958,12 +1958,13 @@ function drawTrendsCharts(series) {
 
 // ── Cohorts page ────────────────────────────
 let COHORTS_DATA = null;
+let COHORTS_PERIOD = '24'; // '12' | '24' | '36' | 'all'
 
 async function renderCohortsPage() {
   const main = document.getElementById('main-area');
   main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Будуємо когорти</div></div>';
   try {
-    const r = await fetch(apiUrl('/api/analytics', 'type=cohorts'));
+    const r = await fetch(apiUrl('/api/analytics', 'type=cohorts&months=' + COHORTS_PERIOD));
     if (!r.ok) throw new Error('HTTP ' + r.status);
     COHORTS_DATA = await r.json();
   } catch (err) {
@@ -1971,6 +1972,11 @@ async function renderCohortsPage() {
     return;
   }
   renderCohortsView();
+}
+
+function setCohortsPeriod(p) {
+  COHORTS_PERIOD = p;
+  renderCohortsPage();
 }
 
 function cohortCellColor(pct) {
@@ -1988,9 +1994,8 @@ function renderCohortsView() {
   const data = COHORTS_DATA;
   if (!data) return;
 
-  // Показуємо тільки останні 24 когорти (2 роки) — щоб таблиця не була
-  // занадто широкою. Користувач бачить найрелевантніше.
-  const cohorts = (data.cohorts || []).slice(-24);
+  // Сервер уже обрізав до обраного періоду (COHORTS_PERIOD).
+  const cohorts = (data.cohorts || []);
   if (cohorts.length === 0) {
     document.getElementById('main-area').innerHTML = `
       <div class="page-header">
@@ -2048,10 +2053,15 @@ function renderCohortsView() {
   document.getElementById('main-area').innerHTML = `
     <div class="page-header">
       <div>
-        <div class="page-title">Когорти повторних покупок</div>
-        <div class="page-sub">${fmt(data.total_buyers || 0)} опт-клієнтів у когортах · ${cohorts.length} місячних когорт</div>
+        <div class="page-title">Когорти повторних покупок · опт</div>
+        <div class="page-sub">${fmt(data.total_buyers || 0)} опт-клієнтів усього · ${cohorts.length} місячних когорт у вікні</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
+        <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+          ${[['12','12 міс'],['24','24 міс'],['36','36 міс'],['all','Усі']].map(([v, label]) => `
+            <button onclick="setCohortsPeriod('${v}')" style="padding:6px 14px;background:${COHORTS_PERIOD === v ? 'var(--gold2)' : 'transparent'};color:${COHORTS_PERIOD === v ? 'var(--gold)' : 'var(--muted)'};border:0;font-size:12px;cursor:pointer;font-weight:${COHORTS_PERIOD === v ? '600' : '400'}">${label}</button>
+          `).join('')}
+        </div>
         <button class="refresh-btn" onclick="renderCohortsPage()"><span class="ri">↺</span> Оновити</button>
       </div>
     </div>
@@ -2089,7 +2099,7 @@ function renderCohortsView() {
 
     <div class="card" style="margin-top:16px">
       <div class="card-title">Середня retention-крива</div>
-      <canvas id="cohorts-avg-chart" height="80"></canvas>
+      <div style="position:relative;height:260px"><canvas id="cohorts-avg-chart"></canvas></div>
     </div>
   `;
 
