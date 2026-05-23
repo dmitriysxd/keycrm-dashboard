@@ -216,10 +216,9 @@ const METRIC_DOCS = {
       "2) current_stock = 0 → 'archive', " +
       "3) sold_30d = 0 → 'dead', " +
       "4) sold_30d ≥ 30 × season_mult → 'hit', " +
-      "5) sold_30d ≥ 10 × season_mult AND sell_through ≥ 70% → 'hit', " +
-      "6) sold_30d ≥ 15 × season_mult → 'good', " +
-      "7) sold_30d ≥ 6 × season_mult → 'slow', " +
-      "8) інакше → 'weak'.",
+      "5) sold_30d ≥ 15 × season_mult → 'good', " +
+      "6) sold_30d ≥ 6 × season_mult → 'slow', " +
+      "7) інакше → 'weak'.",
     period: "30-денне вікно продажів + поточний склад, з поправкою на сезон",
     freshness: "Щоночі",
     notes:
@@ -285,7 +284,7 @@ const METRIC_DOCS = {
 };
 
 const STATUS_LEGEND = {
-  hit:     { label: "Хіт",         color: "#22c55e", criteria: "≥30 продажів × сезон_коеф за 30 днів АБО ≥10×сезон + sell-through ≥70%" },
+  hit:     { label: "Хіт",         color: "#22c55e", criteria: "≥30 продажів × сезон_коеф за 30 днів" },
   good:    { label: "Хороший",     color: "#9ed1b3", criteria: "15–29 × сезон_коеф продажів за 30 днів" },
   slow:    { label: "Повільний",   color: "#f59e0b", criteria: "6–14 × сезон_коеф продажів за 30 днів" },
   weak:    { label: "Слабкий",     color: "#e0a060", criteria: "1–5 × сезон_коеф продажів за 30 днів (склад > 0)" },
