@@ -62,7 +62,7 @@ module.exports = async function handler(req, res) {
       }
       if (body.manual_status !== undefined) {
         if (body.manual_status === null || body.manual_status === "") patch.manual_status = null;
-        else if (["hit", "good", "slow", "weak", "dead", "new", "archive"].includes(String(body.manual_status))) {
+        else if (["hit", "good", "slow", "weak", "dead", "списати", "new", "archive"].includes(String(body.manual_status))) {
           patch.manual_status = String(body.manual_status);
         } else return res.status(400).json({ error: "invalid manual_status" });
       }
@@ -111,7 +111,7 @@ module.exports = async function handler(req, res) {
         .map(([id, name]) => ({ id, name }))
         .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
-      const [snap, run, totalAll, totalActive, hits, good, slow, weak, dead, isnew, archive, inStock, season, star, cashCow, question, dog] = await Promise.all([
+      const [snap, run, totalAll, totalActive, hits, good, slow, weak, dead, writeoff, isnew, archive, inStock, season, star, cashCow, question, dog] = await Promise.all([
         supabase.from("stock_snapshots").select("snapshot_date").order("snapshot_date", { ascending: false }).limit(1),
         supabase.from("ingest_runs").select("id, kind, status, started_at, finished_at, error_message").order("started_at", { ascending: false }).limit(1),
         head(),
@@ -121,6 +121,7 @@ module.exports = async function handler(req, res) {
         head((q) => q.eq("is_active", true).eq("status", "slow")),
         head((q) => q.eq("is_active", true).eq("status", "weak")),
         head((q) => q.eq("is_active", true).eq("status", "dead")),
+        head((q) => q.eq("is_active", true).eq("status", "списати")),
         head((q) => q.eq("is_active", true).eq("status", "new")),
         head((q) => q.eq("is_active", true).eq("status", "archive")),
         head((q) => q.eq("is_active", true).gt("current_stock", 0)),
@@ -138,13 +139,14 @@ module.exports = async function handler(req, res) {
         active_total: totalActive.count || 0,
         active_in_stock: inStock.count || 0,
         active_by_status: {
-          hit:     hits.count || 0,
-          good:    good.count || 0,
-          slow:    slow.count || 0,
-          weak:    weak.count || 0,
-          dead:    dead.count || 0,
-          new:     isnew.count || 0,
-          archive: archive.count || 0,
+          hit:      hits.count || 0,
+          good:     good.count || 0,
+          slow:     slow.count || 0,
+          weak:     weak.count || 0,
+          dead:     dead.count || 0,
+          writeoff: writeoff.count || 0,
+          new:      isnew.count || 0,
+          archive:  archive.count || 0,
         },
         active_by_bcg: {
           star:     star.count || 0,
