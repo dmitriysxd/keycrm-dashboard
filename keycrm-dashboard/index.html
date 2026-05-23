@@ -683,7 +683,7 @@ let DATA = null;
 let SKU_DATA = null;
 let SKU_META = null;
 let SKU_SORT = { col: 'velocity_30d', dir: 'desc' };
-let SKU_FILTER = { search: '', status: '', category: '', inStockOnly: false, hideArchive: true };
+let SKU_FILTER = { search: '', status: '', category: '', bcg: '', inStockOnly: false, hideArchive: true };
 let currentDays = 30;
 let charts = {};
 
@@ -718,6 +718,7 @@ async function loadSku(opts) {
     if (opts && opts.reorder) params.set('reorder', 'true');
     if (SKU_FILTER.status)   params.set('status', SKU_FILTER.status);
     if (SKU_FILTER.category) params.set('category', SKU_FILTER.category);
+    if (SKU_FILTER.bcg)      params.set('bcg', SKU_FILTER.bcg);
     if (SKU_FILTER.inStockOnly) params.set('inStock', 'true');
     if (!SKU_FILTER.hideArchive) params.set('inclArchive', 'true');
     const url = apiUrl('/api/sku', params.toString());
@@ -1382,6 +1383,13 @@ function renderSku() {
         <option value="">Усі категорії</option>
         ${catOptions}
       </select>
+      <select id="sku-bcg" title="BCG-роль: 🌟 Star · 🐄 Cash cow · ❓ Question · 🐶 Dog">
+        <option value=""         ${SKU_FILTER.bcg===''?'selected':''}>Усі BCG-ролі</option>
+        <option value="star"     ${SKU_FILTER.bcg==='star'?'selected':''}>🌟 Star (${fmt((m.active_by_bcg||{}).star || 0)})</option>
+        <option value="cash_cow" ${SKU_FILTER.bcg==='cash_cow'?'selected':''}>🐄 Cash cow (${fmt((m.active_by_bcg||{}).cash_cow || 0)})</option>
+        <option value="question" ${SKU_FILTER.bcg==='question'?'selected':''}>❓ Question (${fmt((m.active_by_bcg||{}).question || 0)})</option>
+        <option value="dog"      ${SKU_FILTER.bcg==='dog'?'selected':''}>🐶 Dog (${fmt((m.active_by_bcg||{}).dog || 0)})</option>
+      </select>
       <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;cursor:pointer">
         <input type="checkbox" id="sku-instock" ${SKU_FILTER.inStockOnly ? 'checked' : ''}>
         Тільки в наявності
@@ -1429,6 +1437,10 @@ function renderSku() {
   });
   document.getElementById('sku-category').addEventListener('change', async e => {
     SKU_FILTER.category = e.target.value;
+    if (await loadSku({ silent: true })) renderSku();
+  });
+  document.getElementById('sku-bcg').addEventListener('change', async e => {
+    SKU_FILTER.bcg = e.target.value;
     if (await loadSku({ silent: true })) renderSku();
   });
   document.getElementById('sku-instock').addEventListener('change', async e => {
