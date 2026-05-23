@@ -111,7 +111,7 @@ module.exports = async function handler(req, res) {
         .map(([id, name]) => ({ id, name }))
         .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
-      const [snap, run, totalAll, totalActive, hits, good, slow, weak, dead, writeoff, isnew, archive, inStock, season, star, cashCow, question, dog] = await Promise.all([
+      const [snap, run, totalAll, totalActive, hits, good, slow, weak, dead, writeoff, isnew, archive, inStock, season, star, cashCow, question, dog, costRows] = await Promise.all([
         supabase.from("stock_snapshots").select("snapshot_date").order("snapshot_date", { ascending: false }).limit(1),
         supabase.from("ingest_runs").select("id, kind, status, started_at, finished_at, error_message").order("started_at", { ascending: false }).limit(1),
         head(),
@@ -131,7 +131,26 @@ module.exports = async function handler(req, res) {
         head((q) => q.eq("is_active", true).eq("bcg_role", "cash_cow")),
         head((q) => q.eq("is_active", true).eq("bcg_role", "question")),
         head((q) => q.eq("is_active", true).eq("bcg_role", "dog")),
+        // Заморожений капітал по статусах: cost × current_stock для активних
+        // SKU зі стоком > 0 і заповненим cost. Агрегуємо в JS після одного запиту.
+        fetchAll(() => supabase
+          .from("sku_metrics")
+          .select("status, cost, current_stock")
+          .eq("is_active", true)
+          .gt("current_stock", 0)
+          .not("cost", "is", null)
+        ),
       ]);
+
+      // Підсумок замороженого капіталу по статусах.
+      const stockCostByStatus = {};
+      for (const r of costRows || []) {
+        const c = parseFloat(r.cost);
+        const s = parseFloat(r.current_stock);
+        if (!c || !s) continue;
+        const key = r.status || "unknown";
+        stockCostByStatus[key] = (stockCostByStatus[key] || 0) + c * s;
+      }
       return res.status(200).json({
         last_snapshot_date: (snap.data && snap.data[0] && snap.data[0].snapshot_date) || null,
         last_run: (run.data && run.data[0]) || null,
@@ -148,6 +167,7 @@ module.exports = async function handler(req, res) {
           new:      isnew.count || 0,
           archive:  archive.count || 0,
         },
+        stock_cost_by_status: stockCostByStatus,
         active_by_bcg: {
           star:     star.count || 0,
           cash_cow: cashCow.count || 0,
