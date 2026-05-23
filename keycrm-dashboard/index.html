@@ -3090,11 +3090,24 @@ function skuDocsHtml() {
 async function addClientStatusPrompt() {
   const name = prompt('Назва нового статусу:');
   if (!name) return;
+  const color = prompt(
+    'Колір (необов\'язково). Введіть HEX (#a855f7) або одне з:\n' +
+    'синій / зелений / жовтий / помаранчевий / червоний / фіолетовий / сірий\n' +
+    '(пусто = за замовчуванням)'
+  );
+  const colorMap = {
+    'синій': '#3b82f6', 'зелений': '#10b981', 'жовтий': '#eab308',
+    'помаранчевий': '#f97316', 'червоний': '#ef4444',
+    'фіолетовий': '#a855f7', 'сірий': '#6b7280',
+  };
+  const colorVal = color
+    ? (colorMap[color.trim().toLowerCase()] || (color.trim().startsWith('#') ? color.trim() : null))
+    : null;
   try {
     const r = await fetch(apiUrl('/api/client-crm', 'type=statuses'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name.trim() }),
+      body: JSON.stringify({ name: name.trim(), color: colorVal }),
     });
     if (!r.ok) {
       const e = await r.json().catch(() => ({}));
@@ -3104,6 +3117,8 @@ async function addClientStatusPrompt() {
     CLIENT_STATUSES.push(resp.status);
     CLIENT_STATUSES.sort((a, b) => a.sort_order - b.sort_order);
     if (CURRENT_CLIENT) renderClientModal();
+    // Перерендер головної таблиці, щоб новий статус-чіп з'явився у фільтрі.
+    if (currentPage === 'clients') renderClients();
   } catch (e) {
     alert('Помилка: ' + (e.message || e));
   }
