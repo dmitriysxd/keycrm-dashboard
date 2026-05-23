@@ -563,6 +563,20 @@
 
 </div>
 
+<!-- SKU playbook (Інструкція) modal -->
+<div class="chart-modal-backdrop" id="sku-playbook-modal" onclick="if(event.target===this) closeSkuPlaybook()">
+  <div class="chart-modal-card" style="max-width: 1000px">
+    <div class="chart-modal-head">
+      <div style="flex:1; min-width:0">
+        <div class="chart-modal-title">Інструкція: робота з аналітикою товарів</div>
+        <div class="chart-modal-sub">Що робити з кожним сигналом / статусом, як приймати рішення</div>
+      </div>
+      <button class="chart-modal-close" onclick="closeSkuPlaybook()" aria-label="Закрити">✕</button>
+    </div>
+    <div class="chart-modal-body" id="sku-playbook-body" style="min-height: 300px; overflow-y: auto; padding: 20px 24px"></div>
+  </div>
+</div>
+
 <!-- Clients playbook (Скрипт) modal -->
 <div class="chart-modal-backdrop" id="clients-script-modal" onclick="if(event.target===this) closeClientsScript()">
   <div class="chart-modal-card" style="max-width: 1000px">
@@ -1291,6 +1305,22 @@ function exportSkuXlsx(rows, baseName) {
 }
 
 // ── SKU page ─────────────────────────
+function skuKpi(key, label, color, count) {
+  const active = SKU_FILTER.status === key;
+  return `<div class="kpi" style="cursor:pointer;${active ? 'outline:2px solid ' + color + ';' : ''}" onclick="setSkuStatusFilter('${key === SKU_FILTER.status ? '' : key}')" title="Клік: фільтрувати по статусу">
+    <div class="kpi-accent" style="background:${color}"></div>
+    <div class="kpi-label">${label}</div>
+    <div class="kpi-val" style="color:${color}">${fmt(count)}</div>
+  </div>`;
+}
+
+async function setSkuStatusFilter(status) {
+  SKU_FILTER.status = status || '';
+  // якщо обрано "archive" — автоматично знімаємо галку "приховати архів"
+  if (status === 'archive') SKU_FILTER.hideArchive = false;
+  if (await loadSku({ silent: true })) renderSku();
+}
+
 function renderSku() {
   const m = SKU_META || {};
   const counts = m.active_by_status || { hit: 0, good: 0, slow: 0, weak: 0, dead: 0 };
@@ -1316,6 +1346,9 @@ function renderSku() {
         </div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
+        <button class="refresh-btn" onclick="openSkuPlaybook()" title="Інструкція з роботи з аналітикою товарів">
+          <span class="ri">▶</span> Інструкція
+        </button>
         <button class="refresh-btn" onclick="openSkuDocs()" title="Довідка з показниками">
           <span class="ri" style="font-weight:bold">?</span> Довідка
         </button>
@@ -1324,34 +1357,13 @@ function renderSku() {
     </div>
 
     <div class="kpi-grid">
-      <div class="kpi"><div class="kpi-accent green"></div>
-        <div class="kpi-label">Хіт (≥30/міс)</div>
-        <div class="kpi-val" style="color:var(--green)">${fmt(counts.hit)}</div>
-      </div>
-      <div class="kpi"><div class="kpi-accent" style="background:#9ed1b3"></div>
-        <div class="kpi-label">Хороший (15–29/міс)</div>
-        <div class="kpi-val" style="color:#9ed1b3">${fmt(counts.good)}</div>
-      </div>
-      <div class="kpi"><div class="kpi-accent" style="background:var(--gold)"></div>
-        <div class="kpi-label">Повільний (6–14/міс)</div>
-        <div class="kpi-val" style="color:var(--gold)">${fmt(counts.slow)}</div>
-      </div>
-      <div class="kpi"><div class="kpi-accent" style="background:#e0a060"></div>
-        <div class="kpi-label">Слабкий (1–5/міс)</div>
-        <div class="kpi-val" style="color:#e0a060">${fmt(counts.weak)}</div>
-      </div>
-      <div class="kpi"><div class="kpi-accent red"></div>
-        <div class="kpi-label">Мертвий (стік без продажів)</div>
-        <div class="kpi-val" style="color:var(--red)">${fmt(counts.dead)}</div>
-      </div>
-      <div class="kpi"><div class="kpi-accent" style="background:var(--purple)"></div>
-        <div class="kpi-label">Новий (14 днів)</div>
-        <div class="kpi-val" style="color:var(--purple)">${fmt(counts.new || 0)}</div>
-      </div>
-      <div class="kpi"><div class="kpi-accent" style="background:rgba(255,255,255,0.25)"></div>
-        <div class="kpi-label">Архів (розпродано)</div>
-        <div class="kpi-val" style="color:var(--muted)">${fmt(counts.archive || 0)}</div>
-      </div>
+      ${skuKpi('hit',     'Хіт (≥30/міс)',             'var(--green)', counts.hit)}
+      ${skuKpi('good',    'Хороший (15–29/міс)',       '#9ed1b3',      counts.good)}
+      ${skuKpi('slow',    'Повільний (6–14/міс)',      'var(--gold)',  counts.slow)}
+      ${skuKpi('weak',    'Слабкий (1–5/міс)',         '#e0a060',      counts.weak)}
+      ${skuKpi('dead',    'Мертвий (стік без продажів)', 'var(--red)', counts.dead)}
+      ${skuKpi('new',     'Новий (14 днів)',           'var(--purple)', counts.new || 0)}
+      ${skuKpi('archive', 'Архів (розпродано)',        'rgba(255,255,255,0.45)', counts.archive || 0)}
     </div>
 
     <div class="filter-bar">
@@ -1571,6 +1583,11 @@ function sortClients(rows) {
   });
 }
 
+async function setClientSegmentFilter(seg) {
+  CLIENT_FILTER.segment = seg || '';
+  if (await loadClients({ silent: true })) renderClients();
+}
+
 function setClientSort(col) {
   if (CLIENT_SORT.col === col) CLIENT_SORT.dir = CLIENT_SORT.dir === 'asc' ? 'desc' : 'asc';
   else { CLIENT_SORT.col = col; CLIENT_SORT.dir = 'desc'; }
@@ -1601,6 +1618,16 @@ function renderClients() {
     .concat(Object.keys(SEGMENT_LABEL).map(k => `<option value="${k}" ${CLIENT_FILTER.segment === k ? 'selected' : ''}>${SEGMENT_LABEL[k]}</option>`))
     .join('');
 
+  const segCounts = m.segment_counts || {};
+  const segKpi = (key, label, color) => {
+    const active = CLIENT_FILTER.segment === key;
+    return `<div class="kpi" style="cursor:pointer;${active ? 'outline:2px solid ' + color + ';' : ''}" onclick="setClientSegmentFilter('${key === CLIENT_FILTER.segment ? '' : key}')" title="Клік: фільтрувати по сегменту">
+      <div class="kpi-accent" style="background:${color}"></div>
+      <div class="kpi-label">${label}</div>
+      <div class="kpi-val" style="color:${color}">${fmt(segCounts[key] || 0)}</div>
+    </div>`;
+  };
+
   document.getElementById('main-area').innerHTML = `
     <div class="page-header">
       <div>
@@ -1616,6 +1643,15 @@ function renderClients() {
         </button>
         <button class="refresh-btn" onclick="loadClients().then(ok => ok && renderClients())"><span class="ri">↺</span> Оновити</button>
       </div>
+    </div>
+
+    <div class="kpi-grid">
+      ${segKpi('champions', 'Чемпіони (R≥4 · F≥4)', SEGMENT_COLOR.champions)}
+      ${segKpi('loyal',     'Лояльні (R≥3 · F≥3)', SEGMENT_COLOR.loyal)}
+      ${segKpi('new',       'Нові (R≥4 · F≤2)',    SEGMENT_COLOR.new)}
+      ${segKpi('potential', 'Потенційні',          SEGMENT_COLOR.potential)}
+      ${segKpi('at_risk',   'Під ризиком (R≤2 · F≥3)', SEGMENT_COLOR.at_risk)}
+      ${segKpi('lost',      'Втрачені (R≤2 · F≤2)', SEGMENT_COLOR.lost)}
     </div>
 
     <div class="filter-bar">
@@ -2278,6 +2314,146 @@ function renderClientsDocs() {
   `;
 
   document.getElementById('clients-docs-body').innerHTML = generalHtml + groupsHtml + churnSection;
+}
+
+// ── SKU playbook (Інструкція) ─────────────────
+function openSkuPlaybook() {
+  document.getElementById('sku-playbook-modal').classList.add('open');
+  document.getElementById('sku-playbook-body').innerHTML = skuPlaybookHtml();
+}
+function closeSkuPlaybook() {
+  document.getElementById('sku-playbook-modal').classList.remove('open');
+}
+
+function skuPlaybookHtml() {
+  return `
+  <style>
+    .pb h3 { color: var(--gold); font-size: 14px; margin: 18px 0 8px; text-transform: uppercase; letter-spacing: 0.5px }
+    .pb h4 { color: var(--text); font-size: 13px; margin: 14px 0 6px }
+    .pb p, .pb li { font-size: 12px; line-height: 1.55; color: var(--text) }
+    .pb ul, .pb ol { padding-left: 20px; margin: 6px 0 10px }
+    .pb table { width: 100%; font-size: 12px; border-collapse: collapse; margin: 8px 0 12px }
+    .pb th, .pb td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; text-align: left }
+    .pb th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px }
+    .pb code { background: var(--s2); padding: 1px 6px; border-radius: 4px; font-size: 11px; color: var(--gold) }
+    .pb .warn { color: #ef4444 }
+    .pb .ok { color: var(--green) }
+    .pb .tag { display:inline-block; padding:1px 6px; border-radius:4px; font-size:10px; font-weight:600 }
+  </style>
+  <div class="pb">
+
+    <h3>1. З чого почати щоранку (5 хв)</h3>
+    <ol>
+      <li>Відкрий <b>SKU</b> → подивись на 7 KPI-карток зверху.</li>
+      <li><b>Хіт</b> + <b>Хороший</b> → що треба <b>дозамовити</b> (DoS &lt; 30д = горить)</li>
+      <li><b>Мертвий</b> → що треба <b>розпродати/списати</b></li>
+      <li><b>Слабкий</b> + <b>Повільний</b> → що <b>тестувати на акціях</b></li>
+      <li><b>Новий</b> → за чим стежити перші 14 днів</li>
+    </ol>
+    <p><b>Клік по KPI-картці</b> = миттєвий фільтр по цьому статусу. Повторний клік знімає фільтр.</p>
+
+    <h3>2. Що означає кожен статус і що з ним робити</h3>
+    <table>
+      <thead><tr><th>Статус</th><th>Критерій (V30)</th><th>Дія</th></tr></thead>
+      <tbody>
+        <tr><td><span class="tag" style="background:rgba(126,212,159,0.15);color:var(--green)">Хіт</span></td>
+            <td>≥30 шт/міс</td>
+            <td><b>Не допускати out-of-stock.</b> DoS &lt; 14д → терміново замовляти. Якщо в наявності 0 — це втрачений дохід щодня.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(158,209,179,0.15);color:#9ed1b3">Хороший</span></td>
+            <td>15–29 шт/міс</td>
+            <td>Тримати DoS 30–45д. Закладати в постійний асортимент.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(201,169,110,0.15);color:var(--gold)">Повільний</span></td>
+            <td>6–14 шт/міс</td>
+            <td>Тримати мінімальний залишок. Розглянути: чи актуальний колір/розмір/сезон.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(224,160,96,0.15);color:#e0a060">Слабкий</span></td>
+            <td>1–5 шт/міс</td>
+            <td>Не дозамовляти. Зробити фото-акцент / зменшити ціну на 10–15% → подивитись 30 днів.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(224,96,96,0.15);color:var(--red)">Мертвий</span></td>
+            <td>0 шт/міс при наявності на складі</td>
+            <td><b>Розпродаж –30–50%.</b> Якщо за 60 днів не продався — списати або віддати оптом нижче собівартості.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(168,85,247,0.15);color:var(--purple)">Новий</span></td>
+            <td>На складі &lt; 14 днів</td>
+            <td>Активно показувати в Instagram/Telegram. Через 14 днів дивитись V7 → класифікувати остаточно.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(255,255,255,0.1);color:var(--muted)">Архів</span></td>
+            <td>Розпродано (склад=0, не очікується)</td>
+            <td>За замовчуванням приховано. Знімай галку "Приховати архів" щоб подивитись історичну прибутковість.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>3. Сигнали в правій колонці (BCG + actionable tags)</h3>
+    <table>
+      <thead><tr><th>Іконка</th><th>Що значить</th><th>Дія</th></tr></thead>
+      <tbody>
+        <tr><td>🌟</td><td><b>Star</b> — росте швидко, високий обіг</td><td>Не дай вибути зі складу, тримай DoS &gt; 30д</td></tr>
+        <tr><td>🐄</td><td><b>Cash cow</b> — стабільно продається, низький ризик</td><td>Тримати, не експериментувати з ціною</td></tr>
+        <tr><td>❓</td><td><b>Question</b> — новий / непередбачуваний</td><td>Маркетингова перевірка: фото, опис, тест-акція</td></tr>
+        <tr><td>🐶</td><td><b>Dog</b> — слабкий і не росте</td><td>Кандидат на розпродаж</td></tr>
+        <tr><td>📈</td><td>Прискорюється — V7 &gt; V30</td><td>Підняти пріоритет у наступному замовленні</td></tr>
+        <tr><td>📉</td><td>Сповільнюється — V7 &lt; V30</td><td>Перевірити: чи закінчився сезон, чи з'явились конкуренти, чи виросла ціна</td></tr>
+        <tr><td>❄️</td><td>Заморожений сток — лежить, не рухається</td><td>Активна знижка</td></tr>
+        <tr><td>📦</td><td>Залежався (вік &gt; 180д) при слабкому V30</td><td>Перепакувати / змінити фото / здати оптовикам нижче</td></tr>
+        <tr><td>💎</td><td>Високий маржинальний внесок</td><td>Захищати в ціні, не давати знижок &gt; 10%</td></tr>
+        <tr><td>🔁</td><td>Покупають повторно (≥3 buyers купили &gt; 1 разу)</td><td>Запускати персональні нагадування клієнтам</td></tr>
+        <tr><td>📊</td><td>Сезонний пік зараз</td><td>Збільшити закладку та промо до кінця сезону</td></tr>
+      </tbody>
+    </table>
+
+    <h3>4. Ключові метрики — як читати</h3>
+    <table>
+      <thead><tr><th>Колонка</th><th>Що означає</th><th>Орієнтир</th></tr></thead>
+      <tbody>
+        <tr><td><code>S30d</code></td><td>Продано шт за 30 днів</td><td>—</td></tr>
+        <tr><td><code>V7 / V30 / V90</code></td><td>Швидкість (шт/міс) на різних вікнах</td><td>V7 &gt; V30 → прискорюється; V7 &lt; V30 → сповільнюється</td></tr>
+        <tr><td><code>Vlife</code></td><td>Швидкість за весь час наявності</td><td>Якщо V30 &gt;&gt; Vlife — справжній хіт нової хвилі</td></tr>
+        <tr><td><code>DoS</code></td><td>Днів запасу = склад / V30</td><td><span class="warn">&lt;14д = терміново замовити</span>, 30–60 = норм, &gt;180 = надлишок</td></tr>
+        <tr><td><code>Sell-through</code></td><td>% складу проданий за 30 днів</td><td>&gt;50% = хороший рух, &lt;10% = застій</td></tr>
+        <tr><td><code>Buyers</code></td><td>Унікальних клієнтів</td><td>Високий + повторні = надійний хіт; високий + V30↓ = насичення ринку</td></tr>
+        <tr><td><code>Вік</code></td><td>Днів від першого надходження</td><td>&gt;180 без продажів → ❄️/📦</td></tr>
+      </tbody>
+    </table>
+
+    <h3>5. Робочі сценарії</h3>
+
+    <h4>A. "Що замовити цього тижня"</h4>
+    <ol>
+      <li>Фільтр: <b>Хіт</b> + <b>Хороший</b></li>
+      <li>Сортуй по <code>DoS</code> ↑ — найменші згори</li>
+      <li>Все, що DoS &lt; 30д → у замовлення на постачальника</li>
+      <li>Особлива увага товарам з 📈 (прискорюються) — додай +20% до планової закладки</li>
+    </ol>
+
+    <h4>B. "Що розпродати"</h4>
+    <ol>
+      <li>Фільтр: <b>Мертвий</b></li>
+      <li>Сортуй по <code>Вік</code> ↓ — найстаріші згори</li>
+      <li>Для віку &gt; 180д → знижка 30%, через 30 днів якщо не пішов — 50%</li>
+      <li>Якщо й після 50% не пішов — оптом дилерам або списати в "подарунок до замовлення"</li>
+    </ol>
+
+    <h4>C. "Що тестувати на акціях"</h4>
+    <ol>
+      <li>Фільтр: <b>Слабкий</b> + <b>Повільний</b></li>
+      <li>Сортуй по <code>Buyers</code> ↓ — у кого хоч хтось купував</li>
+      <li>Запусти на 7 днів: акційне фото в сторіс, знижка 15%</li>
+      <li>Якщо V7 виріс у 2+ разів → переводь у "Хороший" план</li>
+    </ol>
+
+    <h4>D. "Що моніторити серед нових"</h4>
+    <ol>
+      <li>Фільтр: <b>Новий</b></li>
+      <li>На 7-й день дивись V7: <b>≥3 шт</b> = перспективний → готуй повтор</li>
+      <li>На 14-й день перевір остаточний статус (auto-перерахунок)</li>
+    </ol>
+
+    <h3>6. Чого <span class="warn">НЕ</span> робити</h3>
+    <ul>
+      <li class="warn">Не закладати "Слабкий" у новій партії "на удачу" — статистика проти тебе</li>
+      <li class="warn">Не давати знижку на "Хіт" — попит вже є, тільки втратиш маржу</li>
+      <li class="warn">Не тримати "Мертвий" &gt; 90 днів — заморожує оборотні кошти</li>
+      <li class="warn">Не приймати рішення по 1 тижню V7 — потрібно щонайменше 2 точки V7+V30</li>
+    </ul>
+
+  </div>`;
 }
 
 // ── SKU docs modal ───────────────────────────

@@ -58,10 +58,39 @@ module.exports = async function handler(req, res) {
         .from("buyers")
         .select("buyer_id", { count: "exact", head: true })
         .eq("is_wholesale", true);
+
+      // Підрахунок клієнтів по сегментах для KPI-карток.
+      // Беремо лише опт-клієнтів (сторінка завжди фільтрує по wholesale).
+      const wholesaleBuyers = await fetchAll(() =>
+        supabase.from("buyers").select("buyer_id").eq("is_wholesale", true)
+      );
+      const wholesaleIds = new Set(wholesaleBuyers.map(b => b.buyer_id));
+      const rfmAll = await fetchAll(() =>
+        supabase.from("buyer_rfm").select("buyer_id, r_score, f_score")
+      );
+      const segCounts = { champions: 0, loyal: 0, new: 0, at_risk: 0, lost: 0, potential: 0, unranked: 0 };
+      for (const r of rfmAll) {
+        if (!wholesaleIds.has(r.buyer_id)) continue;
+        if (!r.r_score || !r.f_score) { segCounts.unranked++; continue; }
+        const rs = r.r_score, fs = r.f_score;
+        let seg;
+        if (rs >= 4 && fs >= 4) seg = "champions";
+        else if (rs >= 3 && fs >= 3) seg = "loyal";
+        else if (rs >= 4 && fs <= 2) seg = "new";
+        else if (rs <= 2 && fs >= 3) seg = "at_risk";
+        else if (rs <= 2 && fs <= 2) seg = "lost";
+        else seg = "potential";
+        segCounts[seg]++;
+      }
+      // Клієнти-опт без рядка в buyer_rfm (немає заказів) теж "unranked".
+      const rfmIds = new Set(rfmAll.map(r => r.buyer_id));
+      for (const id of wholesaleIds) if (!rfmIds.has(id)) segCounts.unranked++;
+
       return res.status(200).json({
         statuses,
         total_buyers: buyersHead.count || 0,
         wholesale_buyers: wholesaleHead.count || 0,
+        segment_counts: segCounts,
         now: new Date().toISOString(),
       });
     }
