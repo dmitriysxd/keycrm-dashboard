@@ -524,6 +524,12 @@
       <div class="nav-item" onclick="navigate('clients')">
         <span class="nav-icon">☎</span> Клієнти
       </div>
+      <div class="nav-item" onclick="navigate('trends')">
+        <span class="nav-icon">📈</span> Тренди
+      </div>
+      <div class="nav-item" onclick="navigate('cohorts')">
+        <span class="nav-icon">👥</span> Когорти
+      </div>
     </nav>
 
     <div class="sidebar-bottom">
@@ -826,6 +832,8 @@ async function renderCurrentPage() {
   else if (currentPage === 'sku')      { const ok = await loadSku(); if (ok) renderSku(); }
   else if (currentPage === 'reorder')  { const ok = await loadSku({ reorder: true }); if (ok) renderReorder(); }
   else if (currentPage === 'clients')  { const ok = await loadClients(); if (ok) renderClients(); }
+  else if (currentPage === 'trends')   { await renderTrendsPage(); }
+  else if (currentPage === 'cohorts')  { await renderCohortsPage(); }
 }
 
 function destroyCharts() {
@@ -1588,6 +1596,11 @@ async function setClientSegmentFilter(seg) {
   if (await loadClients({ silent: true })) renderClients();
 }
 
+async function setClientStatusFilter(statusId) {
+  CLIENT_FILTER.status_id = statusId || '';
+  if (await loadClients({ silent: true })) renderClients();
+}
+
 function setClientSort(col) {
   if (CLIENT_SORT.col === col) CLIENT_SORT.dir = CLIENT_SORT.dir === 'asc' ? 'desc' : 'asc';
   else { CLIENT_SORT.col = col; CLIENT_SORT.dir = 'desc'; }
@@ -1654,9 +1667,18 @@ function renderClients() {
       ${segKpi('lost',      'Втрачені (R≤2 · F≤2)', SEGMENT_COLOR.lost)}
     </div>
 
+    ${CLIENT_STATUSES && CLIENT_STATUSES.length ? `
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:12px;padding:8px 12px;background:var(--s2);border-radius:8px;border:1px solid var(--border)">
+      <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-right:4px">Ручний статус:</span>
+      <button onclick="setClientStatusFilter('')" style="cursor:pointer;padding:4px 12px;border-radius:14px;font-size:11px;font-weight:600;border:1px solid ${!CLIENT_FILTER.status_id ? 'var(--gold)' : 'var(--border)'};background:${!CLIENT_FILTER.status_id ? 'var(--gold2)' : 'transparent'};color:${!CLIENT_FILTER.status_id ? 'var(--gold)' : 'var(--muted)'}">Усі</button>
+      ${CLIENT_STATUSES.map(s => `
+        <button onclick="setClientStatusFilter('${s.id}')" style="cursor:pointer;padding:4px 12px;border-radius:14px;font-size:11px;font-weight:600;border:1px solid ${String(CLIENT_FILTER.status_id) === String(s.id) ? (s.color || 'var(--gold)') : 'var(--border)'};background:${String(CLIENT_FILTER.status_id) === String(s.id) ? (s.color || '#666') + '22' : 'transparent'};color:${s.color || 'var(--muted)'}">${s.name}</button>
+      `).join('')}
+    </div>
+    ` : ''}
+
     <div class="filter-bar">
       <input type="search" id="client-search" placeholder="Пошук за іменем / телефоном" value="${CLIENT_FILTER.search}">
-      <select id="client-status">${statusOptions}</select>
       <select id="client-segment">${segmentOptions}</select>
       <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text);cursor:pointer" title="Клієнти, які перевищили свій цикл закупки — підсвічені червоним">
         <input type="checkbox" id="client-overdue" ${CLIENT_FILTER.overdue_only ? 'checked' : ''}>
@@ -1691,10 +1713,6 @@ function renderClients() {
   document.getElementById('client-search').addEventListener('input', e => {
     CLIENT_FILTER.search = e.target.value;
     renderClientsTable();
-  });
-  document.getElementById('client-status').addEventListener('change', async e => {
-    CLIENT_FILTER.status_id = e.target.value;
-    if (await loadClients({ silent: true })) renderClients();
   });
   document.getElementById('client-segment').addEventListener('change', async e => {
     CLIENT_FILTER.segment = e.target.value;
@@ -1758,6 +1776,344 @@ function renderClientsTable() {
           <td class="num muted" style="text-align:center;font-family:'JetBrains Mono',monospace">${r.rfm_code || '—'}</td>
         </tr>`;
     }).join('');
+}
+
+// ── Trends page ────────────────────────────
+let TRENDS_DATA = null;
+let TRENDS_BUCKET = 'month';
+
+async function renderTrendsPage() {
+  const main = document.getElementById('main-area');
+  main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Завантажуємо тренди</div></div>';
+  try {
+    const r = await fetch(apiUrl('/api/analytics', 'type=trends&bucket=' + TRENDS_BUCKET));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    TRENDS_DATA = await r.json();
+  } catch (err) {
+    main.innerHTML = `<div class="state-wrap"><div class="error-card"><div class="error-title">Помилка завантаження</div><div class="state-sub">${(err && err.message) || err}</div></div></div>`;
+    return;
+  }
+  renderTrendsView();
+}
+
+function setTrendsBucket(bucket) {
+  TRENDS_BUCKET = bucket;
+  renderTrendsPage();
+}
+
+function renderTrendsView() {
+  const data = TRENDS_DATA;
+  if (!data) return;
+  const series = data.series || [];
+
+  // KPI зведення по обраному вікну: останній період + дельта vs попередній
+  const last = series[series.length - 1] || {};
+  const prev = series[series.length - 2] || {};
+  const delta = (cur, prv) => {
+    if (!prv) return null;
+    return Math.round((cur - prv) / prv * 100);
+  };
+  const deltaHtml = (d) => {
+    if (d == null) return '';
+    const color = d > 0 ? 'var(--green)' : d < 0 ? 'var(--red)' : 'var(--muted)';
+    const sign = d > 0 ? '+' : '';
+    return `<span style="color:${color};font-size:11px;margin-left:6px">${sign}${d}%</span>`;
+  };
+
+  const bucketLabel = { week: 'Тиждень', month: 'Місяць', year: 'Рік' }[TRENDS_BUCKET];
+
+  document.getElementById('main-area').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">Тренди обороту</div>
+        <div class="page-sub">${series.length} ${bucketLabel.toLowerCase()}-бакетів · ${fmt(data.total_orders || 0)} замовлень в історії</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+          ${['week', 'month', 'year'].map(b => `
+            <button onclick="setTrendsBucket('${b}')" style="padding:6px 14px;background:${TRENDS_BUCKET === b ? 'var(--gold2)' : 'transparent'};color:${TRENDS_BUCKET === b ? 'var(--gold)' : 'var(--muted)'};border:0;font-size:12px;cursor:pointer;font-weight:${TRENDS_BUCKET === b ? '600' : '400'}">${({ week: 'Тиждень', month: 'Місяць', year: 'Рік' })[b]}</button>
+          `).join('')}
+        </div>
+        <button class="refresh-btn" onclick="renderTrendsPage()"><span class="ri">↺</span> Оновити</button>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-accent green"></div>
+        <div class="kpi-label">Виручка · останній ${bucketLabel.toLowerCase()}</div>
+        <div class="kpi-val">${fmtMoney(last.revenue || 0)}${deltaHtml(delta(last.revenue || 0, prev.revenue))}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:var(--gold)"></div>
+        <div class="kpi-label">Замовлень</div>
+        <div class="kpi-val">${fmt(last.orders || 0)}${deltaHtml(delta(last.orders || 0, prev.orders))}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent purple"></div>
+        <div class="kpi-label">Унікальних покупців</div>
+        <div class="kpi-val">${fmt(last.buyers || 0)}${deltaHtml(delta(last.buyers || 0, prev.buyers))}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:#9ed1b3"></div>
+        <div class="kpi-label">Середній чек (AOV)</div>
+        <div class="kpi-val">${fmtMoney(last.aov || 0)}${deltaHtml(delta(last.aov || 0, prev.aov))}</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+      <div class="card"><div class="card-title">Виручка по періодах</div>
+        <canvas id="trends-revenue-chart" height="120"></canvas>
+      </div>
+      <div class="card"><div class="card-title">Замовлення і покупці</div>
+        <canvas id="trends-orders-chart" height="120"></canvas>
+      </div>
+    </div>
+
+    <div class="card"><div class="card-title">Середній чек (AOV)</div>
+      <canvas id="trends-aov-chart" height="80"></canvas>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">Деталі по періодах</div>
+      <div class="tbl-scroll">
+        <table>
+          <thead><tr>
+            <th>${bucketLabel}</th>
+            <th style="text-align:right">Замовлень</th>
+            <th style="text-align:right">Покупців</th>
+            <th style="text-align:right">Виручка</th>
+            <th style="text-align:right">AOV</th>
+          </tr></thead>
+          <tbody>
+            ${series.slice().reverse().slice(0, 36).map(s => `
+              <tr>
+                <td>${s.bucket}</td>
+                <td class="num">${fmt(s.orders)}</td>
+                <td class="num">${fmt(s.buyers)}</td>
+                <td class="num">${fmtMoney(s.revenue)}</td>
+                <td class="num">${fmtMoney(s.aov)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  // Малюємо графіки після того як canvas з'явились у DOM
+  setTimeout(() => drawTrendsCharts(series), 0);
+}
+
+function drawTrendsCharts(series) {
+  const labels = series.map(s => s.bucket);
+  const revenue = series.map(s => s.revenue);
+  const orders = series.map(s => s.orders);
+  const buyers = series.map(s => s.buyers);
+  const aov = series.map(s => s.aov);
+
+  const baseOpts = {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: true, position: 'bottom' } },
+    scales: {
+      x: { ticks: { maxRotation: 45, autoSkip: true, autoSkipPadding: 10 } },
+      y: { beginAtZero: true },
+    },
+  };
+
+  if (charts.trendsRev) charts.trendsRev.destroy();
+  charts.trendsRev = new Chart(document.getElementById('trends-revenue-chart'), {
+    type: 'line',
+    data: { labels, datasets: [{
+      label: 'Виручка, ₴',
+      data: revenue,
+      borderColor: 'rgba(92,184,138,0.9)',
+      backgroundColor: 'rgba(92,184,138,0.15)',
+      fill: true, tension: 0.3, pointRadius: 2,
+    }] },
+    options: baseOpts,
+  });
+
+  if (charts.trendsOrd) charts.trendsOrd.destroy();
+  charts.trendsOrd = new Chart(document.getElementById('trends-orders-chart'), {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Замовлень', data: orders, borderColor: 'rgba(201,169,110,0.9)', backgroundColor: 'rgba(201,169,110,0.15)', fill: true, tension: 0.3, pointRadius: 2 },
+      { label: 'Покупців', data: buyers, borderColor: 'rgba(124,110,245,0.9)', backgroundColor: 'rgba(124,110,245,0.15)', fill: false, tension: 0.3, pointRadius: 2 },
+    ] },
+    options: baseOpts,
+  });
+
+  if (charts.trendsAov) charts.trendsAov.destroy();
+  charts.trendsAov = new Chart(document.getElementById('trends-aov-chart'), {
+    type: 'line',
+    data: { labels, datasets: [{
+      label: 'AOV, ₴',
+      data: aov,
+      borderColor: 'rgba(96,168,224,0.9)',
+      backgroundColor: 'rgba(96,168,224,0.15)',
+      fill: true, tension: 0.3, pointRadius: 2,
+    }] },
+    options: baseOpts,
+  });
+}
+
+// ── Cohorts page ────────────────────────────
+let COHORTS_DATA = null;
+
+async function renderCohortsPage() {
+  const main = document.getElementById('main-area');
+  main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Будуємо когорти</div></div>';
+  try {
+    const r = await fetch(apiUrl('/api/analytics', 'type=cohorts'));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    COHORTS_DATA = await r.json();
+  } catch (err) {
+    main.innerHTML = `<div class="state-wrap"><div class="error-card"><div class="error-title">Помилка завантаження</div><div class="state-sub">${(err && err.message) || err}</div></div></div>`;
+    return;
+  }
+  renderCohortsView();
+}
+
+function cohortCellColor(pct) {
+  // Зелена шкала від світло-сірого (0%) до насиченого зеленого (100%).
+  if (!pct || pct === 0) return { bg: 'transparent', fg: 'var(--muted)' };
+  const intensity = Math.min(pct / 100, 1);
+  const alpha = 0.08 + intensity * 0.7;
+  return {
+    bg: `rgba(92,184,138,${alpha})`,
+    fg: intensity > 0.55 ? '#0a1f12' : 'var(--text)',
+  };
+}
+
+function renderCohortsView() {
+  const data = COHORTS_DATA;
+  if (!data) return;
+
+  // Показуємо тільки останні 24 когорти (2 роки) — щоб таблиця не була
+  // занадто широкою. Користувач бачить найрелевантніше.
+  const cohorts = (data.cohorts || []).slice(-24);
+  if (cohorts.length === 0) {
+    document.getElementById('main-area').innerHTML = `
+      <div class="page-header">
+        <div><div class="page-title">Когорти повторних покупок</div></div>
+      </div>
+      <div class="state-wrap"><div class="state-title">Немає даних для побудови когорт</div></div>`;
+    return;
+  }
+
+  // Скільки місяців показувати — максимум серед усіх когорт, але не більше 18.
+  const maxMonths = Math.min(18, Math.max(...cohorts.map(c => c.retention.length)));
+
+  // Середня retention curve по всіх когортах
+  const avgCurve = [];
+  for (let i = 0; i <= maxMonths; i++) {
+    const vals = cohorts
+      .filter(c => c.retention.length > i && c.size > 0)
+      .map(c => c.retention[i].pct);
+    if (vals.length === 0) { avgCurve.push(null); continue; }
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+    avgCurve.push(Math.round(avg * 10) / 10);
+  }
+
+  const headerCells = [];
+  for (let i = 0; i <= maxMonths; i++) {
+    headerCells.push(`<th style="text-align:center;font-size:10px;padding:6px 4px;color:var(--muted)">+${i}м</th>`);
+  }
+
+  const rowsHtml = cohorts.slice().reverse().map(c => {
+    const cells = [];
+    for (let i = 0; i <= maxMonths; i++) {
+      const r = c.retention[i];
+      if (!r) {
+        cells.push('<td style="padding:4px;text-align:center;color:rgba(255,255,255,0.05)">·</td>');
+        continue;
+      }
+      const col = cohortCellColor(r.pct);
+      cells.push(`<td style="padding:6px 4px;text-align:center;font-size:11px;background:${col.bg};color:${col.fg};font-weight:${r.pct >= 30 ? '600' : '400'}" title="${r.active} з ${c.size} (${r.pct}%)">${r.pct > 0 ? r.pct + '%' : '·'}</td>`);
+    }
+    return `
+      <tr>
+        <td style="padding:6px 10px;font-size:12px;color:var(--text);font-weight:600;white-space:nowrap">${c.cohort}</td>
+        <td style="padding:6px 10px;text-align:right;font-size:11px;color:var(--muted)">${fmt(c.size)}</td>
+        ${cells.join('')}
+      </tr>`;
+  }).join('');
+
+  // Середня крива внизу
+  const avgCells = avgCurve.map((v, i) => {
+    if (v == null) return '<td style="padding:4px;text-align:center;color:rgba(255,255,255,0.05)">·</td>';
+    const col = cohortCellColor(v);
+    return `<td style="padding:6px 4px;text-align:center;font-size:11px;background:${col.bg};color:${col.fg};font-weight:600">${v}%</td>`;
+  }).join('');
+
+  document.getElementById('main-area').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">Когорти повторних покупок</div>
+        <div class="page-sub">${fmt(data.total_buyers || 0)} опт-клієнтів у когортах · ${cohorts.length} місячних когорт</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="refresh-btn" onclick="renderCohortsPage()"><span class="ri">↺</span> Оновити</button>
+      </div>
+    </div>
+
+    <div style="border:1px solid var(--border);border-radius:8px;padding:14px 18px;margin-bottom:16px;background:var(--gold2)">
+      <div style="font-size:13px;color:var(--text);line-height:1.6">
+        <b style="color:var(--gold)">Як читати таблицю:</b> кожен рядок — місяць, у якому клієнти ВПЕРШЕ
+        зробили покупку (когорта). Колонки показують, який % з тих клієнтів повернувся через
+        N місяців. <b>+0м завжди 100%</b> (місяць першої покупки). Чим яскравіше зелений — тим краща retention.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Retention-матриця</div>
+      <div style="overflow-x:auto;max-height:600px">
+        <table style="width:100%;border-collapse:collapse">
+          <thead>
+            <tr style="background:var(--s2);position:sticky;top:0;z-index:2">
+              <th style="padding:6px 10px;text-align:left;font-size:11px;color:var(--muted);white-space:nowrap">Когорта</th>
+              <th style="padding:6px 10px;text-align:right;font-size:11px;color:var(--muted)">Розмір</th>
+              ${headerCells.join('')}
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+          <tfoot>
+            <tr style="border-top:2px solid var(--gold)">
+              <td style="padding:8px 10px;font-size:12px;color:var(--gold);font-weight:600">Середнє</td>
+              <td></td>
+              ${avgCells}
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">Середня retention-крива</div>
+      <canvas id="cohorts-avg-chart" height="80"></canvas>
+    </div>
+  `;
+
+  setTimeout(() => drawCohortAvgChart(avgCurve), 0);
+}
+
+function drawCohortAvgChart(curve) {
+  if (charts.cohortsAvg) charts.cohortsAvg.destroy();
+  charts.cohortsAvg = new Chart(document.getElementById('cohorts-avg-chart'), {
+    type: 'line',
+    data: {
+      labels: curve.map((_, i) => '+' + i + 'м'),
+      datasets: [{
+        label: 'Середня retention, %',
+        data: curve,
+        borderColor: 'rgba(92,184,138,0.9)',
+        backgroundColor: 'rgba(92,184,138,0.2)',
+        fill: true, tension: 0.3, pointRadius: 3,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } } },
+    },
+  });
 }
 
 // ── Client modal ────────────────────────────
