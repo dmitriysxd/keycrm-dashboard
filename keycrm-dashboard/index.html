@@ -2005,8 +2005,11 @@ function renderCohortsView() {
     return;
   }
 
-  // Скільки місяців показувати — максимум серед усіх когорт, але не більше 18.
-  const maxMonths = Math.min(18, Math.max(...cohorts.map(c => c.retention.length)));
+  // Скільки місяців ретеншена показувати. Старіша когорта має стільки даних
+  // скільки місяців минуло з її початку. Беремо максимум серед когорт,
+  // обмежуючи 60 щоб не зробити таблицю гігантською.
+  const maxRetentionInData = Math.max(...cohorts.map(c => c.retention.length - 1));
+  const maxMonths = Math.min(60, maxRetentionInData);
 
   // Середня retention curve по всіх когортах
   const avgCurve = [];
