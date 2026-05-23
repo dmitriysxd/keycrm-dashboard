@@ -1117,8 +1117,8 @@ function renderOrders() {
 
 // ── SKU helpers ──────────────────────
 const STATUS_PILL  = { hit: 'g', good: 'gg', slow: 'y', weak: 'o', dead: 'r', new: 'b', archive: 'a' };
-const STATUS_LABEL = { hit: 'Хіт', good: 'Хороший', slow: 'Повільний', weak: 'Слабкий', dead: 'Мертвий', new: 'Новий', archive: 'Архів' };
-const STATUS_COLOR = { hit: 'var(--green)', good: '#9ed1b3', slow: 'var(--gold)', weak: '#e0a060', dead: 'var(--red)', new: 'var(--purple)', archive: 'var(--muted)' };
+const STATUS_LABEL = { hit: 'Хіт', good: 'Хороший', slow: 'Повільний', weak: 'Слабкий', dead: 'Мертвий', 'списати': 'Списати', new: 'Новий', archive: 'Архів' };
+const STATUS_COLOR = { hit: 'var(--green)', good: '#9ed1b3', slow: 'var(--gold)', weak: '#e0a060', dead: 'var(--red)', 'списати': '#a8631c', new: 'var(--purple)', archive: 'var(--muted)' };
 const ARCHIVE_TIER_LABEL = { hit: 'Хіт', good: 'Хороший', slow: 'Слабкий', dead: 'Мертвий' };
 
 // BCG-ролі (стратегічна класифікація): топ-виручка × тренд.
@@ -1358,7 +1358,8 @@ function renderSku() {
       ${skuKpi('good',    'Хороший (15–29/міс)',       '#9ed1b3',      counts.good)}
       ${skuKpi('slow',    'Повільний (6–14/міс)',      'var(--gold)',  counts.slow)}
       ${skuKpi('weak',    'Слабкий (1–5/міс)',         '#e0a060',      counts.weak)}
-      ${skuKpi('dead',    'Мертвий (стік без продажів)', 'var(--red)', counts.dead)}
+      ${skuKpi('dead',    'Мертвий (0 за 30 днів)',    'var(--red)',   counts.dead)}
+      ${skuKpi('списати', 'Списати (0 за 60+ днів)',   '#a8631c',      counts.writeoff || 0)}
       ${skuKpi('new',     'Новий (14 днів)',           'var(--purple)', counts.new || 0)}
       ${skuKpi('archive', 'Архів (розпродано)',        'rgba(255,255,255,0.45)', counts.archive || 0)}
     </div>
@@ -1372,6 +1373,7 @@ function renderSku() {
         <option value="slow"    ${SKU_FILTER.status==='slow'?'selected':''}>Повільний</option>
         <option value="weak"    ${SKU_FILTER.status==='weak'?'selected':''}>Слабкий</option>
         <option value="dead"    ${SKU_FILTER.status==='dead'?'selected':''}>Мертвий</option>
+        <option value="списати" ${SKU_FILTER.status==='списати'?'selected':''}>Списати</option>
         <option value="new"     ${SKU_FILTER.status==='new'?'selected':''}>Новий</option>
         <option value="archive" ${SKU_FILTER.status==='archive'?'selected':''}>Архів</option>
       </select>
@@ -2978,6 +2980,9 @@ function skuDocsHtml() {
         <tr><td><span class="tag" style="background:rgba(224,96,96,0.15);color:#ef4444">Мертвий</span></td>
             <td>0 продажів за 30 днів, але склад є</td>
             <td>Лежить мертвим грузом. Розпродавати зі знижкою.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(168,99,28,0.15);color:#a8631c">Списати</span></td>
+            <td>0 продажів за 60+ днів</td>
+            <td>Глибокий простій. Продавати з мінусом, віддавати оптовикам нижче собівартості або списати.</td></tr>
         <tr><td><span class="tag" style="background:rgba(255,255,255,0.1);color:#6b7280">Архів</span></td>
             <td>Склад = 0</td>
             <td>Розпродано. За замовчуванням приховано (галка "Приховати архів" у фільтрі).</td></tr>
@@ -3064,7 +3069,8 @@ function skuDocsHtml() {
       <ol>
         <li>keycrm_created_at ≤ 30 днів тому → <code>new</code></li>
         <li>current_stock = 0 → <code>archive</code></li>
-        <li>sold_30d = 0 → <code>dead</code></li>
+        <li>sold_30d = 0 AND (last_sold_at &lt; 60 днів тому OR ніколи не продавався) → <code>списати</code></li>
+        <li>sold_30d = 0 → <code>dead</code> (тобто 30-60 днів без продажів)</li>
         <li>sold_30d ≥ 30 × season_mult → <code>hit</code></li>
         <li>sold_30d ≥ 15 × season_mult → <code>good</code></li>
         <li>sold_30d ≥ 6 × season_mult → <code>slow</code></li>
@@ -3310,7 +3316,7 @@ function renderChartModalContent() {
     const restockIso = sku.last_restock_at
       ? String(sku.last_restock_at).slice(0, 10)
       : (sku.first_stock_at ? String(sku.first_stock_at).slice(0, 10) : '');
-    const statusOptions = ['', 'hit', 'good', 'slow', 'weak', 'dead', 'new', 'archive']
+    const statusOptions = ['', 'hit', 'good', 'slow', 'weak', 'dead', 'списати', 'new', 'archive']
       .map(s => `<option value="${s}" ${(sku.manual_status || '') === s ? 'selected' : ''}>${s ? (STATUS_LABEL[s] || s) : '— авто —'}</option>`).join('');
     editPanel.innerHTML = `
       <details style="border:1px solid var(--border);border-radius:8px;padding:0">
