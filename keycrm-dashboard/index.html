@@ -518,20 +518,8 @@
     </div>
 
     <nav>
-      <div class="nav-item active" onclick="navigate('overview')">
-        <span class="nav-icon">◈</span> Огляд
-      </div>
-      <div class="nav-item" onclick="navigate('products')">
-        <span class="nav-icon">◇</span> Товари
-      </div>
-      <div class="nav-item" onclick="navigate('orders')">
-        <span class="nav-icon">◆</span> Замовлення
-      </div>
-      <div class="nav-item" onclick="navigate('sku')">
+      <div class="nav-item active" onclick="navigate('sku')">
         <span class="nav-icon">◉</span> SKU-аналітика
-      </div>
-      <div class="nav-item" onclick="navigate('reorder')">
-        <span class="nav-icon">↻</span> Реордер
       </div>
       <div class="nav-item" onclick="navigate('clients')">
         <span class="nav-icon">☎</span> Клієнти
@@ -812,7 +800,7 @@ function showError(msg) {
 }
 
 // ── Navigation ───────────────────────
-let currentPage = 'overview';
+let currentPage = 'sku';
 function navigate(page) {
   currentPage = page;
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
