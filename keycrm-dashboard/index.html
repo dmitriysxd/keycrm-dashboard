@@ -2204,26 +2204,8 @@ function clientsScriptHtml() {
 }
 
 // ── Clients docs modal ───────────────────────────
-let CLIENTS_DOCS_CACHE = null;
-
-async function openClientsDocs() {
-  const backdrop = document.getElementById('clients-docs-modal');
-  backdrop.classList.add('open');
-  // Завжди тягнемо свіжу версію (в межах хвилини), щоб не показувати застарілу
-  // довідку коли я щойно оновив формули. CLIENTS_DOCS_CACHE діє лише в межах
-  // однієї сесії дашборду.
-  if (!CLIENTS_DOCS_CACHE) {
-    document.getElementById('clients-docs-body').innerHTML = '<div class="chart-modal-empty">Завантажуємо довідку…</div>';
-    try {
-      const r = await fetch(apiUrl('/api/docs', 'type=clients&v=' + Math.floor(Date.now() / 60000)));
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      CLIENTS_DOCS_CACHE = await r.json();
-    } catch (e) {
-      document.getElementById('clients-docs-body').innerHTML =
-        '<div class="chart-modal-empty">⚠ Не вдалося завантажити довідку: ' + (e.message || e) + '</div>';
-      return;
-    }
-  }
+function openClientsDocs() {
+  document.getElementById('clients-docs-modal').classList.add('open');
   renderClientsDocs();
 }
 
@@ -2232,88 +2214,181 @@ function closeClientsDocs() {
 }
 
 function renderClientsDocs() {
-  const docs = CLIENTS_DOCS_CACHE;
-  if (!docs) return;
-  const esc = s => (s == null ? '' : String(s)).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+  document.getElementById('clients-docs-body').innerHTML = clientsDocsHtml();
+}
 
-  // Групуємо для зручного перегляду.
-  const groups = [
-    { title: 'Базові RFM', keys: ['recency', 'frequency', 'monetary', 'aov', 'aov_last_90d'] },
-    { title: 'Інтервали і velocity', keys: ['avg_interval', 'recent_interval', 'prior_interval', 'velocity_trend'] },
-    { title: 'Поведінкові показники (вікна 90 днів)', keys: ['freq_last_90d', 'freq_prior_90d', 'categories_lifetime', 'categories_90d'] },
-    { title: 'Скори, квінтилі і сегмент', keys: ['r_score', 'f_score', 'm_score', 'rfm_code', 'segment'] },
-    { title: 'Похідні і ризики', keys: ['overdue', 'ltv', 'churn_pct'] },
-    { title: 'Профіль і CRM', keys: ['is_wholesale', 'status', 'notes'] },
-  ];
+function clientsDocsHtml() {
+  return `
+  <style>
+    .doc h2 { color: var(--gold); font-size: 15px; margin: 22px 0 10px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); padding-bottom: 6px }
+    .doc h3 { color: var(--text); font-size: 13px; margin: 16px 0 8px }
+    .doc p, .doc li, .doc td { font-size: 12px; line-height: 1.6; color: var(--text) }
+    .doc ul, .doc ol { padding-left: 22px; margin: 6px 0 12px }
+    .doc table { width: 100%; font-size: 12px; border-collapse: collapse; margin: 8px 0 16px }
+    .doc th, .doc td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; text-align: left }
+    .doc th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px }
+    .doc .tip { background: var(--gold2); border-left: 3px solid var(--gold); padding: 10px 14px; margin: 12px 0; border-radius: 0 8px 8px 0; font-size: 12px; color: var(--text) }
+    .doc .tip b { color: var(--gold) }
+    .doc .example { background: var(--s2); border-radius: 8px; padding: 10px 14px; margin: 8px 0; font-size: 12px; color: var(--text); font-style: italic }
+    .doc code { background: var(--s2); padding: 1px 6px; border-radius: 4px; font-size: 11px; color: var(--gold) }
+    .doc .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600 }
+    .doc details { background: var(--s2); border-radius: 8px; padding: 8px 14px; margin: 8px 0 }
+    .doc summary { cursor: pointer; color: var(--muted); font-size: 11px; padding: 4px 0; user-select: none }
+    .doc details[open] summary { color: var(--gold); margin-bottom: 8px }
+  </style>
+  <div class="doc">
 
-  const metricCard = (m) => {
-    if (!m) return '';
-    return `
-      <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;background:var(--s2)">
-        <div style="font-weight:600;color:var(--text);font-size:13px;margin-bottom:4px">${esc(m.label)}</div>
-        <div style="color:var(--muted);font-size:11px;margin-bottom:8px">${esc(m.short || '')}</div>
-        <table style="width:100%;font-size:11px;border-collapse:collapse">
-          ${m.formula ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top;width:90px">Формула</td><td style="color:var(--text);font-family:'JetBrains Mono',monospace">${esc(m.formula)}</td></tr>` : ''}
-          ${m.period ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top">Період</td><td style="color:var(--text)">${esc(m.period)}</td></tr>` : ''}
-          ${m.freshness ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top">Свіжість</td><td style="color:var(--text)">${esc(m.freshness)}</td></tr>` : ''}
-          ${m.notes ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top">Примітки</td><td style="color:var(--text)">${esc(m.notes)}</td></tr>` : ''}
-        </table>
-      </div>`;
-  };
+    <div class="tip">
+      <b>💡 Що це за сторінка</b><br>
+      Список усіх ваших опт-клієнтів з KeyCRM з автоматичною аналітикою:
+      хто давно не купував, хто купує постійно, у кого великий чек, кому
+      терміново подзвонити. Тут ви <b>не редагуєте дані клієнтів</b> (це робиться
+      в KeyCRM), а <b>працюєте з ними</b> — дзвоните, записуєте заметки,
+      міняєте статус.
+    </div>
 
-  // Окремий блок для churn-факторів — це таблиця.
-  const churnFactors = docs.metrics && docs.metrics.churn_factors && docs.metrics.churn_factors.factors;
-  const churnTable = churnFactors ? `
-    <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;background:var(--s2)">
-      <div style="font-weight:600;color:var(--text);font-size:13px;margin-bottom:8px">${esc(docs.metrics.churn_factors.label)}</div>
-      <table style="width:100%;font-size:11px;border-collapse:collapse">
-        <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
-          <th style="padding:4px 8px 4px 0">Фактор</th>
-          <th style="padding:4px 8px;text-align:right">Вага</th>
-          <th style="padding:4px 8px">Вікно</th>
-          <th style="padding:4px 0">Тригер</th>
-        </tr></thead>
-        <tbody>${churnFactors.map(f => `
-          <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
-            <td style="padding:4px 8px 4px 0;color:var(--text)">${esc(f.name)}</td>
-            <td style="padding:4px 8px;text-align:right;color:var(--gold);font-family:'JetBrains Mono',monospace">${esc(f.weight)}</td>
-            <td style="padding:4px 8px;color:var(--muted)">${esc(f.period)}</td>
-            <td style="padding:4px 0;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:10px">${esc(f.trigger)}</td>
-          </tr>`).join('')}
+    <h2>1. Як читати таблицю</h2>
+    <p>Кожен рядок — це один опт-клієнт. Колонок багато, бо кожна показує свій сигнал. Ось що значить кожна:</p>
+
+    <table>
+      <thead><tr><th>Колонка</th><th>Що означає простими словами</th></tr></thead>
+      <tbody>
+        <tr><td><b>Ім'я</b></td><td>Як підписаний в KeyCRM. Іконка ★опт — підтверджений опт-клієнт.</td></tr>
+        <tr><td><b>Телефон</b></td><td>З KeyCRM.</td></tr>
+        <tr><td><b>Статус</b></td><td>Те, що <b>я виставив вручну</b> — Новий / Активний / Тёплий / VIP / Спящий / Відмова. Можу додати свої.</td></tr>
+        <tr><td><b>Сегмент</b></td><td>Те, що <b>система визначила автоматично</b> по поведінці клієнта (див. розділ 3).</td></tr>
+        <tr><td><b>Останнє замовлення</b></td><td>Дата останньої покупки.</td></tr>
+        <tr><td><b>R (днів)</b></td><td>Скільки днів пройшло з останнього замовлення. Що менше — то краще. <b>⚠ червоний</b> = клієнт прострочив свій звичайний цикл (див. п. 4).</td></tr>
+        <tr><td><b>F</b></td><td>Скільки всього замовлень зробив за весь час.</td></tr>
+        <tr><td><b>LTV (₴)</b></td><td>Скільки сумарно заплатив за весь час. Чим більше — тим цінніший клієнт.</td></tr>
+        <tr><td><b>AOV</b></td><td>Середній чек (LTV ÷ F).</td></tr>
+        <tr><td><b>Цикл</b></td><td>Середній інтервал між замовленнями. Якщо тут "30д" — клієнт зазвичай купує раз на місяць.</td></tr>
+        <tr><td><b>Velocity</b></td><td>↑ прискорюється (купує частіше) · → стабільно · ↓ сповільнюється (купує рідше).</td></tr>
+        <tr><td><b>Churn</b></td><td>Ризик "втратити" клієнта в %. 0–20% зелений (норм), 20–40% сірий, 40–70% жовтий (увага), 70–100% червоний (терміново).</td></tr>
+        <tr><td><b>RFM</b></td><td>Трицифровий код типу "554" — це R-F-M оцінки 1–5 (див. п. 5).</td></tr>
+      </tbody>
+    </table>
+
+    <h2>2. KPI-картки зверху</h2>
+    <p>Шість карток зверху рахують клієнтів по сегментах. <b>Клікніть на картку</b> — таблиця відфільтрується тільки по тому сегменту. Повторний клік — знімає фільтр.</p>
+
+    <h2>3. Сегменти — як система класифікує клієнтів</h2>
+    <p>Система автоматично розставляє клієнтів у 6 категорій. Дивиться на дві речі:</p>
+    <ul>
+      <li><b>R (Recency)</b> — наскільки давно купував. Оцінка 1–5: <code>5</code> = серед найсвіжіших 20%, <code>1</code> = серед найдавніших 20%.</li>
+      <li><b>F (Frequency)</b> — скільки разів купував. <code>5</code> = серед найчастіших 20%, <code>1</code> = серед найрідших.</li>
+    </ul>
+    <p>Оцінки <b>відносні</b> — рахуються між усіма твоїми клієнтами. Тобто "R=5" не означає "купив сьогодні", а означає "входить у топ-20% за свіжістю серед усіх клієнтів".</p>
+
+    <table>
+      <thead><tr><th>Сегмент</th><th>Критерій</th><th>Простими словами</th></tr></thead>
+      <tbody>
+        <tr><td><span class="tag" style="background:rgba(168,85,247,0.15);color:#a855f7">Чемпіони</span></td><td>R≥4 і F≥4</td><td>Купують часто + нещодавно. Це твоє ядро — VIP-обслуговування.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(16,185,129,0.15);color:#10b981">Лояльні</span></td><td>R≥3 і F≥3</td><td>Регулярні робочі клієнти. Тримай, не давай заскучати.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(59,130,246,0.15);color:#3b82f6">Нові</span></td><td>R≥4 і F≤2</td><td>Свіжо купили, але мало історії. Знайомтесь, дай welcome-фідбек.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(245,158,11,0.15);color:#f59e0b">Під ризиком</span></td><td>R≤2 і F≥3</td><td>Раніше купували часто, але давно тиша. <b>Найважливіший сегмент для повернення</b>.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(239,68,68,0.15);color:#ef4444">Втрачені</span></td><td>R≤2 і F≤2</td><td>Давно і мало купували. Можна холодна реактивація через розсилку.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(107,114,128,0.15);color:#6b7280">Потенційні</span></td><td>Все інше</td><td>"Сіра зона". Не критично, але можна придивитись.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>4. Чому рядок червоний (Overdue)</h2>
+    <p>Червона смужка зліва + <b>"⚠"</b> в колонці R означає: клієнт прострочив свій звичайний цикл закупки.</p>
+    <p>Точна формула <b>"одночасно дві умови"</b>:</p>
+    <ol>
+      <li>Минуло вдвічі більше днів, ніж його середній цикл</li>
+      <li>І абсолютна затримка більше 30 днів (захист від коротких циклів)</li>
+    </ol>
+    <div class="example">
+      Приклад: Олена зазвичай купує раз на 25 днів. Якщо минуло 60 днів — вона червона
+      (60 > 25×2=50, і 60−25=35 &gt; 30). Якщо минуло 45 днів — ще не червона
+      (45 &lt; 50). Якщо минуло 30 — звичайно, не червона.
+    </div>
+    <p><b>Як цим користуватись:</b> у фільтрі постав галку "<b>⚠ Тільки прострочені</b>" → отримаєш список тих, кому реально треба подзвонити сьогодні.</p>
+
+    <h2>5. RFM-код</h2>
+    <p>Трицифровий код типу <code>554</code> = R-score · F-score · M-score (оцінки 1-5).</p>
+    <ul>
+      <li><b>555</b> — ідеальний клієнт (топ-20% по всіх трьох метриках)</li>
+      <li><b>155</b> — багато платив, часто, але давно пропав — твій топ-кандидат на повернення</li>
+      <li><b>511</b> — щойно купив, але мало і дешево — потенціал виростити</li>
+      <li><b>111</b> — найгірший</li>
+    </ul>
+
+    <h2>6. Статус vs Сегмент</h2>
+    <p>Ці дві колонки <b>не конфліктують</b> — вони про різне:</p>
+    <table>
+      <thead><tr><th></th><th>Статус</th><th>Сегмент</th></tr></thead>
+      <tbody>
+        <tr><td><b>Хто ставить</b></td><td>Ти руками</td><td>Система автоматично</td></tr>
+        <tr><td><b>На основі чого</b></td><td>Твоїх знань про клієнта (з розмови)</td><td>RFM-формули по даних з замовлень</td></tr>
+        <tr><td><b>Приклад</b></td><td>"VIP" / "Відмова" / "Тёплий"</td><td>"Чемпіони" / "Лояльні" / "Під ризиком"</td></tr>
+        <tr><td><b>Коли змінюється</b></td><td>Коли ти змінюєш у dropdown</td><td>Щоночі при оновленні даних</td></tr>
+      </tbody>
+    </table>
+    <div class="tip">
+      <b>💡 Як використовувати разом:</b> клієнт у сегменті "Втрачені" (R=1, F=1)
+      може бути в статусі "Відмова" — і тоді ти знаєш, що йому не треба дзвонити.
+      Або в статусі "Тёплий" — і тоді він просто пропав і його варто реактивувати.
+    </div>
+
+    <h2>7. Картка клієнта — що там є</h2>
+    <p>Клік на рядок → відкриється модал з повною інформацією:</p>
+    <ul>
+      <li><b>R / F / LTV / AOV / Цикл / Velocity / Churn</b> — великі цифри зверху</li>
+      <li><b>Статус</b> — dropdown для зміни. Кнопка <b>+</b> щоб додати новий статус.</li>
+      <li><b>Опт-клієнт</b> — чекбокс. Якщо змінив у KeyCRM, тут можна синхронізувати руками.</li>
+      <li><b>Аналітика поведінки</b> — деталі: замовлень за 90д vs попередні 90д, AOV за різні періоди, інтервали тощо.</li>
+      <li><b>Фактори churn</b> — список причин, чому система вважає клієнта ризикованим.</li>
+      <li><b>Журнал дзвінків</b> — твої заметки з outcome. ✎ — редагувати, ✕ — видалити.</li>
+      <li><b>Останні замовлення</b> — 20 останніх, з датами і сумами.</li>
+    </ul>
+
+    <h2>8. Заметки — як вести журнал</h2>
+    <p>Внизу картки — форма "Нова заметка". Дві поля:</p>
+    <ul>
+      <li><b>Результат (outcome)</b> — короткий тег: <code>передзвонити</code> · <code>замовив</code> · <code>думає</code> · <code>не відповідає</code> · <code>відмова</code> · <code>не цікаво зараз</code>.</li>
+      <li><b>Текст</b> — деталі: про що говорили, що пообіцяв, наступні кроки.</li>
+    </ul>
+    <p>Заметки <b>не впливають</b> на автоматичні метрики (churn, segment, velocity) — це чистий журнал для тебе. Але outcome-теги допомагають швидко зрозуміти історію розмов з клієнтом.</p>
+    <div class="tip">
+      <b>💡 Куди дивитись далі:</b> кнопка <b>"▶ Скрипт"</b> у шапці сторінки — там покроковий скрипт роботи з клієнтами по сегментах, фрази для дзвінків, правила статусів.
+    </div>
+
+    <h2>9. Звідки беруться дані і коли оновлюються</h2>
+    <ul>
+      <li><b>KeyCRM API</b> — кожну ніч (близько 03:00 UTC) ingest забирає нові замовлення, нових клієнтів, оновлення карток.</li>
+      <li><b>buyer_rfm</b> (агрегати) — перераховується одразу після ingest (на тому ж кроці).</li>
+      <li><b>Quintiles R/F/M</b> — рахуються щоночі. Це означає що <b>твій R-score може змінитись навіть якщо ти нічого не робив</b> — бо хтось інший купив, і всіх перетасувало.</li>
+      <li><b>Ручний статус і заметки</b> — миттєво.</li>
+    </ul>
+
+    <details>
+      <summary>🔧 Технічні деталі — формули і ваги churn-факторів</summary>
+      <h3>Churn % — як рахується</h3>
+      <p>Сума балів від різних сигналів. Максимум 100%.</p>
+      <table>
+        <thead><tr><th>Сигнал</th><th>Бали</th><th>Коли</th></tr></thead>
+        <tbody>
+          <tr><td>Recency > циклу × 3</td><td>+45</td><td>Сильно пропав</td></tr>
+          <tr><td>Recency > циклу × 2</td><td>+32</td><td>Пропав</td></tr>
+          <tr><td>Recency > циклу × 1.5</td><td>+20</td><td>Затримується</td></tr>
+          <tr><td>Recency > циклу × 1.2</td><td>+8</td><td>Легка затримка</td></tr>
+          <tr><td>180+ днів без замовлень (без історії)</td><td>+35</td><td>Тільки якщо &lt; 2 замовлень</td></tr>
+          <tr><td>90+ днів без замовлень (без історії)</td><td>+20</td><td>Тільки якщо &lt; 2 замовлень</td></tr>
+          <tr><td>Замовлення впали до 0 за 90д</td><td>+25</td><td>Раніше було ≥2</td></tr>
+          <tr><td>Замовлення впали на 70%+</td><td>+18</td><td>vs попередні 90 днів</td></tr>
+          <tr><td>Замовлення впали на 50%+</td><td>+10</td><td>vs попередні 90 днів</td></tr>
+          <tr><td>AOV просів на 50%+</td><td>+12</td><td>90д vs весь час</td></tr>
+          <tr><td>AOV просів на 30%+</td><td>+6</td><td>90д vs весь час</td></tr>
+          <tr><td>Звузив асортимент категорій</td><td>+8</td><td>cat_90 &lt; cat_всього × 0.4</td></tr>
+          <tr><td>Velocity сповільнюється</td><td>+10</td><td>інтервали зросли &gt;1.3× і ≥14 днів</td></tr>
         </tbody>
       </table>
-      <div style="margin-top:8px;font-size:11px;color:var(--muted)">
-        Сума всіх вагових сигналів, обрізана до діапазону 0–95%. Колір рядка в таблиці: 0–20% зелений, 20–40% сірий, 40–70% жовтий, 70–95% червоний.
-      </div>
-    </div>
-  ` : '';
+      <p><b>Виключаються:</b> замовлення зі статусами <code>cancelled</code>, <code>rejected</code>, <code>Повернули</code>, <code>Відмовились</code>, <code>incorrect_data</code>, <code>underbid</code>, <code>Об'єднання замовлень</code>.</p>
+    </details>
 
-  const generalHtml = docs.general ? `
-    <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:16px;background:var(--gold2)">
-      <div style="font-weight:600;color:var(--gold);font-size:12px;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">Загальні правила</div>
-      <div style="font-size:11px;color:var(--text);margin-bottom:8px">${esc(docs.general.refresh_schedule)}</div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">З розрахунку виключаються замовлення зі статусами:</div>
-      <div style="font-size:11px;color:var(--text);font-family:'JetBrains Mono',monospace">${(docs.general.excluded_statuses || []).map(s => esc(s)).join(', ')}</div>
-    </div>
-  ` : '';
-
-  const groupsHtml = groups.map(g => `
-    <div style="margin-bottom:16px">
-      <div style="font-size:12px;color:var(--gold);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;font-weight:600">${esc(g.title)}</div>
-      ${g.keys.map(k => metricCard(docs.metrics && docs.metrics[k])).join('')}
-    </div>
-  `).join('');
-
-  // Churn-секція окремо в кінці.
-  const churnSection = `
-    <div style="margin-bottom:16px">
-      <div style="font-size:12px;color:var(--gold);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;font-weight:600">Churn-ризик: формула</div>
-      ${metricCard(docs.metrics && docs.metrics.churn_pct)}
-      ${churnTable}
-    </div>
-  `;
-
-  document.getElementById('clients-docs-body').innerHTML = generalHtml + groupsHtml + churnSection;
+  </div>`;
 }
 
 // ── SKU playbook (Інструкція) ─────────────────
@@ -2457,22 +2532,8 @@ function skuPlaybookHtml() {
 }
 
 // ── SKU docs modal ───────────────────────────
-let SKU_DOCS_CACHE = null;
-
-async function openSkuDocs() {
+function openSkuDocs() {
   document.getElementById('sku-docs-modal').classList.add('open');
-  if (!SKU_DOCS_CACHE) {
-    document.getElementById('sku-docs-body').innerHTML = '<div class="chart-modal-empty">Завантажуємо довідку…</div>';
-    try {
-      const r = await fetch(apiUrl('/api/docs', 'type=sku&v=' + Math.floor(Date.now() / 60000)));
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      SKU_DOCS_CACHE = await r.json();
-    } catch (e) {
-      document.getElementById('sku-docs-body').innerHTML =
-        '<div class="chart-modal-empty">⚠ Не вдалося завантажити довідку: ' + (e.message || e) + '</div>';
-      return;
-    }
-  }
   renderSkuDocs();
 }
 
@@ -2481,123 +2542,193 @@ function closeSkuDocs() {
 }
 
 function renderSkuDocs() {
-  const docs = SKU_DOCS_CACHE;
-  if (!docs) return;
-  const esc = s => (s == null ? '' : String(s)).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+  document.getElementById('sku-docs-body').innerHTML = skuDocsHtml();
+}
 
-  const groups = [
-    { title: 'Базова інформація', keys: ['current_stock', 'price', 'cost'] },
-    { title: 'Продажі', keys: ['sold_30d', 'velocity_7d', 'velocity_30d', 'velocity_90d', 'lifetime_velocity', 'sold_total', 'buyers_count'] },
-    { title: 'Метрики для реордеру', keys: ['days_of_supply', 'sell_through_30d', 'suggested_qty', 'estimated_cost'] },
-    { title: 'Вік і цикли', keys: ['age_days', 'first_stock_at', 'keycrm_created_at', 'last_sold_at'] },
-    { title: 'Сезонність і ранжування', keys: ['current_season_multiplier', 'category_quintile', 'relative_performance', 'revenue_rank'] },
-    { title: 'Статуси, BCG, сигнали', keys: ['status', 'bcg_role', 'tags', 'archive_tier'] },
-  ];
+function skuDocsHtml() {
+  return `
+  <style>
+    .doc h2 { color: var(--gold); font-size: 15px; margin: 22px 0 10px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); padding-bottom: 6px }
+    .doc h3 { color: var(--text); font-size: 13px; margin: 16px 0 8px }
+    .doc p, .doc li, .doc td { font-size: 12px; line-height: 1.6; color: var(--text) }
+    .doc ul, .doc ol { padding-left: 22px; margin: 6px 0 12px }
+    .doc table { width: 100%; font-size: 12px; border-collapse: collapse; margin: 8px 0 16px }
+    .doc th, .doc td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; text-align: left }
+    .doc th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px }
+    .doc .tip { background: var(--gold2); border-left: 3px solid var(--gold); padding: 10px 14px; margin: 12px 0; border-radius: 0 8px 8px 0; font-size: 12px; color: var(--text) }
+    .doc .tip b { color: var(--gold) }
+    .doc .example { background: var(--s2); border-radius: 8px; padding: 10px 14px; margin: 8px 0; font-size: 12px; color: var(--text); font-style: italic }
+    .doc code { background: var(--s2); padding: 1px 6px; border-radius: 4px; font-size: 11px; color: var(--gold) }
+    .doc .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600 }
+    .doc details { background: var(--s2); border-radius: 8px; padding: 8px 14px; margin: 8px 0 }
+    .doc summary { cursor: pointer; color: var(--muted); font-size: 11px; padding: 4px 0; user-select: none }
+    .doc details[open] summary { color: var(--gold); margin-bottom: 8px }
+  </style>
+  <div class="doc">
 
-  const metricCard = (m) => {
-    if (!m) return '';
-    return `
-      <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;background:var(--s2)">
-        <div style="font-weight:600;color:var(--text);font-size:13px;margin-bottom:4px">${esc(m.label)}</div>
-        <div style="color:var(--muted);font-size:11px;margin-bottom:8px">${esc(m.short || '')}</div>
-        <table style="width:100%;font-size:11px;border-collapse:collapse">
-          ${m.formula ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top;width:90px">Формула</td><td style="color:var(--text);font-family:'JetBrains Mono',monospace">${esc(m.formula)}</td></tr>` : ''}
-          ${m.period ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top">Період</td><td style="color:var(--text)">${esc(m.period)}</td></tr>` : ''}
-          ${m.freshness ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top">Свіжість</td><td style="color:var(--text)">${esc(m.freshness)}</td></tr>` : ''}
-          ${m.notes ? `<tr><td style="color:var(--muted);padding:2px 8px 2px 0;vertical-align:top">Примітки</td><td style="color:var(--text)">${esc(m.notes)}</td></tr>` : ''}
-        </table>
-      </div>`;
-  };
-
-  const statusLegendHtml = docs.statuses ? `
-    <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;background:var(--s2)">
-      <div style="font-weight:600;color:var(--text);font-size:13px;margin-bottom:8px">Легенда статусів (порядок перевірки умов)</div>
-      <table style="width:100%;font-size:11px;border-collapse:collapse">
-        <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
-          <th style="padding:4px 8px 4px 0;width:90px">Статус</th>
-          <th style="padding:4px 0">Критерій</th>
-        </tr></thead>
-        <tbody>${Object.values(docs.statuses).map(s => `
-          <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
-            <td style="padding:6px 8px 6px 0">
-              <span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:10px;background:${s.color}22;color:${s.color};font-weight:600">${esc(s.label)}</span>
-            </td>
-            <td style="padding:6px 0;color:var(--text)">${esc(s.criteria)}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
-      <div style="margin-top:8px;font-size:11px;color:var(--muted)">
-        Умови перевіряються по черзі зверху вниз — спрацьовує перша. manual_status (виставлений вручну) переважає всю auto-логіку.
-      </div>
+    <div class="tip">
+      <b>💡 Що це за сторінка</b><br>
+      Каталог усіх ваших товарів з KeyCRM з автоматичною аналітикою:
+      які хіти, які лежать без руху, що терміново замовляти, що розпродавати.
+      Цифри для кожного товару рахуються по його продажам за 7 / 30 / 90 днів
+      і поточному складу.
     </div>
-  ` : '';
 
-  const generalHtml = docs.general ? `
-    <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:16px;background:var(--gold2)">
-      <div style="font-weight:600;color:var(--gold);font-size:12px;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">Загальні правила</div>
-      <div style="font-size:11px;color:var(--text);margin-bottom:8px">${esc(docs.general.refresh_schedule)}</div>
-      ${docs.general.vlife_explained ? `<div style="font-size:11px;color:var(--text);margin-bottom:8px"><b>Про Vlife:</b> ${esc(docs.general.vlife_explained)}</div>` : ''}
-      ${docs.general.seasonality_explained ? `<div style="font-size:11px;color:var(--text);margin-bottom:8px"><b>Сезонність:</b> ${esc(docs.general.seasonality_explained)}</div>` : ''}
-      ${docs.general.bcg_matrix_explained ? `<div style="font-size:11px;color:var(--text);margin-bottom:8px"><b>BCG-роль:</b> ${esc(docs.general.bcg_matrix_explained)}</div>` : ''}
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">З розрахунку виключаються замовлення зі статусами:</div>
-      <div style="font-size:11px;color:var(--text);font-family:'JetBrains Mono',monospace">${(docs.general.excluded_statuses || []).map(s => esc(s)).join(', ')}</div>
+    <h2>1. Як читати таблицю</h2>
+    <p>Кожен рядок — це один товар (SKU). Колонок багато, бо кожна показує свій бік "здоров'я" товару. Ось що значить кожна:</p>
+
+    <table>
+      <thead><tr><th>Колонка</th><th>Що означає простими словами</th></tr></thead>
+      <tbody>
+        <tr><td><b>Назва · Артикул · Категорія</b></td><td>З KeyCRM. Артикул = SKU-код.</td></tr>
+        <tr><td><b>Склад</b></td><td>Скільки штук зараз доступно для продажу (без зарезервованих в активних замовленнях).</td></tr>
+        <tr><td><b>S30d</b></td><td>Скільки штук продано за останні 30 днів.</td></tr>
+        <tr><td><b>V7 / V30 / V90</b></td><td>Швидкість продажу (шт/день) на різних вікнах. <b>Порівняння V7 і V30 показує тренд</b>: V7 &gt; V30 → товар прискорюється; V7 &lt; V30 → сповільнюється.</td></tr>
+        <tr><td><b>Vlife</b></td><td>Швидкість за весь час життя товару (тільки дні, коли він був у наявності). Найчесніша метрика "як товар взагалі продається".</td></tr>
+        <tr><td><b>Buyers</b></td><td>Скільки унікальних клієнтів купували цей товар. Багато покупців = надійний хіт; мало = на любителя.</td></tr>
+        <tr><td><b>DoS</b></td><td><b>Days of Supply</b> — на скільки днів вистачить поточного складу при поточному темпі. &lt;14д = терміново замовляти; 30–60 = норм; &gt;180 = надлишок.</td></tr>
+        <tr><td><b>Sell-through</b></td><td>Який % від наявного складу розпродали за 30 днів. &gt;50% = хороший рух; &lt;10% = застій.</td></tr>
+        <tr><td><b>Вік</b></td><td>Скільки днів триває поточний цикл наявності (від останнього оприбуткування).</td></tr>
+        <tr><td><b>Статус</b></td><td>Авто-класифікація <b>Хіт / Хороший / Повільний / Слабкий / Мертвий / Новий / Архів</b> (див. розділ 3).</td></tr>
+        <tr><td><b>Сигнали</b></td><td>Іконки-теги (🌟 🐄 ❓ 🐶 📈 📉 ❄️ 📦 💎 🔁 📊) — показують BCG-роль + що з товаром відбувається. Hover показує опис.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>2. KPI-картки зверху</h2>
+    <p>Сім карток рахують товари по статусах. <b>Клікніть на картку</b> — таблиця відфільтрується тільки по тому статусу. Повторний клік знімає фільтр.</p>
+    <p>Це найшвидший спосіб подивитись "що зараз хіти" / "що треба розпродати" / "що нового з'явилось".</p>
+
+    <h2>3. Статуси товарів — як вони визначаються</h2>
+    <p>Кожен товар автоматично отримує один з 7 статусів. Перевірка йде <b>зверху вниз — перший збіг виграє</b>:</p>
+
+    <table>
+      <thead><tr><th>Статус</th><th>Критерій</th><th>Простими словами</th></tr></thead>
+      <tbody>
+        <tr><td><span class="tag" style="background:rgba(168,85,247,0.15);color:#a855f7">Новий</span></td>
+            <td>Створений у KeyCRM &lt;30 днів</td>
+            <td>Дай 30 днів показати себе, навіть якщо ще нема продажів.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(126,212,159,0.15);color:#22c55e">Хіт</span></td>
+            <td>≥30 шт/міс × сезонний коеф.</td>
+            <td>Зірка асортименту. Не давай вибути зі складу.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(158,209,179,0.15);color:#9ed1b3">Хороший</span></td>
+            <td>15–29 шт/міс × сезон</td>
+            <td>Стабільний робочий товар. Тримати DoS 30–45д.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(201,169,110,0.15);color:#f59e0b">Повільний</span></td>
+            <td>6–14 шт/міс × сезон</td>
+            <td>Тонкий шар у асортименті. Тримати по мінімуму.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(224,160,96,0.15);color:#e0a060">Слабкий</span></td>
+            <td>1–5 шт/міс × сезон</td>
+            <td>Майже нічого не приносить. Кандидат на акцію або зняття.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(224,96,96,0.15);color:#ef4444">Мертвий</span></td>
+            <td>0 продажів за 30 днів, але склад є</td>
+            <td>Лежить мертвим грузом. Розпродавати зі знижкою.</td></tr>
+        <tr><td><span class="tag" style="background:rgba(255,255,255,0.1);color:#6b7280">Архів</span></td>
+            <td>Склад = 0</td>
+            <td>Розпродано. За замовчуванням приховано (галка "Приховати архів" у фільтрі).</td></tr>
+      </tbody>
+    </table>
+
+    <div class="tip">
+      <b>💡 Що таке "сезонний коефіцієнт"</b><br>
+      У сезон (8 березня, Новий рік) усі купують більше — тому планка для "хіта"
+      автоматично піднімається (×1.3 або ×1.5). Влітку навпаки — планка знижується
+      (×0.6). Це робить порівняння товарів чесним у різні пори року.
+      Поточний коеф. видно в шапці сторінки: <code>🗓 Сезон: ... × 1.3</code>.
     </div>
-  ` : '';
 
-  const bcgHtml = docs.bcg_roles ? `
-    <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;background:var(--s2)">
-      <div style="font-weight:600;color:var(--text);font-size:13px;margin-bottom:8px">BCG-ролі (стратегічна класифікація)</div>
-      <table style="width:100%;font-size:11px;border-collapse:collapse">
-        <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
-          <th style="padding:4px 8px 4px 0;width:140px">Роль</th>
-          <th style="padding:4px 8px">Критерій</th>
-          <th style="padding:4px 0">Що робити</th>
-        </tr></thead>
-        <tbody>${Object.values(docs.bcg_roles).map(r => `
-          <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
-            <td style="padding:6px 8px 6px 0;font-weight:600;color:var(--text)">${esc(r.label)}</td>
-            <td style="padding:6px 8px;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:10px">${esc(r.criteria)}</td>
-            <td style="padding:6px 0;color:var(--text)">${esc(r.action)}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
+    <div class="tip">
+      <b>💡 Manual override</b><br>
+      Якщо хочеш зафіксувати статус незалежно від продажів — у картці SKU
+      можна виставити <code>manual_status</code>. Він переважає автологіку.
+      Корисно якщо хочеш потримати статус "Новий" довше або позначити товар
+      "Архівом" вручну.
     </div>
-  ` : '';
 
-  const tagsHtml = docs.tags ? `
-    <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;background:var(--s2)">
-      <div style="font-weight:600;color:var(--text);font-size:13px;margin-bottom:8px">Сигнали (actionable теги в колонці таблиці)</div>
-      <table style="width:100%;font-size:11px;border-collapse:collapse">
-        <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
-          <th style="padding:4px 8px 4px 0;width:40px">Icon</th>
-          <th style="padding:4px 8px;width:140px">Назва</th>
-          <th style="padding:4px 8px">Критерій</th>
-          <th style="padding:4px 0">Що робити</th>
-        </tr></thead>
-        <tbody>${Object.values(docs.tags).map(t => `
-          <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
-            <td style="padding:6px 8px 6px 0;font-size:16px;text-align:center">${t.icon}</td>
-            <td style="padding:6px 8px;font-weight:600;color:var(--text)">${esc(t.label)}</td>
-            <td style="padding:6px 8px;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:10px">${esc(t.criteria)}</td>
-            <td style="padding:6px 0;color:var(--text)">${esc(t.action)}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
-      <div style="margin-top:8px;font-size:11px;color:var(--muted)">
-        Один SKU може мати кілька тегів одночасно. Hover над іконкою показує опис.
-      </div>
+    <h2>4. BCG-роль (стратегічна класифікація)</h2>
+    <p>Окрема колонка-іконка для активних товарів з продажами. Показує стратегію роботи з товаром:</p>
+
+    <table>
+      <thead><tr><th>Роль</th><th>Критерій</th><th>Що робити</th></tr></thead>
+      <tbody>
+        <tr><td>🌟 <b>Зірка</b></td><td>Топ-20% по виручці + росте (V7/V30 &gt; 1.2)</td><td>Інвестуй у сток, не давай вийти</td></tr>
+        <tr><td>🐄 <b>Дойна корова</b></td><td>Топ-20% по виручці + стабільна/спадає</td><td>Доїти — підтримуй сток, без агресії</td></tr>
+        <tr><td>❓ <b>Знак питання</b></td><td>Не топ-20% + росте (V7/V30 &gt; 1.2)</td><td>Спостерігай — може стати зіркою</td></tr>
+        <tr><td>🐶 <b>Собака</b></td><td>Не топ-20% + падає (V7/V30 &lt; 0.7)</td><td>Розпродавай або не дозамовляй</td></tr>
+      </tbody>
+    </table>
+    <p>Фільтр по BCG-ролі є у фільтр-барі (селект з лічильниками).</p>
+
+    <h2>5. Сигнали (іконки в колонці таблиці)</h2>
+    <p>Один товар може мати кілька іконок одночасно. Це підказки "що з ним відбувається":</p>
+
+    <table>
+      <thead><tr><th>Іконка</th><th>Що значить</th><th>Що робити</th></tr></thead>
+      <tbody>
+        <tr><td>📈</td><td>Прискорюється (V7/V30 &gt; 1.5)</td><td>Додай у наступне замовлення +20%</td></tr>
+        <tr><td>📉</td><td>Сповільнюється (V7/V30 &lt; 0.5)</td><td>Перевір причину — сезон, конкуренти, ціна?</td></tr>
+        <tr><td>❄️</td><td>Stockout-ризик (DoS &lt; 7д)</td><td>Терміновий реордер</td></tr>
+        <tr><td>📦</td><td>Залежався (DoS &gt; 180д)</td><td>Розпродавай зі знижкою</td></tr>
+        <tr><td>💎</td><td>Hero (топ-20% по виручці)</td><td>Особливий контроль — не втрачай зі складу</td></tr>
+        <tr><td>🔁</td><td>Comeback (відновив продажі після паузи)</td><td>Слідкуй — можливо повернувся в строй</td></tr>
+        <tr><td>📊 (+)</td><td>Продає на 20%+ краще за свою норму</td><td>Сезонний пік або реальне зростання</td></tr>
+        <tr><td>📊 (−)</td><td>Продає на 20%+ гірше за свою норму</td><td>Перевір причину — конкуренція? сезон?</td></tr>
+      </tbody>
+    </table>
+
+    <h2>6. Картка товару — графік продажів</h2>
+    <p>Клік на рядок → відкриється модал з графіком продажів за обраний період (7/30/90/365 днів) + ключовими метриками + кнопкою "Зберегти зміни" якщо ти редагуєш cost / manual_status / дату оприбуткування.</p>
+
+    <h2>7. Звідки беруться дані і коли оновлюються</h2>
+    <ul>
+      <li><b>KeyCRM API</b> — кожну ніч ingest забирає замовлення, склади, оновлення карток товарів.</li>
+      <li><b>sku_metrics</b> (вся аналітика) — перераховується одразу після ingest.</li>
+      <li><b>Квінтилі / ранги</b> — рахуються заново щоночі. <b>Твій товар може поміняти ранг навіть якщо ти нічого не робив</b> — бо інші товари перемішало.</li>
+      <li><b>Cost / manual_status</b> — миттєво при збереженні в картці.</li>
+    </ul>
+
+    <div class="tip">
+      <b>💡 Куди дивитись далі:</b> кнопка <b>"▶ Інструкція"</b> у шапці сторінки — там покроковий плейбук: що замовляти / розпродавати / тестувати на акціях, як читати V7/V30, готові сценарії.
     </div>
-  ` : '';
 
-  const groupsHtml = groups.map(g => `
-    <div style="margin-bottom:16px">
-      <div style="font-size:12px;color:var(--gold);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;font-weight:600">${esc(g.title)}</div>
-      ${g.keys.map(k => metricCard(docs.metrics && docs.metrics[k])).join('')}
-    </div>
-  `).join('');
+    <details>
+      <summary>🔧 Технічні деталі — точні формули метрик</summary>
+      <h3>Базові продажні метрики</h3>
+      <ul>
+        <li><code>S30d</code> = SUM(quantity) WHERE ordered_at ≥ NOW() − 30 days</li>
+        <li><code>V7</code> = SUM(qty за 7 днів) / 7</li>
+        <li><code>V30</code> = SUM(qty за 30 днів) / 30 — NULL якщо товар існує &lt;30 днів</li>
+        <li><code>V90</code> = SUM(qty за 90 днів) / 90 — NULL якщо &lt;90 днів</li>
+        <li><code>Vlife</code> = SUM(всього продано) / vlife_days (дні фактичної наявності)</li>
+        <li><code>DoS</code> = current_stock ÷ (sold_7d / 7) — NULL якщо за 7 днів 0 продажів</li>
+        <li><code>Sell-through</code> = sold_30d ÷ GREATEST(peak_stock_30d, sold_30d + current_stock)</li>
+      </ul>
 
-  document.getElementById('sku-docs-body').innerHTML =
-    generalHtml + statusLegendHtml + bcgHtml + tagsHtml + groupsHtml;
+      <h3>Точна формула статусу</h3>
+      <p>Перевіряється зверху вниз, перший збіг виграє:</p>
+      <ol>
+        <li>keycrm_created_at ≤ 30 днів тому → <code>new</code></li>
+        <li>current_stock = 0 → <code>archive</code></li>
+        <li>sold_30d = 0 → <code>dead</code></li>
+        <li>sold_30d ≥ 30 × season_mult → <code>hit</code></li>
+        <li>sold_30d ≥ 15 × season_mult → <code>good</code></li>
+        <li>sold_30d ≥ 6 × season_mult → <code>slow</code></li>
+        <li>інакше → <code>weak</code></li>
+      </ol>
+      <p><b>manual_status</b> переважає всю автологіку.</p>
+
+      <h3>Точна формула BCG</h3>
+      <ul>
+        <li><code>star</code>: revenue_rank ≤ 4 (топ-20%) AND v7/v30 &gt; 1.2</li>
+        <li><code>cash_cow</code>: revenue_rank ≤ 4 інакше</li>
+        <li><code>question</code>: v7/v30 &gt; 1.2 (поза топ-20%)</li>
+        <li><code>dog</code>: v7/v30 &lt; 0.7 (поза топ-20%)</li>
+      </ul>
+
+      <h3>Виключаються</h3>
+      <p>Замовлення зі статусами <code>cancelled</code>, <code>rejected</code>, <code>Повернули</code>, <code>Відмовились</code>, <code>incorrect_data</code>, <code>underbid</code>, <code>Об'єднання замовлень</code> — не враховуються в жодну метрику.</p>
+    </details>
+
+  </div>`;
 }
 
 async function addClientStatusPrompt() {
