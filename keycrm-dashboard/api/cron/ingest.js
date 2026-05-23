@@ -628,24 +628,40 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
       });
       result.advanced = "metrics";
     } else if (stepName === "metrics") {
-      // Soft refresh: try once with a short local timeout. If REFRESH
-      // MATERIALIZED VIEW doesn't complete in 8s (typical at our scale
-      // is 30-90s), we don't fail the cycle — pg_cron has the heavy
-      // refresh scheduled for 03:10 UTC and will finish it server-side.
-      try {
-        await Promise.race([
+      // Фінальний крок: рефреш обох matview. pg_cron більше не запускається
+      // на фіксованому розкладі (міграція 036) — щоб уникнути гонки з ingest.
+      // Тепер це єдине місце де matview оновлюються автоматично.
+      //
+      // Реальні тривалості за історією: sku_metrics 4-9s, buyer_rfm 3-4s.
+      // Даємо 40s на sku + 15s на buyer (загалом 55s — впишемось у 60s
+      // Vercel ліміт, бо цей чанк тільки рефрешить, нічого ще не робить).
+      const refreshWith = async (rpcName, timeoutMs) => {
+        return Promise.race([
           (async () => {
-            const r = await supabase.rpc("refresh_sku_metrics");
+            const r = await supabase.rpc(rpcName);
             if (r && r.error) throw new Error(r.error.message);
+            return true;
           })(),
           new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("local refresh timeout, deferring to pg_cron")), 8000)
+            setTimeout(() => reject(new Error(rpcName + " timeout " + timeoutMs + "ms")), timeoutMs)
           ),
         ]);
-        result.metrics = true;
+      };
+
+      try {
+        await refreshWith("refresh_sku_metrics", 40000);
+        result.metrics_sku = true;
       } catch (err) {
-        result.metrics_deferred = (err && err.message) || String(err);
+        result.metrics_sku_error = (err && err.message) || String(err);
       }
+
+      try {
+        await refreshWith("refresh_buyer_rfm", 15000);
+        result.metrics_rfm = true;
+      } catch (err) {
+        result.metrics_rfm_error = (err && err.message) || String(err);
+      }
+
       await writeState(supabase, {
         current_step: "done",
         current_page: 1,
