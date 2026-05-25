@@ -101,14 +101,6 @@ async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
           category_id: catId,
           category_name: catName,
           price: safePrice,
-          // Фото товару для AI-аналізу дизайну.
-          // KeyCRM віддає thumbnail_url або attachments_data.
-          image_url: p.thumbnail_url
-            || (Array.isArray(p.attachments_data) && p.attachments_data[0]
-                && (typeof p.attachments_data[0] === "string"
-                    ? p.attachments_data[0]
-                    : (p.attachments_data[0].url || p.attachments_data[0].path)))
-            || null,
           keycrm_created_at: keycrmCreatedAt,
           last_seen_at: new Date().toISOString(),
           is_active: true,

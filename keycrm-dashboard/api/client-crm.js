@@ -1,7 +1,6 @@
 // Об'єднаний CRM-endpoint для нотаток дзвінків і довідника статусів.
 // Раніше це були окремі /api/client-note і /api/client-statuses, об'єднано
-// щоб укластися в 12-функційний ліміт Vercel Hobby (звільняємо слот для
-// /api/cron/analyze-images).
+// щоб укластися в 12-функційний ліміт Vercel Hobby.
 //
 // === НОТАТКИ ДЗВІНКІВ ===
 // POST   /api/client-crm?type=note         body: { buyer_id, outcome?, body }

@@ -7,8 +7,7 @@
     "api/cron/ingest.js":           { "maxDuration": 60 },
     "api/cron/backfill.js":         { "maxDuration": 60 },
     "api/cron/backfill-buyers.js":  { "maxDuration": 60 },
-    "api/cron/inspect.js":          { "maxDuration": 30 },
-    "api/cron/analyze-images.js":   { "maxDuration": 60 }
+    "api/cron/inspect.js":          { "maxDuration": 30 }
   },
   "crons": [
     { "path": "/api/cron/ingest", "schedule": "0 3 * * *" }
