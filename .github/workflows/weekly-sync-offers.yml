@@ -1,0 +1,92 @@
+# Weekly sync of /offers from KeyCRM to refresh skus.cost (purchased_price).
+#
+# Чому окремий workflow:
+# Авто-цикл daily ingest колись включав крок "offers" (підтягування
+# purchased_price), але він занадто важкий — ~96 сторінок KeyCRM /offers
+# не вкладаються в один Vercel 60s виклик. Цикл застрягав.
+# Тут робимо це раз на тиждень, послідовно тицяючи endpoint, поки не
+# закінчаться сторінки.
+#
+# Що оновлюється:
+# - skus.cost ← offer.purchased_price (закупівельна ціна з KeyCRM)
+# - skus.price ← offer.price
+# - variant-level offer_id'и (якщо нові з'явилися)
+#
+# Розклад: понеділок 04:00 UTC. Можна запустити вручну з UI workflow_dispatch.
+
+name: Weekly sync offers (purchased_price)
+
+on:
+  schedule:
+    # Понеділок 04:00 UTC. Після нічного daily ingest (03:00) → matview
+    # рефреш (~03:01) вже завершився. О 04:00 база вільна.
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  sync-offers:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reset ingest_state to start offers fresh
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET not configured"; exit 1
+          fi
+          # Спершу скидаємо стан state-machine на offers, page 1.
+          # Якщо state в "running" з минулого циклу — старий код auto-recovery
+          # сам це переймає. Тут просто стартуємо offers явно.
+          echo "ℹ Reset state to step=offers,page=1 via ingest URL"
+          curl -s --max-time 60 \
+            "https://keycrm-dashboard.vercel.app/api/cron/ingest?step=offers&from=1&secret=$CRON_SECRET" \
+            | head -c 500
+          echo ""
+
+      - name: Loop until offers done (up to 30 iterations)
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          # Викликаємо ingest?step=auto до 30 разів з паузою 8 сек між викликами.
+          # Один Vercel-виклик = ~50s роботи. Очікувано покрити 96 сторінок
+          # за 12-18 ітерацій. 30 — запас + buffer на повільні дні KeyCRM.
+          set +e
+          MAX_ITER=30
+          for i in $(seq 1 $MAX_ITER); do
+            echo "=== iteration $i/$MAX_ITER ==="
+            HTTP=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+              --max-time 90 \
+              "https://keycrm-dashboard.vercel.app/api/cron/ingest?step=auto&secret=$CRON_SECRET")
+            echo "HTTP $HTTP"
+            BODY=$(cat /tmp/resp.json)
+            echo "$BODY" | head -c 400
+            echo ""
+
+            # Парсимо advanced/phase з відповіді щоб зрозуміти куди прийшли.
+            # Якщо у відповіді 'metrics_sku: true' або 'advanced: done' —
+            # цикл повністю завершився. Виходимо.
+            if echo "$BODY" | grep -q '"metrics_sku":true\|"advanced":"done"'; then
+              echo "✓ Cycle reached metrics — offers fully synced and matview refreshed"
+              exit 0
+            fi
+            sleep 8
+          done
+          echo "::warning::Loop ended after $MAX_ITER iterations without reaching metrics step."
+          echo "::warning::Перевір ingest_state у Supabase. Можливо треба підняти MAX_ITER."
+
+      - name: Final health check
+        if: always()
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          sleep 5
+          curl -s --max-time 30 \
+            "https://keycrm-dashboard.vercel.app/api/cron/inspect?target=health&secret=$CRON_SECRET" \
+            | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          state = d.get('ingest_state') or {}
+          print(f\"step={state.get('current_step')} status={state.get('status')} page={state.get('current_page')}\")
+          for h in d.get('hints', []):
+              print(h)
+          "

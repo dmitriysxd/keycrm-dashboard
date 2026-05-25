@@ -90,6 +90,23 @@ function parseWholesaleFlag(buyer) {
   return false;
 }
 
+// Розділяє рядки на дві групи (з is_wholesale=true та без) і робить
+// окремі upsert'и. Це потрібно щоб для "не-опт" рядків НЕ перетирати
+// існуюче is_wholesale у buyers (юзер міг вручну позначити клієнта
+// через UI, а KeyCRM в цей момент може ще не оновитись).
+async function flushBuyersRows(supabase, rows) {
+  const withWh = rows.filter((r) => Object.prototype.hasOwnProperty.call(r, "is_wholesale"));
+  const noWh = rows.filter((r) => !Object.prototype.hasOwnProperty.call(r, "is_wholesale"));
+  if (withWh.length) {
+    const { error } = await supabase.from("buyers").upsert(withWh, { onConflict: "buyer_id" });
+    if (error) throw new Error("buyers upsert (with_wh): " + error.message);
+  }
+  if (noWh.length) {
+    const { error } = await supabase.from("buyers").upsert(noWh, { onConflict: "buyer_id" });
+    if (error) throw new Error("buyers upsert (no_wh): " + error.message);
+  }
+}
+
 async function fetchBuyer(apiKey, id, ctx) {
   // KeyCRM эндпоинт детального покупателя; формат ответа варьируется
   // (data: {…} или сам объект на верхнем уровне).
@@ -215,27 +232,31 @@ module.exports = async function handler(req, res) {
           continue;
         }
         if (b.__error) { errors.push({ id, error: b.__error }); continue; }
-        rows.push({
+        // is_wholesale обробляємо особливо: якщо CRM каже "Опт" — ставимо true,
+        // якщо ні (порожній custom_fields або "Роздріб") — НЕ перетираємо
+        // існуюче значення (зберігаємо ручну позначку юзера через UI).
+        // Для цього розділяємо рядки на 2 пакети з різними shape.
+        const wholesaleFromCrm = parseWholesaleFlag(b);
+        const base = {
           buyer_id: id,
           full_name: pickFullName(b),
           phone: pickPhone(b),
           email: pickEmail(b),
-          is_wholesale: parseWholesaleFlag(b),
           custom_fields_raw: b.custom_fields || b.customFields || b.fields || null,
           last_synced_at: new Date().toISOString(),
-        });
+        };
+        if (wholesaleFromCrm) rows.push({ ...base, is_wholesale: true });
+        else rows.push(base);  // без is_wholesale — upsert не перетре
       }
       if (rows.length >= 50) {
-        const { error } = await supabase.from("buyers").upsert(rows.splice(0, rows.length), { onConflict: "buyer_id" });
-        if (error) throw new Error("buyers upsert: " + error.message);
+        await flushBuyersRows(supabase, rows.splice(0, rows.length));
       }
       // Throttle: тримаємо ~60 req/min під ліміт KeyCRM. PARALLEL запитів
       // вже випущено — чекаємо, перш ніж запускати наступний батч.
       await sleep(PER_BATCH_DELAY_MS);
     }
     if (rows.length) {
-      const { error } = await supabase.from("buyers").upsert(rows, { onConflict: "buyer_id" });
-      if (error) throw new Error("buyers upsert (tail): " + error.message);
+      await flushBuyersRows(supabase, rows.splice(0, rows.length));
     }
 
     // У batch'і ще лишилось — отже наступний виклик підбере залишок.

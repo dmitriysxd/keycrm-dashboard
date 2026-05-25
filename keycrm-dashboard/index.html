@@ -1549,7 +1549,7 @@ function renderReorder() {
 let CLIENTS_DATA = null;
 let CLIENT_STATUSES = [];
 let CLIENT_META = null;
-let CLIENT_FILTER = { status_id: '', segment: '', search: '', overdue_only: false };
+let CLIENT_FILTER = { status_id: '', segment: '', search: '', overdue_only: false, show_all: false };
 let CLIENT_SORT = { col: 'monetary', dir: 'desc' };
 let CURRENT_CLIENT = null;
 let EDITING_NOTE_ID = null;
@@ -1573,6 +1573,7 @@ async function loadClients(opts) {
     const params = new URLSearchParams();
     if (CLIENT_FILTER.status_id) params.set('status_id', CLIENT_FILTER.status_id);
     if (CLIENT_FILTER.segment) params.set('segment', CLIENT_FILTER.segment);
+    if (CLIENT_FILTER.show_all) params.set('show_all', '1');
     const url = apiUrl('/api/clients', params.toString());
     const [listRes, metaRes] = await Promise.all([
       fetch(url),
@@ -1664,8 +1665,11 @@ function renderClients() {
   document.getElementById('main-area').innerHTML = `
     <div class="page-header">
       <div>
-        <div class="page-title">Опт-клієнти ${staleBadge ? staleBadge() : ''}</div>
-        <div class="page-sub">Показано: тільки клієнти з прапором "Опт" у KeyCRM (всього ${fmt(wholesale)} з ${fmt(total)})</div>
+        <div class="page-title">${CLIENT_FILTER.show_all ? 'Усі клієнти' : 'Опт-клієнти'} ${staleBadge ? staleBadge() : ''}</div>
+        <div class="page-sub">${CLIENT_FILTER.show_all
+          ? `Показано всіх клієнтів (${fmt(total)}). Включи галку "Показати всіх" щоб знайти не-опт клієнта і вручну позначити його у картці.`
+          : `Показано: тільки клієнти з прапором "Опт" у KeyCRM (всього ${fmt(wholesale)} з ${fmt(total)})`
+        }</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <button class="refresh-btn" onclick="openClientsScript()" title="Скрипт роботи з клієнтами">
@@ -1704,6 +1708,10 @@ function renderClients() {
         <input type="checkbox" id="client-overdue" ${CLIENT_FILTER.overdue_only ? 'checked' : ''}>
         <span style="color:#ef4444">⚠</span> Тільки прострочені
       </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text);cursor:pointer" title="Показати ВСІХ клієнтів, включно з роздрібними та невизначеними. Допомагає знайти клієнтів, яких KeyCRM не позначив як 'Опт', щоб виставити прапор вручну.">
+        <input type="checkbox" id="client-show-all" ${CLIENT_FILTER.show_all ? 'checked' : ''}>
+        🔍 Показати всіх
+      </label>
       <div class="spacer"></div>
       <span style="align-self:center;color:var(--muted);font-size:11px">Показано: <span id="client-count">0</span></span>
     </div>
@@ -1736,6 +1744,10 @@ function renderClients() {
   });
   document.getElementById('client-segment').addEventListener('change', async e => {
     CLIENT_FILTER.segment = e.target.value;
+    if (await loadClients({ silent: true })) renderClients();
+  });
+  document.getElementById('client-show-all').addEventListener('change', async e => {
+    CLIENT_FILTER.show_all = e.target.checked;
     if (await loadClients({ silent: true })) renderClients();
   });
   document.getElementById('client-overdue').addEventListener('change', e => {
