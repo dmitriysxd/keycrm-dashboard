@@ -609,24 +609,30 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
           last_chunk_at: new Date().toISOString(),
         });
       } else {
-        // Products done — deactivate stale SKUs, flag restocks, advance to offers
-        // (де лежить purchased_price для собівартості).
+        // Products done — deactivate stale SKUs, flag restocks, advance to sales.
+        //
+        // ВАЖЛИВО: крок "offers" БІЛЬШЕ НЕ виконується в авто-циклі — він
+        // занадто важкий (~96 сторінок × 50 = 4800 записів) і не вкладається
+        // в одиничний денний виклик Vercel (60s). Synchronization
+        // purchased_price (cost) винесена в окремий weekly workflow:
+        // .github/workflows/weekly-sync-offers.yml — там вона спокійно
+        // прокачується послідовними викликами раз на тиждень.
         await deactivateMissing(supabase, cycleStartIso);
         try {
           const rs = await supabase.rpc("detect_restocks", { target_date: todayUTC() });
           if (!rs.error) result.restocks_flagged = rs.data;
         } catch (_) {}
         await writeState(supabase, {
-          current_step: "offers",
+          current_step: "sales",
           current_page: 1,
           last_chunk_at: new Date().toISOString(),
         });
-        result.advanced = "offers";
+        result.advanced = "sales";
       }
     } else if (stepName === "offers") {
-      // Тягнемо /offers щоб синхронізувати cost (purchased_price з KeyCRM) і
-      // variant-рівневі дані. Без цього кроку variants залишались тільки у
-      // sales, але не у skus — і вартість стоку не рахувалась.
+      // Старий крок — викликається ТІЛЬКИ при ручному запиті ?step=offers
+      // (наприклад з weekly GitHub Actions). У авто-циклі сюди не потрапляємо.
+      // Залишений для backwards-compatibility з застряглими state-ами.
       const r = await ingestOffers(apiKey, supabase, ctx, state.current_page, OFFERS_CHUNK_PAGES);
       result.offers = r.offersSeen;
       result.lastPage = r.lastPage;
@@ -636,6 +642,9 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
           last_chunk_at: new Date().toISOString(),
         });
       } else {
+        // offers закінчились — переходимо до sales щоб не залишити state в
+        // 'offers' назавжди. Якщо це викликали з weekly workflow після
+        // основного auto-циклу, sales вже зробився, шкоди не буде.
         await writeState(supabase, {
           current_step: "sales",
           current_page: 1,
