@@ -406,6 +406,42 @@ module.exports = async function handler(req, res) {
       return res.status(200).json(result);
     }
 
+    if (target === "buyer") {
+      // Інспекція конкретного покупця: наш запис в buyers + сирий KeyCRM /buyer/{id}
+      // з ВСІМА полями (щоб бачити які реально віддає API).
+      const buyerId = req.query && req.query.buyer_id ? parseInt(req.query.buyer_id) : null;
+      if (!buyerId) return res.status(400).json({ error: "потрібен ?buyer_id=..." });
+      if (!apiKey) return res.status(500).json({ error: "KEYCRM_API_KEY не налаштовано" });
+
+      const { data: ourRow } = await supabase
+        .from("buyers")
+        .select("*")
+        .eq("buyer_id", buyerId)
+        .maybeSingle();
+
+      let raw = null;
+      let rawError = null;
+      try {
+        const resp = await get("/buyer/" + buyerId, { include: "custom_fields" }, apiKey, ctx);
+        raw = (resp && resp.data) || resp || null;
+      } catch (e) {
+        rawError = (e && e.message) || String(e);
+      }
+
+      // Знайдемо всі ключі першого рівня, щоб юзер бачив що приходить
+      const topLevelKeys = raw && typeof raw === "object" ? Object.keys(raw).sort() : [];
+
+      return res.status(200).json({
+        target: "buyer",
+        buyer_id: buyerId,
+        our_db_record: ourRow,
+        keycrm_raw_response: raw,
+        keycrm_raw_error: rawError,
+        keycrm_top_level_keys: topLevelKeys,
+        hint: "Шукай поля з 'опт'/'wholesale' у будь-якому ключі. Якщо custom_fields порожній, переглянь tags, type, segment, comment, або topLevelKeys.",
+      });
+    }
+
     // default: keycrm
     if (!apiKey) return res.status(500).json({ error: "KEYCRM_API_KEY не налаштовано" });
     const result = await inspectKeycrm(apiKey, supabase, ctx);
