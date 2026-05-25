@@ -332,9 +332,11 @@ async function inspectHealth(supabase) {
       hints.push(`ℹ ${ws.wholesale_unknown} клієнтів з is_wholesale=NULL — нові, ще не отримали повну картку з KeyCRM.`);
     }
   }
-  if (pgCronJobs && pgCronJobs.length === 0) {
-    hints.push("⚠ pg_cron jobs не знайдено. Перевір що міграції 017 (sku_metrics refresh) і 018 (buyer_rfm refresh) накатані.");
-  } else if (pgCronJobs) {
+  // pg_cron jobs зараз пусті ЗА ЗАДУМОМ — міграція 036 їх прибрала, бо вони
+  // спрацьовували до того як ingest заллє свіжі дані (race condition).
+  // Тепер matview освіжається прямо з ingest.js на кроці 'metrics'. Тому
+  // ОЧІКУВАНО що pgCronJobs порожній — не варто на цьому ворнити.
+  if (pgCronJobs && pgCronJobs.length > 0) {
     for (const job of pgCronJobs) {
       if (!job.active) hints.push(`⚠ pg_cron job '${job.jobname}' inactive — refresh не запускається.`);
       else if (job.last_status && job.last_status !== "succeeded") {
