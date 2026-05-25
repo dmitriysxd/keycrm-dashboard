@@ -537,10 +537,11 @@
         <div>Дані оновлено<br><span id="updated-at">—</span></div>
         <div id="freshness-status" style="margin-top:8px;font-size:10px"></div>
         <button id="refresh-data-btn" onclick="triggerIngestManually()"
-                style="display:none;margin-top:8px;width:100%;padding:6px 8px;
+                style="margin-top:8px;width:100%;padding:8px 10px;
                        background:var(--gold);color:#1a1108;border:0;border-radius:6px;
-                       font-weight:600;font-size:10px;cursor:pointer">
-          ↻ Оновити зараз
+                       font-weight:600;font-size:11px;cursor:pointer"
+                title="Запускає ingest з KeyCRM (нові замовлення, склади) + оновлює matview. Триває до 3 хв.">
+          🔄 Підтягнути свіже з KeyCRM
         </button>
       </div>
     </div>
@@ -748,41 +749,65 @@ function updateFreshnessStatus() {
   const last = new Date(lastDate + 'T00:00:00Z');
   const today = new Date();
   const ageDays = Math.floor((today - last) / 86400000);
+  // Кнопка завжди видима — користувач може схотіти "підтягнути зараз" навіть
+  // якщо snapshot свіжий (новий заказ за день, ручне редагування в KeyCRM).
+  btnEl.style.display = 'block';
   if (ageDays >= 2) {
     statusEl.innerHTML = `<span style="color:var(--red)">⚠ Snapshot ${ageDays}-денної давнини</span>`;
-    btnEl.style.display = 'block';
   } else if (ageDays === 1) {
     statusEl.innerHTML = '<span style="color:#f59e0b">↻ Snapshot вчорашній</span>';
-    btnEl.style.display = 'block';
   } else {
     statusEl.innerHTML = '<span style="color:var(--green)">✓ Свіжий snapshot</span>';
-    btnEl.style.display = 'none';
   }
 }
 
 async function triggerIngestManually() {
   const btn = document.getElementById('refresh-data-btn');
   const statusEl = document.getElementById('freshness-status');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Запускаю…'; }
-  if (statusEl) statusEl.innerHTML = '<span style="color:var(--muted)">Запускаю ingest, чекаю ~60с…</span>';
+  const originalText = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Підтягую…'; }
+
+  // Ingest — state-machine, один виклик ≈ 55 с роботи. За один клік робимо
+  // до 3 ітерацій (≈ 3 хв) щоб точно дійти до 'metrics' (matview refresh).
+  // Якщо за цей час не вкладеться — користувач натисне ще.
+  const MAX_ITER = 3;
+  let success = false;
+  let lastResp = null;
+
   try {
-    // CRON_SECRET не доступен з браузера. Використовуємо token dashboard
-    // на endpoint /api/cron/ingest — він має fallback на token? Ні, він
-    // тільки checkCronAuth. Тому робимо просто: відкриваємо в новій вкладці,
-    // і користувач сам бачить результат.
-    const url = 'https://keycrm-dashboard.vercel.app/api/cron/ingest?step=auto';
-    alert(
-      'Для ручного запуску ingest потрібен CRON_SECRET, якого немає в браузері.\n\n' +
-      'Способи запустити:\n' +
-      '1. Vercel Dashboard → Settings → Cron Jobs → кнопка "Run"\n' +
-      '2. Terminal: curl "' + url + '&secret=ВАШ_CRON_SECRET"\n' +
-      '3. GitHub Actions → "Backup daily ingest" → "Run workflow"\n\n' +
-      'GitHub Actions workflow вже налаштований на щоденний запуск о 03:30 UTC\n' +
-      'як резерв, якщо Vercel cron пропустить день.'
-    );
+    for (let i = 1; i <= MAX_ITER; i++) {
+      if (statusEl) statusEl.innerHTML =
+        `<span style="color:var(--gold)">Крок ${i}/${MAX_ITER}: підтягую дані з KeyCRM…</span>`;
+      if (btn) btn.textContent = `⏳ Підтягую ${i}/${MAX_ITER}…`;
+
+      const r = await fetch(apiUrl('/api/cron/ingest', 'step=auto'));
+      lastResp = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(lastResp.error || ('HTTP ' + r.status));
+
+      // Якщо цикл завершився (matview оновився) — виходимо
+      const meta = lastResp.meta || {};
+      const reachedDone = lastResp.completed === true
+        || meta.completed === true
+        || meta.advanced === 'done'
+        || (meta.last_chunk && meta.last_chunk.reason === 'already_done_today');
+      if (reachedDone) { success = true; break; }
+
+      // Невелика пауза між викликами щоб не дудбити KeyCRM
+      if (i < MAX_ITER) await new Promise(res => setTimeout(res, 1500));
+    }
+
+    if (statusEl) statusEl.innerHTML = success
+      ? '<span style="color:var(--green)">✓ Дані оновлено</span>'
+      : '<span style="color:var(--gold)">Цикл триває — натисни ще раз через хвилину</span>';
+
+    // Перезавантажуємо поточну сторінку щоб побачити свіжі цифри
+    await renderCurrentPage();
+  } catch (err) {
+    if (statusEl) statusEl.innerHTML =
+      `<span style="color:var(--red)">⚠ ${(err && err.message) || err}</span>`;
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '↻ Оновити зараз'; }
-    if (statusEl) updateFreshnessStatus();
+    if (btn) { btn.disabled = false; btn.textContent = originalText || '↻ Оновити зараз'; }
+    setTimeout(() => updateFreshnessStatus && updateFreshnessStatus(), 2000);
   }
 }
 

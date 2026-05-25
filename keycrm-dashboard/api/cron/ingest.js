@@ -1,5 +1,5 @@
 const { getSupabase } = require("../../lib/supabase");
-const { checkCronAuth } = require("../../lib/auth");
+const { checkCronAuth, checkDashboardToken } = require("../../lib/auth");
 const { get, sleep } = require("../../lib/keycrm");
 
 function todayDate() {
@@ -715,8 +715,14 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
 }
 
 module.exports = async function handler(req, res) {
-  const auth = checkCronAuth(req);
-  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
+  // Дозволяємо обидва способи авторизації:
+  // - CRON_SECRET (для Vercel cron / GitHub Actions / curl)
+  // - DASHBOARD_TOKEN (для кнопки "Підтягнути свіже" в UI)
+  const cronAuth = checkCronAuth(req);
+  if (!cronAuth.ok) {
+    const dashAuth = checkDashboardToken(req);
+    if (!dashAuth.ok) return res.status(cronAuth.status).json({ error: cronAuth.error });
+  }
 
   const apiKey = process.env.KEYCRM_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "KEYCRM_API_KEY не налаштовано" });
