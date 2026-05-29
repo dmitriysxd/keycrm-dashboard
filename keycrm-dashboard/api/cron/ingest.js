@@ -660,9 +660,11 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
       // на фіксованому розкладі (міграція 036) — щоб уникнути гонки з ingest.
       // Тепер це єдине місце де matview оновлюються автоматично.
       //
-      // Реальні тривалості за історією: sku_metrics 4-9s, buyer_rfm 3-4s.
-      // Даємо 40s на sku + 15s на buyer (загалом 55s — впишемось у 60s
-      // Vercel ліміт, бо цей чанк тільки рефрешить, нічого ще не робить).
+      // Реальні тривалості за історією: sku_metrics 4-15s, buyer_rfm 3-5s.
+      // PG statement_timeout для цих функцій піднято до 180s (міграція 040),
+      // тому наш JS-таймаут НЕ має різати раніше за PG. Даємо sku 45s
+      // (з запасом), rfm 12s — сумарно вкладаємось у 60s Vercel ліміт, бо
+      // цей чанк тільки рефрешить, нічого важкого до нього не робить.
       const refreshWith = async (rpcName, timeoutMs) => {
         return Promise.race([
           (async () => {
@@ -677,7 +679,7 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
       };
 
       try {
-        await refreshWith("refresh_sku_metrics", 40000);
+        await refreshWith("refresh_sku_metrics", 45000);
         result.metrics_sku = true;
       } catch (err) {
         result.metrics_sku_error = (err && err.message) || String(err);
