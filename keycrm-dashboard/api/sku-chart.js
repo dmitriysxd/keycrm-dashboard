@@ -3,7 +3,7 @@ const { checkDashboardToken } = require("../lib/auth");
 
 const EXCLUDED_STATUSES = new Set([
   "cancelled", "rejected", "canceled",
-  "Повернули", "Відмовились",
+  "Повернули", "Повернення", "Відмовились",
   "incorrect_data", "underbid",
 ]);
 

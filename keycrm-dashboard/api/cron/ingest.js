@@ -931,15 +931,16 @@ module.exports = async function handler(req, res) {
           // Якщо назви нема в самому замовленні — беремо зі словника.
           if (!sName && sId != null && sourcesMap[String(sId)]) sName = sourcesMap[String(sId)];
           if (sId == null && !sName) continue;
-          // UPDATE тільки де source_id NULL — не перетираємо вже заповнені.
+          // UPDATE всі рядки замовлення. KeyCRM = source of truth для бекфілу.
+          // Не обмежуємо по IS NULL — попередній запуск бекфілу міг вписати
+          // source_id але без source_name (до того як з'явився словник).
           const upd = await supabase
             .from("sales")
             .update({
               source_id: sId && !isNaN(sId) ? sId : null,
               source_name: sName,
             })
-            .eq("order_id", order.id)
-            .is("source_id", null);
+            .eq("order_id", order.id);
           if (!upd.error) ordersUpdated++;
         }
         pagesDone++;
