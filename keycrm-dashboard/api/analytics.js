@@ -227,40 +227,57 @@ function monthDiff(from, to) {
 // Оборот по категоріях з КОРЕКТНИМ урахуванням знижок на замовлення.
 //
 // GET /api/analytics?type=category_revenue&from=YYYY-MM-DD&to=YYYY-MM-DD
+//                   [&source_id=N]
 //
-// ПРОБЛЕМА яку вирішує: KeyCRM накладає знижки на ВЕСЬ заказ, а не на
-// позиції. Тому проста сума line-revenue по категоріях завищена — вона не
-// бачить знижку на заказ. "Аналітика по товарах" в KeyCRM має ту ж ваду.
+// ПРОБЛЕМА: KeyCRM накладає знижки на ВЕСЬ заказ, а не на позиції.
+// "Аналітика по товарах" в KeyCRM має ту ж ваду — завищує оборот.
 //
 // РІШЕННЯ: знижку на заказ розподіляємо пропорційно вартості позицій.
-//   coef = order_grand_total / Σ(line_revenue в замовленні)
-//   adjusted_line_revenue = line_revenue × coef
-// Тоді Σ adjusted по всіх позиціях = grand_total (точно як аналітика
-// замовлень), а розбивка по категоріях стає коректною.
+// Цілочисленна математика на копійках + точний розподіл "залишку":
+//   для першого N-1 рядків заказу: cents = round(rev × coef)
+//   для останнього: cents = grand_cents − Σ попередніх
+// Це гарантує Σ adjusted per order = grand_total ДО КОПІЙКИ.
 //
-// Safety: якщо grand_total NULL (історичні) або > суми позицій (раптом
-// включає доставку) → coef = 1.0 (не роздуваємо категорію).
+// Safety: якщо grand_total NULL (історичні) або > суми позицій (доставка
+// тощо) → coef = 1.0 (не роздуваємо категорію).
 async function handleCategoryRevenue(req, res, supabase) {
   const q = req.query || {};
-  // Дати: from inclusive, to inclusive (до кінця дня). Дефолт — поточний місяць.
   const now = new Date();
   const defFrom = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
     .toISOString().slice(0, 10);
   const from = (q.from && /^\d{4}-\d{2}-\d{2}$/.test(q.from)) ? q.from : defFrom;
   const to = (q.to && /^\d{4}-\d{2}-\d{2}$/.test(q.to)) ? q.to : now.toISOString().slice(0, 10);
-  // to inclusive → беремо < to + 1 день
   const toExclusive = new Date(to + "T00:00:00Z");
   toExclusive.setUTCDate(toExclusive.getUTCDate() + 1);
   const toExclusiveIso = toExclusive.toISOString();
+  const sourceId = q.source_id ? parseInt(q.source_id) : null;
 
   // 1. Sales за період.
-  const sales = await fetchAll(() =>
-    supabase
+  let buildSales = () => {
+    let qq = supabase
       .from("sales")
-      .select("order_id, product_id, revenue, order_grand_total, order_status, ordered_at")
+      .select("order_id, product_id, revenue, order_grand_total, order_status, ordered_at, source_id, source_name")
       .gte("ordered_at", from + "T00:00:00Z")
-      .lt("ordered_at", toExclusiveIso)
-  );
+      .lt("ordered_at", toExclusiveIso);
+    if (sourceId) qq = qq.eq("source_id", sourceId);
+    return qq;
+  };
+  let sales;
+  try {
+    sales = await fetchAll(buildSales);
+  } catch (err) {
+    // Fallback: якщо колонки source_id/source_name ще не накатано (міграція 041),
+    // повторюємо запит без них.
+    if (/column.*source_id|source_name/i.test((err && err.message) || "")) {
+      sales = await fetchAll(() =>
+        supabase
+          .from("sales")
+          .select("order_id, product_id, revenue, order_grand_total, order_status, ordered_at")
+          .gte("ordered_at", from + "T00:00:00Z")
+          .lt("ordered_at", toExclusiveIso)
+      );
+    } else throw err;
+  }
 
   // 2. Мапа product_id → {category_id, category_name} зі skus.
   const skuRows = await fetchAll(() =>
@@ -268,79 +285,126 @@ async function handleCategoryRevenue(req, res, supabase) {
   );
   const catByProduct = new Map();
   for (const s of skuRows) {
-    if (s.product_id != null && !catByProduct.has(s.product_id)) {
-      catByProduct.set(s.product_id, {
-        category_id: s.category_id,
-        category_name: s.category_name || (s.category_id ? "id:" + s.category_id : "Без категорії"),
-      });
-    }
+    if (s.product_id == null) continue;
+    if (catByProduct.has(s.product_id)) continue;
+    const rawName = s.category_name && String(s.category_name).trim();
+    catByProduct.set(s.product_id, {
+      category_id: s.category_id,
+      // Зводимо ВСІ випадки "немає назви" в один рядок — і коли name пустий,
+      // і коли немає category_id. Так юзер бачить однорядковий "Без назви".
+      category_name: rawName || "🔍 Без назви категорії",
+    });
   }
 
-  // 3. Групуємо рядки по замовленню, рахуємо line_sum і grand per order.
-  const orders = new Map(); // order_id → { lines: [...], grand, lineSum }
+  // 3. Групуємо рядки по замовленню. Конвертуємо у копійки одразу.
+  const toCents = (v) => Math.round((v != null ? parseFloat(v) : 0) * 100);
+  const orders = new Map();
   for (const r of sales) {
     if (isExcluded(r.order_status)) continue;
     if (!orders.has(r.order_id)) {
       orders.set(r.order_id, {
+        grandCents: r.order_grand_total != null ? toCents(r.order_grand_total) : null,
+        lineSumCents: 0,
         lines: [],
-        grand: r.order_grand_total != null ? parseFloat(r.order_grand_total) : null,
-        lineSum: 0,
       });
     }
     const o = orders.get(r.order_id);
-    const rev = r.revenue != null ? parseFloat(r.revenue) : 0;
-    o.lines.push({ product_id: r.product_id, revenue: rev });
-    o.lineSum += rev;
+    const revCents = toCents(r.revenue);
+    o.lines.push({ product_id: r.product_id, revCents });
+    o.lineSumCents += revCents;
   }
 
-  // 4. Розподіляємо по категоріях з коефіцієнтом знижки.
-  const cats = new Map(); // category_name → { revenue, raw, orders:Set }
-  let totalAdjusted = 0;
-  let totalRaw = 0;
+  // 4. Розподіляємо знижки по позиціях. Внутрішня математика — копійки-int.
+  const cats = new Map(); // category_name → { revenueCents, rawCents, orders:Set }
+  let totalAdjustedCents = 0;
+  let totalRawCents = 0;
+
   for (const [orderId, o] of orders) {
-    // Коефіцієнт знижки на заказ. Safety cap описаний у коментарі функції.
-    let coef = 1.0;
-    if (o.grand != null && o.lineSum > 0 && o.grand < o.lineSum) {
-      coef = o.grand / o.lineSum;
+    // Safety: якщо grand або lineSum нема — coef=1.0, не чіпаємо.
+    let useGrandCents = null;
+    if (o.grandCents != null && o.lineSumCents > 0 && o.grandCents < o.lineSumCents) {
+      useGrandCents = o.grandCents;
     }
-    for (const ln of o.lines) {
+
+    // Розподіляємо: перші N-1 рядків через round, останній отримує залишок.
+    let allocatedSum = 0;
+    for (let i = 0; i < o.lines.length; i++) {
+      const ln = o.lines[i];
+      let adjustedCents;
+      if (useGrandCents == null) {
+        adjustedCents = ln.revCents;
+      } else if (i < o.lines.length - 1) {
+        adjustedCents = Math.round(ln.revCents * useGrandCents / o.lineSumCents);
+        allocatedSum += adjustedCents;
+      } else {
+        // Остання позиція — закриваємо grand рівно (захист від float-помилок)
+        adjustedCents = useGrandCents - allocatedSum;
+      }
       const cat = catByProduct.get(ln.product_id)
-        || { category_id: null, category_name: "Без категорії" };
+        || { category_id: null, category_name: "🔍 Без назви категорії" };
       const key = cat.category_name;
-      if (!cats.has(key)) cats.set(key, { revenue: 0, raw: 0, orders: new Set() });
+      if (!cats.has(key)) cats.set(key, { revenueCents: 0, rawCents: 0, orders: new Set() });
       const c = cats.get(key);
-      const adjusted = ln.revenue * coef;
-      c.revenue += adjusted;
-      c.raw += ln.revenue;
+      c.revenueCents += adjustedCents;
+      c.rawCents += ln.revCents;
       c.orders.add(orderId);
-      totalAdjusted += adjusted;
-      totalRaw += ln.revenue;
+      totalAdjustedCents += adjustedCents;
+      totalRawCents += ln.revCents;
     }
   }
+
+  const fromCents = (c) => Math.round(c) / 100;
 
   const categories = Array.from(cats.entries())
     .map(([name, c]) => ({
       category: name,
-      revenue: Math.round(c.revenue * 100) / 100,        // коректний оборот
-      raw_revenue: Math.round(c.raw * 100) / 100,        // без коригування (як у KeyCRM по товарах)
-      discount_pct: c.raw > 0 ? Math.round((1 - c.revenue / c.raw) * 1000) / 10 : 0,
+      revenue: fromCents(c.revenueCents),
+      raw_revenue: fromCents(c.rawCents),
+      discount_pct: c.rawCents > 0
+        ? Math.round((1 - c.revenueCents / c.rawCents) * 1000) / 10
+        : 0,
       orders: c.orders.size,
-      share_pct: 0, // заповнимо нижче
+      share_pct: 0,
     }))
     .sort((a, b) => b.revenue - a.revenue);
 
   for (const c of categories) {
-    c.share_pct = totalAdjusted > 0 ? Math.round((c.revenue / totalAdjusted) * 1000) / 10 : 0;
+    c.share_pct = totalAdjustedCents > 0
+      ? Math.round((c.revenueCents != null ? c.revenueCents : c.revenue * 100) / totalAdjustedCents * 1000) / 10
+      : 0;
   }
+  // Перерахунок share_pct через cents (для точності):
+  for (let i = 0; i < categories.length; i++) {
+    const k = categories[i].category;
+    const c = cats.get(k);
+    categories[i].share_pct = totalAdjustedCents > 0
+      ? Math.round(c.revenueCents / totalAdjustedCents * 1000) / 10
+      : 0;
+  }
+
+  // Список доступних джерел (тільки якщо колонки існують + хоч щось у даних)
+  const sourcesMap = new Map();
+  for (const r of sales) {
+    if (r && r.source_id != null) {
+      if (!sourcesMap.has(r.source_id)) {
+        sourcesMap.set(r.source_id, r.source_name || ("id:" + r.source_id));
+      }
+    }
+  }
+  const sources = Array.from(sourcesMap.entries())
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
   return res.status(200).json({
     from,
     to,
-    total_revenue: Math.round(totalAdjusted * 100) / 100,   // = сумі grand_total (звіряється з KeyCRM)
-    total_raw_revenue: Math.round(totalRaw * 100) / 100,    // завищена сума (як "аналітика по товарах")
-    total_discount: Math.round((totalRaw - totalAdjusted) * 100) / 100,
+    source_id: sourceId,
+    total_revenue: fromCents(totalAdjustedCents),
+    total_raw_revenue: fromCents(totalRawCents),
+    total_discount: fromCents(totalRawCents - totalAdjustedCents),
     orders_count: orders.size,
     categories,
+    sources,
   });
 }
 
