@@ -444,6 +444,53 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    if (target === "order") {
+      // Інспекція конкретного замовлення KeyCRM + список джерел в системі.
+      // Корисно для дебага source-полів (source_id, source_name, source object).
+      const orderId = req.query && req.query.order_id ? parseInt(req.query.order_id) : null;
+      if (!apiKey) return res.status(500).json({ error: "KEYCRM_API_KEY не налаштовано" });
+
+      let raw = null;
+      let rawError = null;
+      let sourcesList = null;
+      let sourcesError = null;
+
+      if (orderId) {
+        try {
+          const resp = await get("/order/" + orderId, { include: "products.offer,status,buyer,manager" }, apiKey, ctx);
+          raw = (resp && resp.data) || resp || null;
+        } catch (e) {
+          rawError = (e && e.message) || String(e);
+        }
+      }
+
+      // Спробуємо різні ендпойнти списку джерел (KeyCRM має один з них).
+      for (const path of ["/order/source", "/sources", "/order/sources", "/source"]) {
+        try {
+          const r = await get(path, { limit: 100 }, apiKey, ctx);
+          if (r && (r.data || Array.isArray(r))) {
+            sourcesList = { endpoint: path, items: r.data || r };
+            break;
+          }
+        } catch (e) {
+          sourcesError = (sourcesError ? sourcesError + " | " : "") + path + ": " + ((e && e.message) || String(e)).slice(0, 80);
+        }
+      }
+
+      const topLevelKeys = raw && typeof raw === "object" ? Object.keys(raw).sort() : [];
+
+      return res.status(200).json({
+        target: "order",
+        order_id: orderId,
+        keycrm_order_raw: raw,
+        keycrm_order_error: rawError,
+        keycrm_top_level_keys: topLevelKeys,
+        keycrm_sources_list: sourcesList,
+        keycrm_sources_error_tried: sourcesError,
+        hint: "Шукай поле з ID джерела (source_id / source.id). Якщо назви немає на замовленні — sources_list має містити мапу id→name.",
+      });
+    }
+
     // default: keycrm
     if (!apiKey) return res.status(500).json({ error: "KEYCRM_API_KEY не налаштовано" });
     const result = await inspectKeycrm(apiKey, supabase, ctx);

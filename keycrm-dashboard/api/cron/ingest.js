@@ -145,6 +145,11 @@ async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
   const today = todayDate();
   const startPage = Math.max(1, parseInt(fromPage || 1));
   const limitPages = take ? parseInt(take) : 200;
+  // Підтягуємо ВЕСЬ список категорій один раз — щоб для offer'ів у яких
+  // /offers?include=product не повернув category.name, можна було підставити
+  // назву через product.category_id. Без цього category_name=NULL і в
+  // дашборді "Без назви категорії" роздувається.
+  const categoriesMap = await fetchCategories(apiKey, ctx);
   let total = 0;
   let lastPageProcessed = startPage - 1;
 
@@ -180,7 +185,11 @@ async function ingestOffers(apiKey, supabase, ctx, fromPage, take) {
       const categoryId = product.category_id
         || (product.category && product.category.id)
         || null;
-      const categoryName = (product.category && product.category.name) || null;
+      // Fallback на категорійний кеш — KeyCRM в /offers?include=product не
+      // завжди повертає product.category.name (особливо для нових категорій).
+      const categoryName = (product.category && product.category.name)
+        || (categoryId ? categoriesMap[String(categoryId)] : null)
+        || null;
 
       const keycrmCreatedAt = pickCreatedAt(product) || pickCreatedAt(o);
       skuRows.push({
@@ -372,7 +381,26 @@ async function upsertBuyersFromOrders(supabase, orders) {
   return rows.length;
 }
 
-async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate, toDate) {
+// Кеш джерел замовлень. Завантажуємо один раз на виклик ingestSales і
+// підставляємо назви для замовлень де KeyCRM повернув тільки source_id.
+async function fetchOrderSources(apiKey, ctx) {
+  const map = {};
+  for (const path of ["/order/source", "/sources", "/order/sources", "/source"]) {
+    try {
+      const r = await get(path, { limit: 100 }, apiKey, ctx);
+      const list = (r && r.data) || (Array.isArray(r) ? r : null);
+      if (list && list.length) {
+        for (const s of list) {
+          if (s && s.id != null) map[String(s.id)] = s.name || null;
+        }
+        return map;
+      }
+    } catch (_) { /* пробуємо наступний */ }
+  }
+  return map;
+}
+
+async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate, toDate, sourcesMap) {
   let page = 1;
   let total = 0;
   let upserted = 0;
@@ -409,8 +437,12 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
       const srcObj = order.source && typeof order.source === "object" ? order.source : null;
       const sourceId = srcObj && srcObj.id != null ? parseInt(srcObj.id)
         : (order.source_id != null ? parseInt(order.source_id) : null);
-      const sourceName = srcObj && srcObj.name ? String(srcObj.name)
+      let sourceName = srcObj && srcObj.name ? String(srcObj.name)
         : (order.source_name ? String(order.source_name) : null);
+      // Якщо в самому замовленні нема назви — беремо зі словника джерел.
+      if (!sourceName && sourceId != null && sourcesMap && sourcesMap[String(sourceId)]) {
+        sourceName = sourcesMap[String(sourceId)];
+      }
       const items = order.products || [];
       items.forEach((item, idx) => {
         const qty = lineQty(item);
@@ -474,11 +506,14 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
   const fromDate = (sinceISO || new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()).slice(0, 10);
   const toDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
+  // Завантажуємо словник джерел один раз. /order повертає тільки source_id
+  // без назви — підставляємо name з цього словника.
+  const sourcesMap = await fetchOrderSources(apiKey, ctx);
   // Run both passes in parallel — they hit different filters so KeyCRM
   // returns disjoint sets and the upsert dedupes anyway.
   const [a, b] = await Promise.all([
-    fetchOrdersWithFilter(apiKey, supabase, ctx, "created_between", fromDate, toDate),
-    fetchOrdersWithFilter(apiKey, supabase, ctx, "updated_between", fromDate, toDate),
+    fetchOrdersWithFilter(apiKey, supabase, ctx, "created_between", fromDate, toDate, sourcesMap),
+    fetchOrdersWithFilter(apiKey, supabase, ctx, "updated_between", fromDate, toDate, sourcesMap),
   ]);
   return {
     ordersSeen: a.ordersSeen + b.ordersSeen,
@@ -852,12 +887,31 @@ module.exports = async function handler(req, res) {
     if (step === "backfill_source") {
       // One-off бекфіл: підтягує source_id/source_name для всіх історичних
       // замовлень з KeyCRM /order і UPDATE'ить sales WHERE source_id IS NULL.
-      // Не state-machine — приймає ?from_page=N, повертає next_page.
-      // Виклики потрібно робити послідовно (1-2 хв між ними щоб не вийти за
-      // KeyCRM rate limit ~60 req/min).
+      // Не state-machine — приймає ?from=N, повертає next_page.
       const startMs = Date.now();
       const TIME_BUDGET_MS = 50 * 1000;
       const fromP = Math.max(1, parseInt(fromPage || 1));
+
+      // Завантажуємо мапу id→name джерел з KeyCRM один раз.
+      // KeyCRM має ендпойнт /order/source — список усіх джерел замовлень.
+      // /order повертає source_id у самому замовленні, але без назви, тому
+      // підставляємо назву зі словника.
+      const sourcesMap = {};
+      let sourcesEndpoint = null;
+      for (const path of ["/order/source", "/sources", "/order/sources", "/source"]) {
+        try {
+          const r = await get(path, { limit: 100 }, apiKey, ctx);
+          const list = (r && r.data) || (Array.isArray(r) ? r : null);
+          if (list && list.length) {
+            for (const s of list) {
+              if (s && s.id != null) sourcesMap[String(s.id)] = s.name || null;
+            }
+            sourcesEndpoint = path;
+            break;
+          }
+        } catch (_) { /* пробуємо наступний */ }
+      }
+
       let page = fromP;
       let pagesDone = 0;
       let ordersSeenBf = 0;
@@ -872,8 +926,10 @@ module.exports = async function handler(req, res) {
           const srcObj = order.source && typeof order.source === "object" ? order.source : null;
           const sId = srcObj && srcObj.id != null ? parseInt(srcObj.id)
             : (order.source_id != null ? parseInt(order.source_id) : null);
-          const sName = srcObj && srcObj.name ? String(srcObj.name)
+          let sName = srcObj && srcObj.name ? String(srcObj.name)
             : (order.source_name ? String(order.source_name) : null);
+          // Якщо назви нема в самому замовленні — беремо зі словника.
+          if (!sName && sId != null && sourcesMap[String(sId)]) sName = sourcesMap[String(sId)];
           if (sId == null && !sName) continue;
           // UPDATE тільки де source_id NULL — не перетираємо вже заповнені.
           const upd = await supabase
@@ -897,6 +953,8 @@ module.exports = async function handler(req, res) {
         orders_updated: ordersUpdated,
         next_page: endReached ? null : page,
         done: endReached,
+        sources_endpoint: sourcesEndpoint,
+        sources_count: Object.keys(sourcesMap).length,
       };
     }
 
