@@ -11,7 +11,7 @@ const { enrichRfmRow } = require("../lib/clients");
 
 const EXCLUDED_STATUSES = new Set([
   "cancelled", "rejected", "canceled",
-  "Повернули", "Відмовились",
+  "Повернули", "Повернення", "Відмовились",
   "incorrect_data", "underbid",
 ]);
 function isMergerStatus(s) {

@@ -2290,12 +2290,18 @@ function renderCatRevenueView() {
 
     <div class="kpi-grid">
       <div class="kpi"><div class="kpi-accent green"></div>
-        <div class="kpi-label">Оборот (з урахуванням знижок)</div>
+        <div class="kpi-label">Оборот</div>
         <div class="kpi-val">${fmtMoney(d.total_revenue || 0)}</div>
       </div>
-      <div class="kpi"><div class="kpi-accent" style="background:rgba(255,255,255,0.25)"></div>
-        <div class="kpi-label">Без знижок (як аналітика товарів)</div>
-        <div class="kpi-val" style="color:var(--muted)">${fmtMoney(d.total_raw_revenue || 0)}</div>
+      <div class="kpi"><div class="kpi-accent" style="background:#e0a060"></div>
+        <div class="kpi-label" title="Сума cost × кількість по всіх позиціях. Поточні значення з KeyCRM purchased_price.">Собівартість</div>
+        <div class="kpi-val" style="color:#e0a060">${fmtMoney(d.total_cost || 0)}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">Покриття cost: ${d.cost_coverage_pct != null ? d.cost_coverage_pct : 0}%</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:var(--gold)"></div>
+        <div class="kpi-label" title="Оборот − Собівартість">Маржа</div>
+        <div class="kpi-val" style="color:var(--gold)">${fmtMoney(d.total_margin || 0)}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">${d.total_margin_pct || 0}% від обороту</div>
       </div>
       <div class="kpi"><div class="kpi-accent red"></div>
         <div class="kpi-label">Знижки на замовлення</div>
@@ -2316,19 +2322,25 @@ function renderCatRevenueView() {
               <th>Категорія</th>
               <th style="text-align:right">Оборот (₴)</th>
               <th style="text-align:right">Частка</th>
-              <th style="text-align:right" title="Без розподілу знижки на заказ">Без знижок</th>
+              <th style="text-align:right" title="Σ(cost × quantity) по категорії. Cost з KeyCRM purchased_price.">Собівартість</th>
+              <th style="text-align:right" title="Оборот − Собівартість">Маржа (₴)</th>
+              <th style="text-align:right" title="Маржа / Оборот">Маржа %</th>
+              <th style="text-align:right" title="% позицій з відомим cost. Менше 100% = маржа неточна.">Покр.</th>
               <th style="text-align:right" title="Ефективна знижка на цю категорію">Знижка %</th>
               <th style="text-align:right">Замовлень</th>
             </tr></thead>
             <tbody>
               ${cats.length === 0
-                ? '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">Немає даних за період</td></tr>'
+                ? '<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">Немає даних за період</td></tr>'
                 : cats.map(c => `
                   <tr>
                     <td>${(c.category || '').replace(/[<>&]/g, x => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[x]))}</td>
                     <td class="num" style="font-weight:600">${fmtMoney(c.revenue)}</td>
                     <td class="num">${c.share_pct}%</td>
-                    <td class="num muted">${fmtMoney(c.raw_revenue)}</td>
+                    <td class="num muted">${fmtMoney(c.cost || 0)}</td>
+                    <td class="num" style="color:${c.margin > 0 ? 'var(--green)' : c.margin < 0 ? 'var(--red)' : 'var(--muted)'};font-weight:600">${fmtMoney(c.margin || 0)}</td>
+                    <td class="num" style="color:${c.margin_pct >= 30 ? 'var(--green)' : c.margin_pct >= 15 ? 'var(--gold)' : 'var(--red)'}">${c.margin_pct}%</td>
+                    <td class="num" style="color:${c.cost_coverage_pct >= 95 ? 'var(--green)' : c.cost_coverage_pct >= 70 ? 'var(--gold)' : 'var(--red)'};font-size:11px">${c.cost_coverage_pct}%</td>
                     <td class="num" style="color:${c.discount_pct > 0 ? 'var(--red)' : 'var(--muted)'}">${c.discount_pct}%</td>
                     <td class="num">${fmt(c.orders)}</td>
                   </tr>`).join('')}
@@ -2338,7 +2350,10 @@ function renderCatRevenueView() {
                 <td>Разом</td>
                 <td class="num" style="color:var(--gold)">${fmtMoney(d.total_revenue || 0)}</td>
                 <td class="num">100%</td>
-                <td class="num muted">${fmtMoney(d.total_raw_revenue || 0)}</td>
+                <td class="num muted">${fmtMoney(d.total_cost || 0)}</td>
+                <td class="num" style="color:var(--green)">${fmtMoney(d.total_margin || 0)}</td>
+                <td class="num">${d.total_margin_pct || 0}%</td>
+                <td class="num" style="font-size:11px">${d.cost_coverage_pct || 0}%</td>
                 <td class="num"></td>
                 <td class="num">${fmt(d.orders_count || 0)}</td>
               </tr>
@@ -2381,11 +2396,23 @@ function drawCatRevPie(cats) {
 function exportCatRevenueXlsx() {
   const d = CATREV_DATA;
   if (!d || !d.categories) { alert('Немає даних'); return; }
-  const aoa = [['Категорія', 'Оборот (грн)', 'Частка %', 'Без знижок (грн)', 'Знижка %', 'Замовлень']];
+  const aoa = [[
+    'Категорія', 'Оборот (грн)', 'Частка %',
+    'Собівартість (грн)', 'Маржа (грн)', 'Маржа %', 'Покриття cost %',
+    'Без знижок (грн)', 'Знижка %', 'Замовлень',
+  ]];
   d.categories.forEach(c => {
-    aoa.push([c.category, c.revenue, c.share_pct, c.raw_revenue, c.discount_pct, c.orders]);
+    aoa.push([
+      c.category, c.revenue, c.share_pct,
+      c.cost || 0, c.margin || 0, c.margin_pct, c.cost_coverage_pct,
+      c.raw_revenue, c.discount_pct, c.orders,
+    ]);
   });
-  aoa.push(['РАЗОМ', d.total_revenue, 100, d.total_raw_revenue, '', d.orders_count]);
+  aoa.push([
+    'РАЗОМ', d.total_revenue, 100,
+    d.total_cost || 0, d.total_margin || 0, d.total_margin_pct, d.cost_coverage_pct,
+    d.total_raw_revenue, '', d.orders_count,
+  ]);
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Оборот по категоріях');

@@ -28,7 +28,7 @@ async function fetchAll(buildQuery, pageSize = 1000, hardCap = 500000) {
 
 const EXCLUDED_STATUSES = new Set([
   "cancelled", "rejected", "canceled",
-  "Повернули", "Відмовились",
+  "Повернули", "Повернення", "Відмовились",
   "incorrect_data", "underbid",
 ]);
 
@@ -252,11 +252,11 @@ async function handleCategoryRevenue(req, res, supabase) {
   const toExclusiveIso = toExclusive.toISOString();
   const sourceId = q.source_id ? parseInt(q.source_id) : null;
 
-  // 1. Sales за період.
+  // 1. Sales за період. Беремо quantity щоб рахувати собівартість line.
   let buildSales = () => {
     let qq = supabase
       .from("sales")
-      .select("order_id, product_id, revenue, order_grand_total, order_status, ordered_at, source_id, source_name")
+      .select("order_id, product_id, quantity, revenue, order_grand_total, order_status, ordered_at, source_id, source_name")
       .gte("ordered_at", from + "T00:00:00Z")
       .lt("ordered_at", toExclusiveIso);
     if (sourceId) qq = qq.eq("source_id", sourceId);
@@ -272,16 +272,20 @@ async function handleCategoryRevenue(req, res, supabase) {
       sales = await fetchAll(() =>
         supabase
           .from("sales")
-          .select("order_id, product_id, revenue, order_grand_total, order_status, ordered_at")
+          .select("order_id, product_id, quantity, revenue, order_grand_total, order_status, ordered_at")
           .gte("ordered_at", from + "T00:00:00Z")
           .lt("ordered_at", toExclusiveIso)
       );
     } else throw err;
   }
 
-  // 2. Мапа product_id → {category_id, category_name} зі skus.
+  // 2. Мапа product_id → {category_id, category_name, cost} зі skus.
+  // cost — поточна закупка з KeyCRM (синхронізується щотижня через workflow).
+  // Це наближення: для історичних замовлень за період, коли закупка була
+  // іншою, маржа може бути неточна. Точніше було б зберігати item.purchased_price
+  // в sales (TODO якщо потрібно).
   const skuRows = await fetchAll(() =>
-    supabase.from("skus").select("product_id, category_id, category_name")
+    supabase.from("skus").select("product_id, category_id, category_name, cost")
   );
   const catByProduct = new Map();
   for (const s of skuRows) {
@@ -290,9 +294,8 @@ async function handleCategoryRevenue(req, res, supabase) {
     const rawName = s.category_name && String(s.category_name).trim();
     catByProduct.set(s.product_id, {
       category_id: s.category_id,
-      // Зводимо ВСІ випадки "немає назви" в один рядок — і коли name пустий,
-      // і коли немає category_id. Так юзер бачить однорядковий "Без назви".
       category_name: rawName || "🔍 Без назви категорії",
+      cost: s.cost != null ? parseFloat(s.cost) : null,
     });
   }
 
@@ -310,14 +313,32 @@ async function handleCategoryRevenue(req, res, supabase) {
     }
     const o = orders.get(r.order_id);
     const revCents = toCents(r.revenue);
-    o.lines.push({ product_id: r.product_id, revCents });
+    const qty = r.quantity != null ? parseFloat(r.quantity) : 0;
+    // Собівартість позиції = (поточний skus.cost) × quantity. Якщо cost
+    // невідомий — line_cost_cents=null (не псуємо маржу). Загальна маржа
+    // буде null для рядків без cost; для категорії — вираховуємо тільки по
+    // тих позиціях де cost є.
+    const catInfo = catByProduct.get(r.product_id);
+    let costCents = null;
+    let hasCost = false;
+    if (catInfo && catInfo.cost != null && qty > 0) {
+      costCents = Math.round(catInfo.cost * 100 * qty);
+      hasCost = true;
+    }
+    o.lines.push({ product_id: r.product_id, revCents, costCents, hasCost });
     o.lineSumCents += revCents;
   }
 
   // 4. Розподіляємо знижки по позиціях. Внутрішня математика — копійки-int.
-  const cats = new Map(); // category_name → { revenueCents, rawCents, orders:Set }
+  // Структура категорії: revenueCents (з урахуванням знижок), rawCents
+  // (без знижок), costCents (собівартість), ordersSet, costKnownLines
+  // (скільки позицій з відомим cost — для прозорості).
+  const cats = new Map();
   let totalAdjustedCents = 0;
   let totalRawCents = 0;
+  let totalCostCents = 0;
+  let totalCostKnownLines = 0;
+  let totalLines = 0;
 
   for (const [orderId, o] of orders) {
     // Safety: якщо grand або lineSum нема — coef=1.0, не чіпаємо.
@@ -343,10 +364,21 @@ async function handleCategoryRevenue(req, res, supabase) {
       const cat = catByProduct.get(ln.product_id)
         || { category_id: null, category_name: "🔍 Без назви категорії" };
       const key = cat.category_name;
-      if (!cats.has(key)) cats.set(key, { revenueCents: 0, rawCents: 0, orders: new Set() });
+      if (!cats.has(key)) cats.set(key, {
+        revenueCents: 0, rawCents: 0, costCents: 0,
+        orders: new Set(), costKnownLines: 0, totalLines: 0,
+      });
       const c = cats.get(key);
       c.revenueCents += adjustedCents;
       c.rawCents += ln.revCents;
+      c.totalLines += 1;
+      totalLines += 1;
+      if (ln.hasCost) {
+        c.costCents += ln.costCents;
+        c.costKnownLines += 1;
+        totalCostCents += ln.costCents;
+        totalCostKnownLines += 1;
+      }
       c.orders.add(orderId);
       totalAdjustedCents += adjustedCents;
       totalRawCents += ln.revCents;
@@ -356,31 +388,34 @@ async function handleCategoryRevenue(req, res, supabase) {
   const fromCents = (c) => Math.round(c) / 100;
 
   const categories = Array.from(cats.entries())
-    .map(([name, c]) => ({
-      category: name,
-      revenue: fromCents(c.revenueCents),
-      raw_revenue: fromCents(c.rawCents),
-      discount_pct: c.rawCents > 0
-        ? Math.round((1 - c.revenueCents / c.rawCents) * 1000) / 10
-        : 0,
-      orders: c.orders.size,
-      share_pct: 0,
-    }))
+    .map(([name, c]) => {
+      // Маржа категорії: revenue (з урахуванням знижок) − cost.
+      // Якщо в категорії є позиції без cost, маржа неточна — позначаємо
+      // це через cost_coverage_pct (= скільки % позицій мають відомий cost).
+      const margin = c.revenueCents - c.costCents;
+      const coverage = c.totalLines > 0
+        ? Math.round((c.costKnownLines / c.totalLines) * 1000) / 10
+        : 0;
+      return {
+        category: name,
+        revenue: fromCents(c.revenueCents),
+        raw_revenue: fromCents(c.rawCents),
+        cost: fromCents(c.costCents),
+        margin: fromCents(margin),
+        margin_pct: c.revenueCents > 0
+          ? Math.round((margin / c.revenueCents) * 1000) / 10
+          : 0,
+        cost_coverage_pct: coverage,
+        discount_pct: c.rawCents > 0
+          ? Math.round((1 - c.revenueCents / c.rawCents) * 1000) / 10
+          : 0,
+        orders: c.orders.size,
+        share_pct: totalAdjustedCents > 0
+          ? Math.round(c.revenueCents / totalAdjustedCents * 1000) / 10
+          : 0,
+      };
+    })
     .sort((a, b) => b.revenue - a.revenue);
-
-  for (const c of categories) {
-    c.share_pct = totalAdjustedCents > 0
-      ? Math.round((c.revenueCents != null ? c.revenueCents : c.revenue * 100) / totalAdjustedCents * 1000) / 10
-      : 0;
-  }
-  // Перерахунок share_pct через cents (для точності):
-  for (let i = 0; i < categories.length; i++) {
-    const k = categories[i].category;
-    const c = cats.get(k);
-    categories[i].share_pct = totalAdjustedCents > 0
-      ? Math.round(c.revenueCents / totalAdjustedCents * 1000) / 10
-      : 0;
-  }
 
   // Список доступних джерел (тільки якщо колонки існують + хоч щось у даних)
   const sourcesMap = new Map();
@@ -395,6 +430,11 @@ async function handleCategoryRevenue(req, res, supabase) {
     .map(([id, name]) => ({ id, name }))
     .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
+  const totalMarginCents = totalAdjustedCents - totalCostCents;
+  const totalCoverage = totalLines > 0
+    ? Math.round((totalCostKnownLines / totalLines) * 1000) / 10
+    : 0;
+
   return res.status(200).json({
     from,
     to,
@@ -402,6 +442,12 @@ async function handleCategoryRevenue(req, res, supabase) {
     total_revenue: fromCents(totalAdjustedCents),
     total_raw_revenue: fromCents(totalRawCents),
     total_discount: fromCents(totalRawCents - totalAdjustedCents),
+    total_cost: fromCents(totalCostCents),
+    total_margin: fromCents(totalMarginCents),
+    total_margin_pct: totalAdjustedCents > 0
+      ? Math.round((totalMarginCents / totalAdjustedCents) * 1000) / 10
+      : 0,
+    cost_coverage_pct: totalCoverage, // % позицій з відомою закупкою
     orders_count: orders.size,
     categories,
     sources,
