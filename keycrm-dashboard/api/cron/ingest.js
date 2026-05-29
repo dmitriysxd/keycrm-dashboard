@@ -848,6 +848,57 @@ module.exports = async function handler(req, res) {
       if (refresh.error) throw new Error("refresh_sku_metrics: " + refresh.error.message);
       didMetrics = true;
     }
+    let backfillSource = null;
+    if (step === "backfill_source") {
+      // One-off бекфіл: підтягує source_id/source_name для всіх історичних
+      // замовлень з KeyCRM /order і UPDATE'ить sales WHERE source_id IS NULL.
+      // Не state-machine — приймає ?from_page=N, повертає next_page.
+      // Виклики потрібно робити послідовно (1-2 хв між ними щоб не вийти за
+      // KeyCRM rate limit ~60 req/min).
+      const startMs = Date.now();
+      const TIME_BUDGET_MS = 50 * 1000;
+      const fromP = Math.max(1, parseInt(fromPage || 1));
+      let page = fromP;
+      let pagesDone = 0;
+      let ordersSeenBf = 0;
+      let ordersUpdated = 0;
+      let endReached = false;
+      while (Date.now() - startMs < TIME_BUDGET_MS) {
+        const resp = await get("/order", { page, limit: 50 }, apiKey, ctx);
+        const rows = (resp && resp.data) || [];
+        if (!rows.length) { endReached = true; break; }
+        ordersSeenBf += rows.length;
+        for (const order of rows) {
+          const srcObj = order.source && typeof order.source === "object" ? order.source : null;
+          const sId = srcObj && srcObj.id != null ? parseInt(srcObj.id)
+            : (order.source_id != null ? parseInt(order.source_id) : null);
+          const sName = srcObj && srcObj.name ? String(srcObj.name)
+            : (order.source_name ? String(order.source_name) : null);
+          if (sId == null && !sName) continue;
+          // UPDATE тільки де source_id NULL — не перетираємо вже заповнені.
+          const upd = await supabase
+            .from("sales")
+            .update({
+              source_id: sId && !isNaN(sId) ? sId : null,
+              source_name: sName,
+            })
+            .eq("order_id", order.id)
+            .is("source_id", null);
+          if (!upd.error) ordersUpdated++;
+        }
+        pagesDone++;
+        page++;
+        if (rows.length < 50) { endReached = true; break; }
+      }
+      backfillSource = {
+        from_page: fromP,
+        pages_processed: pagesDone,
+        orders_seen: ordersSeenBf,
+        orders_updated: ordersUpdated,
+        next_page: endReached ? null : page,
+        done: endReached,
+      };
+    }
 
     await supabase
       .from("ingest_runs")
@@ -877,6 +928,7 @@ module.exports = async function handler(req, res) {
       api_calls: ctx.apiCalls,
       next_page: nextPage,
       more: nextPage !== null,
+      backfill_source: backfillSource,
     });
   } catch (err) {
     const msg = (err && err.message) || String(err);

@@ -1,0 +1,80 @@
+# One-off backfill: підтягує source_id/source_name для всіх історичних
+# замовлень з KeyCRM в sales.
+#
+# Викликається ВРУЧНУ через workflow_dispatch після того, як:
+# 1. Накатано міграцію 041 (sales.source_id, sales.source_name).
+# 2. Видно що нові замовлення вже мають source (перевірити через SQL).
+#
+# Логіка: цикл /api/cron/ingest?step=backfill_source&from=N з паузами,
+# доки відповідь не поверне next_page=null (= done).
+#
+# Параметри:
+# - start_page: з якої сторінки KeyCRM /order починати (зазвичай 1)
+# - max_iterations: скільки викликів максимум (за 1 раз ~50s = ~50 сторінок,
+#   тобто 30 ітерацій ≈ 1500 сторінок ≈ 75000 замовлень — більше ніж є)
+
+name: Backfill source for historical orders
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_page:
+        description: 'Початкова сторінка (1 = з найновіших)'
+        required: false
+        default: '1'
+      max_iterations:
+        description: 'Макс кількість ітерацій (= виклики до 50s кожен)'
+        required: false
+        default: '30'
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Loop backfill_source until done
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          START_PAGE: ${{ github.event.inputs.start_page }}
+          MAX_ITER: ${{ github.event.inputs.max_iterations }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET не налаштовано"; exit 1
+          fi
+          set +e
+          PAGE=$START_PAGE
+          TOTAL_UPDATED=0
+          TOTAL_SEEN=0
+          for i in $(seq 1 $MAX_ITER); do
+            echo "=== iteration $i/$MAX_ITER · from_page=$PAGE ==="
+            HTTP=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+              --max-time 90 \
+              "https://keycrm-dashboard.vercel.app/api/cron/ingest?step=backfill_source&from=$PAGE&secret=$CRON_SECRET")
+            echo "HTTP $HTTP"
+            cat /tmp/resp.json | head -c 600
+            echo ""
+
+            if [ "$HTTP" != "200" ]; then
+              echo "::warning::HTTP $HTTP — чекаю 30s і пробую ще раз"
+              sleep 30
+              continue
+            fi
+
+            # Витягуємо next_page і done зі сирого JSON
+            NEXT=$(python3 -c "import json,sys; d=json.load(open('/tmp/resp.json')); bf=d.get('backfill_source') or {}; print(bf.get('next_page') if bf.get('next_page') is not None else 'DONE')")
+            UPD=$(python3 -c "import json; d=json.load(open('/tmp/resp.json')); bf=d.get('backfill_source') or {}; print(bf.get('orders_updated', 0))")
+            SEEN=$(python3 -c "import json; d=json.load(open('/tmp/resp.json')); bf=d.get('backfill_source') or {}; print(bf.get('orders_seen', 0))")
+
+            TOTAL_UPDATED=$((TOTAL_UPDATED + UPD))
+            TOTAL_SEEN=$((TOTAL_SEEN + SEEN))
+            echo "Cumulative: $TOTAL_UPDATED updated / $TOTAL_SEEN seen"
+
+            if [ "$NEXT" = "DONE" ]; then
+              echo "✓ Бекфіл завершено! Загалом оновлено $TOTAL_UPDATED замовлень із $TOTAL_SEEN переглянутих."
+              exit 0
+            fi
+            PAGE=$NEXT
+            # Пауза 5s — щоб KeyCRM rate limit не спрацював.
+            sleep 5
+          done
+          echo "::warning::Досягнуто MAX_ITER=$MAX_ITER. Останній page=$PAGE."
+          echo "Запусти workflow ще раз з start_page=$PAGE щоб продовжити."
