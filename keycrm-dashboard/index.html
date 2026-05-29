@@ -2192,7 +2192,7 @@ function drawCohortAvgChart(curve) {
 
 // ── Оборот по категоріях ──────────────────────
 let CATREV_DATA = null;
-let CATREV_FILTER = { preset: 'this_month', from: '', to: '' };
+let CATREV_FILTER = { preset: 'this_month', from: '', to: '', source_id: '' };
 
 function catRevPeriodDates(preset) {
   const now = new Date();
@@ -2216,7 +2216,9 @@ async function renderCatRevenuePage() {
     dates = catRevPeriodDates(CATREV_FILTER.preset);
   }
   try {
-    const r = await fetch(apiUrl('/api/analytics', `type=category_revenue&from=${dates.from}&to=${dates.to}`));
+    let url = `type=category_revenue&from=${dates.from}&to=${dates.to}`;
+    if (CATREV_FILTER.source_id) url += `&source_id=${encodeURIComponent(CATREV_FILTER.source_id)}`;
+    const r = await fetch(apiUrl('/api/analytics', url));
     if (!r.ok) throw new Error('HTTP ' + r.status);
     CATREV_DATA = await r.json();
   } catch (err) {
@@ -2238,6 +2240,11 @@ function applyCatRevCustom() {
   CATREV_FILTER.preset = 'custom';
   CATREV_FILTER.from = f;
   CATREV_FILTER.to = t;
+  renderCatRevenuePage();
+}
+
+function setCatRevSource(sourceId) {
+  CATREV_FILTER.source_id = sourceId || '';
   renderCatRevenuePage();
 }
 
@@ -2272,6 +2279,13 @@ function renderCatRevenueView() {
       <input type="date" id="catrev-from" value="${CATREV_FILTER.from || d.from}" style="padding:5px 8px;background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:12px">
       <input type="date" id="catrev-to" value="${CATREV_FILTER.to || d.to}" style="padding:5px 8px;background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:12px">
       <button onclick="applyCatRevCustom()" style="padding:5px 12px;background:var(--gold);color:#1a1108;border:0;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Застосувати</button>
+      ${(d.sources && d.sources.length) ? `
+        <span style="color:var(--muted);font-size:11px;align-self:center;margin-left:8px">Джерело:</span>
+        <select id="catrev-source" onchange="setCatRevSource(this.value)" style="padding:5px 8px;background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:12px">
+          <option value="">Усі джерела</option>
+          ${d.sources.map(s => `<option value="${s.id}" ${String(CATREV_FILTER.source_id) === String(s.id) ? 'selected' : ''}>${(s.name || '').replace(/[<>&]/g, x => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[x]))}</option>`).join('')}
+        </select>
+      ` : '<span style="color:var(--muted);font-size:10px;align-self:center;margin-left:8px" title="Джерело замовлень підтягуватиметься з наступного ingest після накатки міграції 041">Фільтр джерел: чекає міграцію 041</span>'}
     </div>
 
     <div class="kpi-grid">

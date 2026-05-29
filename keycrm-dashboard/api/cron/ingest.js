@@ -404,6 +404,13 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
         ? parseFloat(order.total_discount)
         : (order.discount_amount != null && !isNaN(parseFloat(order.discount_amount))
             ? parseFloat(order.discount_amount) : null);
+      // Джерело замовлення з KeyCRM. Поле буває як source: {id, name}
+      // або на верхньому рівні source_id + source_name (рідше).
+      const srcObj = order.source && typeof order.source === "object" ? order.source : null;
+      const sourceId = srcObj && srcObj.id != null ? parseInt(srcObj.id)
+        : (order.source_id != null ? parseInt(order.source_id) : null);
+      const sourceName = srcObj && srcObj.name ? String(srcObj.name)
+        : (order.source_name ? String(order.source_name) : null);
       const items = order.products || [];
       items.forEach((item, idx) => {
         const qty = lineQty(item);
@@ -424,6 +431,8 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
           buyer_id: buyerId,
           order_grand_total: grandTotal,
           order_discount: orderDiscount,
+          source_id: sourceId && !isNaN(sourceId) ? sourceId : null,
+          source_name: sourceName,
         });
       });
     }
