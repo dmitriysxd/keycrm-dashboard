@@ -247,9 +247,19 @@ async function handleCategoryRevenue(req, res, supabase) {
     .toISOString().slice(0, 10);
   const from = (q.from && /^\d{4}-\d{2}-\d{2}$/.test(q.from)) ? q.from : defFrom;
   const to = (q.to && /^\d{4}-\d{2}-\d{2}$/.test(q.to)) ? q.to : now.toISOString().slice(0, 10);
-  const toExclusive = new Date(to + "T00:00:00Z");
-  toExclusive.setUTCDate(toExclusive.getUTCDate() + 1);
-  const toExclusiveIso = toExclusive.toISOString();
+  // Фільтр часу — у Київському часовому поясі. KeyCRM в UI рахує по
+  // Europe/Kyiv (UTC+3 літом, UTC+2 зимою). Якщо ми пропустимо ТЗ і
+  // фільтруємо в UTC, замовлення зроблені у Києві о 00:00-02:59 (= UTC
+  // попередній день 21:00-23:59) випадають із "нашого" місяця, тоді як
+  // у KeyCRM UI вони включені. Звідси різниця ±2-5 замовлень за місяць.
+  //
+  // На травень 2026 Україна = UTC+3 (DST). Для зимових місяців offset
+  // буде UTC+2 — дрібна неточність, фіксанемо коли стане критично.
+  const KYIV_OFFSET = "+03:00";
+  const fromIso = from + "T00:00:00" + KYIV_OFFSET;
+  const toExclusiveDate = new Date(to + "T00:00:00" + KYIV_OFFSET);
+  toExclusiveDate.setUTCDate(toExclusiveDate.getUTCDate() + 1);
+  const toExclusiveIso = toExclusiveDate.toISOString();
   const sourceId = q.source_id ? parseInt(q.source_id) : null;
 
   // 1. Sales за період. Беремо quantity щоб рахувати собівартість line.
@@ -257,7 +267,7 @@ async function handleCategoryRevenue(req, res, supabase) {
     let qq = supabase
       .from("sales")
       .select("order_id, product_id, quantity, revenue, order_grand_total, order_status, ordered_at, source_id, source_name")
-      .gte("ordered_at", from + "T00:00:00Z")
+      .gte("ordered_at", fromIso)
       .lt("ordered_at", toExclusiveIso);
     if (sourceId) qq = qq.eq("source_id", sourceId);
     return qq;
@@ -273,7 +283,7 @@ async function handleCategoryRevenue(req, res, supabase) {
         supabase
           .from("sales")
           .select("order_id, product_id, quantity, revenue, order_grand_total, order_status, ordered_at")
-          .gte("ordered_at", from + "T00:00:00Z")
+          .gte("ordered_at", fromIso)
           .lt("ordered_at", toExclusiveIso)
       );
     } else throw err;

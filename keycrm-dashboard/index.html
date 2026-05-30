@@ -873,6 +873,14 @@ function destroyCharts() {
 // ── Helpers ──────────────────────────
 const fmt = n => n >= 1e6 ? `${(n/1e6).toFixed(1)}М` : n >= 1e3 ? `${(n/1e3).toFixed(1)}к` : Math.round(n).toString();
 const fmtMoney = n => `${fmt(n)} ₴`;
+// Точне форматування для бухгалтерських сторінок (P&L, маржа): без скорочень,
+// 2 десяткових знаки, тисячні розділювачі. Використовується на сторінці
+// "Оборот по категоріях" щоб цифри сходились до копійки з KeyCRM.
+const fmtMoneyExact = n => {
+  const num = parseFloat(n) || 0;
+  return num.toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₴';
+};
+const fmtInt = n => (parseInt(n) || 0).toLocaleString('uk-UA');
 
 function pageHeader(title, sub) {
   return `
@@ -2291,25 +2299,25 @@ function renderCatRevenueView() {
     <div class="kpi-grid">
       <div class="kpi"><div class="kpi-accent green"></div>
         <div class="kpi-label">Оборот</div>
-        <div class="kpi-val">${fmtMoney(d.total_revenue || 0)}</div>
+        <div class="kpi-val" style="font-size:18px">${fmtMoneyExact(d.total_revenue || 0)}</div>
       </div>
       <div class="kpi"><div class="kpi-accent" style="background:#e0a060"></div>
         <div class="kpi-label" title="Сума cost × кількість по всіх позиціях. Поточні значення з KeyCRM purchased_price.">Собівартість</div>
-        <div class="kpi-val" style="color:#e0a060">${fmtMoney(d.total_cost || 0)}</div>
+        <div class="kpi-val" style="color:#e0a060;font-size:18px">${fmtMoneyExact(d.total_cost || 0)}</div>
         <div style="font-size:10px;color:var(--muted);margin-top:2px">Покриття cost: ${d.cost_coverage_pct != null ? d.cost_coverage_pct : 0}%</div>
       </div>
       <div class="kpi"><div class="kpi-accent" style="background:var(--gold)"></div>
         <div class="kpi-label" title="Оборот − Собівартість">Маржа</div>
-        <div class="kpi-val" style="color:var(--gold)">${fmtMoney(d.total_margin || 0)}</div>
+        <div class="kpi-val" style="color:var(--gold);font-size:18px">${fmtMoneyExact(d.total_margin || 0)}</div>
         <div style="font-size:10px;color:var(--muted);margin-top:2px">${d.total_margin_pct || 0}% від обороту</div>
       </div>
       <div class="kpi"><div class="kpi-accent red"></div>
         <div class="kpi-label">Знижки на замовлення</div>
-        <div class="kpi-val" style="color:var(--red)">${fmtMoney(d.total_discount || 0)}</div>
+        <div class="kpi-val" style="color:var(--red);font-size:18px">${fmtMoneyExact(d.total_discount || 0)}</div>
       </div>
       <div class="kpi"><div class="kpi-accent purple"></div>
         <div class="kpi-label">Замовлень</div>
-        <div class="kpi-val">${fmt(d.orders_count || 0)}</div>
+        <div class="kpi-val">${fmtInt(d.orders_count || 0)}</div>
       </div>
     </div>
 
@@ -2335,27 +2343,27 @@ function renderCatRevenueView() {
                 : cats.map(c => `
                   <tr>
                     <td>${(c.category || '').replace(/[<>&]/g, x => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[x]))}</td>
-                    <td class="num" style="font-weight:600">${fmtMoney(c.revenue)}</td>
+                    <td class="num" style="font-weight:600">${fmtMoneyExact(c.revenue)}</td>
                     <td class="num">${c.share_pct}%</td>
-                    <td class="num muted">${fmtMoney(c.cost || 0)}</td>
-                    <td class="num" style="color:${c.margin > 0 ? 'var(--green)' : c.margin < 0 ? 'var(--red)' : 'var(--muted)'};font-weight:600">${fmtMoney(c.margin || 0)}</td>
+                    <td class="num muted">${fmtMoneyExact(c.cost || 0)}</td>
+                    <td class="num" style="color:${c.margin > 0 ? 'var(--green)' : c.margin < 0 ? 'var(--red)' : 'var(--muted)'};font-weight:600">${fmtMoneyExact(c.margin || 0)}</td>
                     <td class="num" style="color:${c.margin_pct >= 30 ? 'var(--green)' : c.margin_pct >= 15 ? 'var(--gold)' : 'var(--red)'}">${c.margin_pct}%</td>
                     <td class="num" style="color:${c.cost_coverage_pct >= 95 ? 'var(--green)' : c.cost_coverage_pct >= 70 ? 'var(--gold)' : 'var(--red)'};font-size:11px">${c.cost_coverage_pct}%</td>
                     <td class="num" style="color:${c.discount_pct > 0 ? 'var(--red)' : 'var(--muted)'}">${c.discount_pct}%</td>
-                    <td class="num">${fmt(c.orders)}</td>
+                    <td class="num">${fmtInt(c.orders)}</td>
                   </tr>`).join('')}
             </tbody>
             <tfoot>
               <tr style="border-top:2px solid var(--gold);font-weight:600">
                 <td>Разом</td>
-                <td class="num" style="color:var(--gold)">${fmtMoney(d.total_revenue || 0)}</td>
+                <td class="num" style="color:var(--gold)">${fmtMoneyExact(d.total_revenue || 0)}</td>
                 <td class="num">100%</td>
-                <td class="num muted">${fmtMoney(d.total_cost || 0)}</td>
-                <td class="num" style="color:var(--green)">${fmtMoney(d.total_margin || 0)}</td>
+                <td class="num muted">${fmtMoneyExact(d.total_cost || 0)}</td>
+                <td class="num" style="color:var(--green)">${fmtMoneyExact(d.total_margin || 0)}</td>
                 <td class="num">${d.total_margin_pct || 0}%</td>
                 <td class="num" style="font-size:11px">${d.cost_coverage_pct || 0}%</td>
                 <td class="num"></td>
-                <td class="num">${fmt(d.orders_count || 0)}</td>
+                <td class="num">${fmtInt(d.orders_count || 0)}</td>
               </tr>
             </tfoot>
           </table>
