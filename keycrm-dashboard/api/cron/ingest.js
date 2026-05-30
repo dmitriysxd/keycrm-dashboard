@@ -449,6 +449,11 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
         if (qty <= 0) return;
         const price = linePrice(item);
         const offer = item.offer || {};
+        // Точна закупка на момент створення замовлення (KeyCRM фіксує snapshot).
+        // Якщо нема — null, у звітах буде fallback на skus.cost.
+        const lineCost = item.purchased_price != null && !isNaN(parseFloat(item.purchased_price))
+          ? parseFloat(item.purchased_price)
+          : null;
         lines.push({
           order_id: order.id,
           line_idx: idx,
@@ -458,6 +463,7 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
           quantity: qty,
           unit_price: price,
           revenue: price * qty,
+          line_cost: lineCost,
           order_status: status,
           ordered_at: orderedAt,
           buyer_id: buyerId,
@@ -916,32 +922,54 @@ module.exports = async function handler(req, res) {
       let pagesDone = 0;
       let ordersSeenBf = 0;
       let ordersUpdated = 0;
+      let linesUpdated = 0;
       let endReached = false;
       while (Date.now() - startMs < TIME_BUDGET_MS) {
-        const resp = await get("/order", { page, limit: 50 }, apiKey, ctx);
+        // include=products.offer — щоб у відповіді була і структура позицій
+        // з purchased_price для бекфілу sales.line_cost (точна закупка на
+        // момент створення замовлення).
+        const resp = await get("/order", { page, limit: 50, include: "products.offer" }, apiKey, ctx);
         const rows = (resp && resp.data) || [];
         if (!rows.length) { endReached = true; break; }
         ordersSeenBf += rows.length;
         for (const order of rows) {
+          // 1) source_id / source_name
           const srcObj = order.source && typeof order.source === "object" ? order.source : null;
           const sId = srcObj && srcObj.id != null ? parseInt(srcObj.id)
             : (order.source_id != null ? parseInt(order.source_id) : null);
           let sName = srcObj && srcObj.name ? String(srcObj.name)
             : (order.source_name ? String(order.source_name) : null);
-          // Якщо назви нема в самому замовленні — беремо зі словника.
           if (!sName && sId != null && sourcesMap[String(sId)]) sName = sourcesMap[String(sId)];
-          if (sId == null && !sName) continue;
-          // UPDATE всі рядки замовлення. KeyCRM = source of truth для бекфілу.
-          // Не обмежуємо по IS NULL — попередній запуск бекфілу міг вписати
-          // source_id але без source_name (до того як з'явився словник).
-          const upd = await supabase
-            .from("sales")
-            .update({
-              source_id: sId && !isNaN(sId) ? sId : null,
-              source_name: sName,
-            })
-            .eq("order_id", order.id);
-          if (!upd.error) ordersUpdated++;
+          if (sId != null || sName) {
+            const upd = await supabase
+              .from("sales")
+              .update({
+                source_id: sId && !isNaN(sId) ? sId : null,
+                source_name: sName,
+              })
+              .eq("order_id", order.id);
+            if (!upd.error) ordersUpdated++;
+          }
+
+          // 2) line_cost для кожної позиції з item.purchased_price (snapshot)
+          const products = order.products || [];
+          const costJobs = [];
+          products.forEach((item, idx) => {
+            const c = item.purchased_price;
+            if (c == null || isNaN(parseFloat(c))) return;
+            costJobs.push({ idx, cost: parseFloat(c) });
+          });
+          if (costJobs.length) {
+            // Паралельний UPDATE по (order_id, line_idx) — швидко (~50ms/line).
+            const results = await Promise.all(costJobs.map(j =>
+              supabase
+                .from("sales")
+                .update({ line_cost: j.cost })
+                .eq("order_id", order.id)
+                .eq("line_idx", j.idx)
+            ));
+            for (const r of results) if (!r.error) linesUpdated++;
+          }
         }
         pagesDone++;
         page++;
@@ -951,6 +979,7 @@ module.exports = async function handler(req, res) {
         from_page: fromP,
         pages_processed: pagesDone,
         orders_seen: ordersSeenBf,
+        lines_updated: linesUpdated,
         orders_updated: ordersUpdated,
         next_page: endReached ? null : page,
         done: endReached,
