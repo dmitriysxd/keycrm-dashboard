@@ -2302,9 +2302,12 @@ function renderCatRevenueView() {
         <div class="kpi-val" style="font-size:18px">${fmtMoneyExact(d.total_revenue || 0)}</div>
       </div>
       <div class="kpi"><div class="kpi-accent" style="background:#e0a060"></div>
-        <div class="kpi-label" title="Сума cost × кількість по всіх позиціях. Поточні значення з KeyCRM purchased_price.">Собівартість</div>
+        <div class="kpi-label" title="Сума cost × кількість по всіх позиціях. Точна (exact) = snapshot з KeyCRM на момент створення замовлення. Приблизна (estimated) = поточний skus.cost для історичних замовлень.">Собівартість</div>
         <div class="kpi-val" style="color:#e0a060;font-size:18px">${fmtMoneyExact(d.total_cost || 0)}</div>
-        <div style="font-size:10px;color:var(--muted);margin-top:2px">Покриття cost: ${d.cost_coverage_pct != null ? d.cost_coverage_pct : 0}%</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">
+          Покриття: ${d.cost_coverage_pct != null ? d.cost_coverage_pct : 0}% ·
+          з них точно: <span style="color:${d.cost_exact_pct >= 95 ? 'var(--green)' : d.cost_exact_pct >= 50 ? 'var(--gold)' : 'var(--muted)'}">${d.cost_exact_pct != null ? d.cost_exact_pct : 0}%</span>
+        </div>
       </div>
       <div class="kpi"><div class="kpi-accent" style="background:var(--gold)"></div>
         <div class="kpi-label" title="Оборот − Собівартість">Маржа</div>
