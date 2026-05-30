@@ -530,9 +530,6 @@
       <div class="nav-item" onclick="navigate('cohorts')">
         <span class="nav-icon">👥</span> Когорти
       </div>
-      <div class="nav-item" onclick="navigate('catrevenue')">
-        <span class="nav-icon">💰</span> Оборот по категоріях
-      </div>
     </nav>
 
     <div class="sidebar-bottom">
@@ -862,7 +859,6 @@ async function renderCurrentPage() {
   else if (currentPage === 'clients')  { const ok = await loadClients(); if (ok) renderClients(); }
   else if (currentPage === 'trends')   { await renderTrendsPage(); }
   else if (currentPage === 'cohorts')  { await renderCohortsPage(); }
-  else if (currentPage === 'catrevenue') { await renderCatRevenuePage(); }
 }
 
 function destroyCharts() {
@@ -873,14 +869,6 @@ function destroyCharts() {
 // ── Helpers ──────────────────────────
 const fmt = n => n >= 1e6 ? `${(n/1e6).toFixed(1)}М` : n >= 1e3 ? `${(n/1e3).toFixed(1)}к` : Math.round(n).toString();
 const fmtMoney = n => `${fmt(n)} ₴`;
-// Точне форматування для бухгалтерських сторінок (P&L, маржа): без скорочень,
-// 2 десяткових знаки, тисячні розділювачі. Використовується на сторінці
-// "Оборот по категоріях" щоб цифри сходились до копійки з KeyCRM.
-const fmtMoneyExact = n => {
-  const num = parseFloat(n) || 0;
-  return num.toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₴';
-};
-const fmtInt = n => (parseInt(n) || 0).toLocaleString('uk-UA');
 
 function pageHeader(title, sub) {
   return `
@@ -2196,238 +2184,6 @@ function drawCohortAvgChart(curve) {
       scales: { y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } } },
     },
   });
-}
-
-// ── Оборот по категоріях ──────────────────────
-let CATREV_DATA = null;
-let CATREV_FILTER = { preset: 'this_month', from: '', to: '', source_id: '' };
-
-function catRevPeriodDates(preset) {
-  const now = new Date();
-  const y = now.getUTCFullYear(), m = now.getUTCMonth();
-  const iso = d => d.toISOString().slice(0, 10);
-  if (preset === 'this_month') return { from: iso(new Date(Date.UTC(y, m, 1))), to: iso(now) };
-  if (preset === 'last_month') return { from: iso(new Date(Date.UTC(y, m - 1, 1))), to: iso(new Date(Date.UTC(y, m, 0))) };
-  if (preset === 'this_quarter') { const qm = Math.floor(m / 3) * 3; return { from: iso(new Date(Date.UTC(y, qm, 1))), to: iso(now) }; }
-  if (preset === 'this_year') return { from: iso(new Date(Date.UTC(y, 0, 1))), to: iso(now) };
-  if (preset === 'last_year') return { from: iso(new Date(Date.UTC(y - 1, 0, 1))), to: iso(new Date(Date.UTC(y - 1, 11, 31))) };
-  return { from: iso(new Date(Date.UTC(y, m, 1))), to: iso(now) };
-}
-
-async function renderCatRevenuePage() {
-  const main = document.getElementById('main-area');
-  main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Рахуємо оборот по категоріях</div></div>';
-  let dates;
-  if (CATREV_FILTER.preset === 'custom' && CATREV_FILTER.from && CATREV_FILTER.to) {
-    dates = { from: CATREV_FILTER.from, to: CATREV_FILTER.to };
-  } else {
-    dates = catRevPeriodDates(CATREV_FILTER.preset);
-  }
-  try {
-    let url = `type=category_revenue&from=${dates.from}&to=${dates.to}`;
-    if (CATREV_FILTER.source_id) url += `&source_id=${encodeURIComponent(CATREV_FILTER.source_id)}`;
-    const r = await fetch(apiUrl('/api/analytics', url));
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    CATREV_DATA = await r.json();
-  } catch (err) {
-    main.innerHTML = `<div class="state-wrap"><div class="error-card"><div class="error-title">Помилка</div><div class="state-sub">${(err && err.message) || err}</div></div></div>`;
-    return;
-  }
-  renderCatRevenueView();
-}
-
-function setCatRevPreset(preset) {
-  CATREV_FILTER.preset = preset;
-  renderCatRevenuePage();
-}
-
-function applyCatRevCustom() {
-  const f = document.getElementById('catrev-from').value;
-  const t = document.getElementById('catrev-to').value;
-  if (!f || !t) { alert('Вкажи обидві дати'); return; }
-  CATREV_FILTER.preset = 'custom';
-  CATREV_FILTER.from = f;
-  CATREV_FILTER.to = t;
-  renderCatRevenuePage();
-}
-
-function setCatRevSource(sourceId) {
-  CATREV_FILTER.source_id = sourceId || '';
-  renderCatRevenuePage();
-}
-
-function renderCatRevenueView() {
-  const d = CATREV_DATA;
-  if (!d) return;
-  const cats = d.categories || [];
-
-  const presets = [
-    ['this_month', 'Цей місяць'], ['last_month', 'Минулий місяць'],
-    ['this_quarter', 'Квартал'], ['this_year', 'Цей рік'], ['last_year', 'Минулий рік'],
-  ];
-  const presetBtns = presets.map(([v, label]) =>
-    `<button onclick="setCatRevPreset('${v}')" style="padding:6px 12px;border:1px solid ${CATREV_FILTER.preset === v ? 'var(--gold)' : 'var(--border)'};background:${CATREV_FILTER.preset === v ? 'var(--gold2)' : 'transparent'};color:${CATREV_FILTER.preset === v ? 'var(--gold)' : 'var(--muted)'};border-radius:8px;font-size:12px;cursor:pointer">${label}</button>`
-  ).join('');
-
-  document.getElementById('main-area').innerHTML = `
-    <div class="page-header">
-      <div>
-        <div class="page-title">Оборот по категоріях</div>
-        <div class="page-sub">Період ${d.from} → ${d.to} · знижки на замовлення розподілені пропорційно</div>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button class="refresh-btn" onclick="exportCatRevenueXlsx()" title="Експорт для P&L"><span class="ri">⤓</span> XLS</button>
-        <button class="refresh-btn" onclick="renderCatRevenuePage()"><span class="ri">↺</span> Оновити</button>
-      </div>
-    </div>
-
-    <div class="filter-bar" style="flex-wrap:wrap;gap:6px">
-      ${presetBtns}
-      <span style="color:var(--muted);font-size:11px;align-self:center;margin-left:8px">або період:</span>
-      <input type="date" id="catrev-from" value="${CATREV_FILTER.from || d.from}" style="padding:5px 8px;background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:12px">
-      <input type="date" id="catrev-to" value="${CATREV_FILTER.to || d.to}" style="padding:5px 8px;background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:12px">
-      <button onclick="applyCatRevCustom()" style="padding:5px 12px;background:var(--gold);color:#1a1108;border:0;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Застосувати</button>
-      ${(d.sources && d.sources.length) ? `
-        <span style="color:var(--muted);font-size:11px;align-self:center;margin-left:8px">Джерело:</span>
-        <select id="catrev-source" onchange="setCatRevSource(this.value)" style="padding:5px 8px;background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:12px">
-          <option value="">Усі джерела</option>
-          ${d.sources.map(s => `<option value="${s.id}" ${String(CATREV_FILTER.source_id) === String(s.id) ? 'selected' : ''}>${(s.name || '').replace(/[<>&]/g, x => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[x]))}</option>`).join('')}
-        </select>
-      ` : '<span style="color:var(--muted);font-size:10px;align-self:center;margin-left:8px" title="Джерело замовлень підтягуватиметься з наступного ingest після накатки міграції 041">Фільтр джерел: чекає міграцію 041</span>'}
-    </div>
-
-    <div class="kpi-grid">
-      <div class="kpi"><div class="kpi-accent green"></div>
-        <div class="kpi-label">Оборот</div>
-        <div class="kpi-val" style="font-size:18px">${fmtMoneyExact(d.total_revenue || 0)}</div>
-      </div>
-      <div class="kpi"><div class="kpi-accent" style="background:#e0a060"></div>
-        <div class="kpi-label" title="Сума cost × кількість по всіх позиціях. Точна (exact) = snapshot з KeyCRM на момент створення замовлення. Приблизна (estimated) = поточний skus.cost для історичних замовлень.">Собівартість</div>
-        <div class="kpi-val" style="color:#e0a060;font-size:18px">${fmtMoneyExact(d.total_cost || 0)}</div>
-        <div style="font-size:10px;color:var(--muted);margin-top:2px">
-          Покриття: ${d.cost_coverage_pct != null ? d.cost_coverage_pct : 0}% ·
-          з них точно: <span style="color:${d.cost_exact_pct >= 95 ? 'var(--green)' : d.cost_exact_pct >= 50 ? 'var(--gold)' : 'var(--muted)'}">${d.cost_exact_pct != null ? d.cost_exact_pct : 0}%</span>
-        </div>
-      </div>
-      <div class="kpi"><div class="kpi-accent" style="background:var(--gold)"></div>
-        <div class="kpi-label" title="Оборот − Собівартість">Маржа</div>
-        <div class="kpi-val" style="color:var(--gold);font-size:18px">${fmtMoneyExact(d.total_margin || 0)}</div>
-        <div style="font-size:10px;color:var(--muted);margin-top:2px">${d.total_margin_pct || 0}% від обороту</div>
-      </div>
-      <div class="kpi"><div class="kpi-accent red"></div>
-        <div class="kpi-label">Знижки на замовлення</div>
-        <div class="kpi-val" style="color:var(--red);font-size:18px">${fmtMoneyExact(d.total_discount || 0)}</div>
-      </div>
-      <div class="kpi"><div class="kpi-accent purple"></div>
-        <div class="kpi-label">Замовлень</div>
-        <div class="kpi-val">${fmtInt(d.orders_count || 0)}</div>
-      </div>
-    </div>
-
-    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px">
-      <div class="card">
-        <div class="card-title">Розбивка по категоріях</div>
-        <div class="tbl-scroll">
-          <table>
-            <thead><tr>
-              <th>Категорія</th>
-              <th style="text-align:right">Оборот (₴)</th>
-              <th style="text-align:right">Частка</th>
-              <th style="text-align:right" title="Σ(cost × quantity) по категорії. Cost з KeyCRM purchased_price.">Собівартість</th>
-              <th style="text-align:right" title="Оборот − Собівартість">Маржа (₴)</th>
-              <th style="text-align:right" title="Маржа / Оборот">Маржа %</th>
-              <th style="text-align:right" title="% позицій з відомим cost. Менше 100% = маржа неточна.">Покр.</th>
-              <th style="text-align:right" title="Ефективна знижка на цю категорію">Знижка %</th>
-              <th style="text-align:right">Замовлень</th>
-            </tr></thead>
-            <tbody>
-              ${cats.length === 0
-                ? '<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">Немає даних за період</td></tr>'
-                : cats.map(c => `
-                  <tr>
-                    <td>${(c.category || '').replace(/[<>&]/g, x => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[x]))}</td>
-                    <td class="num" style="font-weight:600">${fmtMoneyExact(c.revenue)}</td>
-                    <td class="num">${c.share_pct}%</td>
-                    <td class="num muted">${fmtMoneyExact(c.cost || 0)}</td>
-                    <td class="num" style="color:${c.margin > 0 ? 'var(--green)' : c.margin < 0 ? 'var(--red)' : 'var(--muted)'};font-weight:600">${fmtMoneyExact(c.margin || 0)}</td>
-                    <td class="num" style="color:${c.margin_pct >= 30 ? 'var(--green)' : c.margin_pct >= 15 ? 'var(--gold)' : 'var(--red)'}">${c.margin_pct}%</td>
-                    <td class="num" style="color:${c.cost_coverage_pct >= 95 ? 'var(--green)' : c.cost_coverage_pct >= 70 ? 'var(--gold)' : 'var(--red)'};font-size:11px">${c.cost_coverage_pct}%</td>
-                    <td class="num" style="color:${c.discount_pct > 0 ? 'var(--red)' : 'var(--muted)'}">${c.discount_pct}%</td>
-                    <td class="num">${fmtInt(c.orders)}</td>
-                  </tr>`).join('')}
-            </tbody>
-            <tfoot>
-              <tr style="border-top:2px solid var(--gold);font-weight:600">
-                <td>Разом</td>
-                <td class="num" style="color:var(--gold)">${fmtMoneyExact(d.total_revenue || 0)}</td>
-                <td class="num">100%</td>
-                <td class="num muted">${fmtMoneyExact(d.total_cost || 0)}</td>
-                <td class="num" style="color:var(--green)">${fmtMoneyExact(d.total_margin || 0)}</td>
-                <td class="num">${d.total_margin_pct || 0}%</td>
-                <td class="num" style="font-size:11px">${d.cost_coverage_pct || 0}%</td>
-                <td class="num"></td>
-                <td class="num">${fmtInt(d.orders_count || 0)}</td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">Структура обороту</div>
-        <div style="position:relative;height:340px"><canvas id="catrev-pie"></canvas></div>
-      </div>
-    </div>
-  `;
-
-  setTimeout(() => drawCatRevPie(cats), 0);
-}
-
-function drawCatRevPie(cats) {
-  if (charts.catrevPie) charts.catrevPie.destroy();
-  // Топ-10 категорій + "Інші" для читабельності
-  const top = cats.slice(0, 10);
-  const rest = cats.slice(10);
-  const labels = top.map(c => c.category);
-  const data = top.map(c => c.revenue);
-  if (rest.length) {
-    labels.push('Інші (' + rest.length + ')');
-    data.push(rest.reduce((s, c) => s + c.revenue, 0));
-  }
-  const palette = ['#c9a96e','#7c6ef5','#5cb88a','#60a8e0','#e06060','#a855f7','#10b981','#f59e0b','#9ed1b3','#e0a060','#6b7280'];
-  charts.catrevPie = new Chart(document.getElementById('catrev-pie'), {
-    type: 'doughnut',
-    data: { labels, datasets: [{ data, backgroundColor: palette, borderColor: 'rgba(0,0,0,0.2)', borderWidth: 1 }] },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: 'right', labels: { font: { size: 10 }, boxWidth: 12 } } },
-    },
-  });
-}
-
-function exportCatRevenueXlsx() {
-  const d = CATREV_DATA;
-  if (!d || !d.categories) { alert('Немає даних'); return; }
-  const aoa = [[
-    'Категорія', 'Оборот (грн)', 'Частка %',
-    'Собівартість (грн)', 'Маржа (грн)', 'Маржа %', 'Покриття cost %',
-    'Без знижок (грн)', 'Знижка %', 'Замовлень',
-  ]];
-  d.categories.forEach(c => {
-    aoa.push([
-      c.category, c.revenue, c.share_pct,
-      c.cost || 0, c.margin || 0, c.margin_pct, c.cost_coverage_pct,
-      c.raw_revenue, c.discount_pct, c.orders,
-    ]);
-  });
-  aoa.push([
-    'РАЗОМ', d.total_revenue, 100,
-    d.total_cost || 0, d.total_margin || 0, d.total_margin_pct, d.cost_coverage_pct,
-    d.total_raw_revenue, '', d.orders_count,
-  ]);
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Оборот по категоріях');
-  XLSX.writeFile(wb, `oborot-kategorii-${d.from}_${d.to}.xlsx`);
 }
 
 // ── Client modal ────────────────────────────
