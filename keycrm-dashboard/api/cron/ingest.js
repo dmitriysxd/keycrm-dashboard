@@ -380,19 +380,31 @@ async function upsertBuyersFromOrders(supabase, orders) {
   // повні дані пустим order.buyer. Без RPC простий upsert переписував
   // is_wholesale=true → false щоразу, як клієнт робив новий заказ і
   // KeyCRM повертав мінімальний buyer-об'єкт без custom_fields.
+  //
+  // ВАЖЛИВО: помилка на ОДНОМУ покупцеві НЕ має зривати всю пачку (раніше
+  // throw переривав цикл і решта покупців цієї сторінки — включно з новими
+  // survivor'ами після merge — не потрапляли в buyers). Ловимо помилку
+  // по кожному окремо.
+  let okCount = 0;
+  let errCount = 0;
   for (const r of rows) {
-    const { error } = await supabase.rpc("upsert_buyer_merge", {
-      _buyer_id: r.buyer_id,
-      _full_name: r.full_name,
-      _phone: r.phone,
-      _email: r.email,
-      _is_wholesale: r.is_wholesale,
-      _custom_fields_raw: r.custom_fields_raw,
-      _first_seen_at: r.first_seen_at,
-    });
-    if (error) throw new Error("upsert_buyer_merge: " + error.message);
+    try {
+      const { error } = await supabase.rpc("upsert_buyer_merge", {
+        _buyer_id: r.buyer_id,
+        _full_name: r.full_name,
+        _phone: r.phone,
+        _email: r.email,
+        _is_wholesale: r.is_wholesale,
+        _custom_fields_raw: r.custom_fields_raw,
+        _first_seen_at: r.first_seen_at,
+      });
+      if (error) throw new Error(error.message);
+      okCount++;
+    } catch (e) {
+      errCount++;
+    }
   }
-  return rows.length;
+  return okCount;
 }
 
 // Кеш джерел замовлень. Завантажуємо один раз на виклик ingestSales і
@@ -692,6 +704,39 @@ async function reconcileMergedBuyers(apiKey, supabase, ctx, opts) {
   const survivors = new Set();
   let orderFetches = 0;
   let orphanStubsCleaned = 0;
+  const homelessBackfilled = [];
+
+  // Крок -1 — підтягнути "бездомні" buyer_id: ті, що є в sales, але відсутні
+  // в buyers. Так буває, коли після merge заказы переїхали на survivor, а
+  // сам survivor-профіль ingest не створив (напр. помилка в пачці). Тягнемо
+  // його з KeyCRM напряму, щоб далі phone-детектор побачив повну дубль-пару.
+  // Залежить від RPC з міграції 043; якщо її ще нема — тихо пропускаємо.
+  try {
+    const orph = await supabase.rpc("sales_orphan_buyer_ids", { _limit: 60 });
+    if (!orph.error && Array.isArray(orph.data)) {
+      for (const row of orph.data) {
+        if (Date.now() - startMs > timeBudgetMs) break;
+        const id = row.buyer_id;
+        try {
+          const resp = await get("/buyer/" + id, { include: "custom_fields" }, apiKey, ctx);
+          const b = (resp && resp.data) || resp;
+          if (b && b.id) {
+            await supabase.rpc("upsert_buyer_merge", {
+              _buyer_id: id,
+              _full_name: pickFullName(b),
+              _phone: pickPhone(b),
+              _email: pickEmail(b),
+              _is_wholesale: parseWholesaleFlag(b),
+              _custom_fields_raw: b.custom_fields || b.customFields || b.fields || null,
+              _first_seen_at: null,
+            });
+            homelessBackfilled.push(id);
+          }
+        } catch (_) { /* 404 / помилка — пропускаємо */ }
+        await sleep(120);
+      }
+    }
+  } catch (_) { /* RPC відсутній (міграція 043 не накатана) — пропускаємо */ }
 
   // Крок 0 — проактивне виявлення merge'ів за дублем телефону.
   let phoneMerges = null;
@@ -818,6 +863,7 @@ async function reconcileMergedBuyers(apiKey, supabase, ctx, opts) {
   }
 
   return {
+    homeless_backfilled: homelessBackfilled,
     phone_merges: phoneMerges,
     candidates_seen: candidates.length,
     order_fetches: orderFetches,
