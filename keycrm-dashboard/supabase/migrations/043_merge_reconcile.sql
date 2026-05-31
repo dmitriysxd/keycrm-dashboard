@@ -98,15 +98,21 @@ $$;
 GRANT EXECUTE ON FUNCTION sales_orphan_buyer_ids(int) TO authenticated, anon, service_role;
 
 ------------------------------------------------------------
--- 3. upsert_buyer_merge: не "усихати" повне ім'я.
---    Раніше на UPDATE будь-яке непорожнє EXCLUDED.full_name перетирало
---    наявне — тому новий заказ із коротким іменем ("Лінецька Олена")
---    затирав повне ("Лінецька Олена Павлівна"). Тепер зберігаємо ДОВШЕ
---    (більш повне) ім'я: коротке ім'я із форми замовлення не вкорочує
---    вже відоме повне.
+-- 3. upsert_buyer_merge: ім'я з картки KeyCRM = істина, ім'я із заказу — ні.
+--    Параметр _authoritative:
+--      • TRUE  (виклик з backfill/reconcile, джерело = /buyer/{id}):
+--        ім'я з KeyCRM перезаписує будь-яке — НАВІТЬ якщо коротше.
+--        Бо при об'єднанні юзер сам обирає в KeyCRM, яке ім'я лишити,
+--        і ми зобов'язані його прийняти.
+--      • FALSE (виклик з ingest заказів, джерело = order.buyer.full_name):
+--        НЕ вкорочуємо вже відоме повне ім'я коротким із форми заказу
+--        (клієнт міг вписати "Лінецька Олена" замість "...Павлівна").
 --    Решта логіки (is_wholesale / custom_fields захист від порожніх)
 --    лишається як у міграції 033.
 ------------------------------------------------------------
+-- Старий 7-аргументний варіант прибираємо, щоб не лишилось двох перевантажень.
+DROP FUNCTION IF EXISTS upsert_buyer_merge(BIGINT, TEXT, TEXT, TEXT, BOOLEAN, JSONB, TIMESTAMPTZ);
+
 CREATE OR REPLACE FUNCTION upsert_buyer_merge(
   _buyer_id BIGINT,
   _full_name TEXT,
@@ -114,7 +120,8 @@ CREATE OR REPLACE FUNCTION upsert_buyer_merge(
   _email TEXT,
   _is_wholesale BOOLEAN,
   _custom_fields_raw JSONB,
-  _first_seen_at TIMESTAMPTZ
+  _first_seen_at TIMESTAMPTZ,
+  _authoritative BOOLEAN DEFAULT FALSE
 )
 RETURNS void
 LANGUAGE plpgsql
@@ -133,12 +140,14 @@ BEGIN
     _custom_fields_raw, _first_seen_at, NOW()
   )
   ON CONFLICT (buyer_id) DO UPDATE SET
-    -- Ім'я: беремо ДОВШЕ (повніше). Порожнє EXCLUDED не чіпає наявне.
     full_name = CASE
       WHEN btrim(COALESCE(EXCLUDED.full_name, '')) = '' THEN buyers.full_name
-      WHEN buyers.full_name IS NULL OR btrim(buyers.full_name) = '' THEN EXCLUDED.full_name
-      -- "(видалено в KeyCRM)" ніколи не має перемагати реальне ім'я
+      -- "(видалено в KeyCRM)" ніколи не перемагає реальне ім'я
       WHEN EXCLUDED.full_name = '(видалено в KeyCRM)' THEN buyers.full_name
+      -- авторитетне джерело (картка KeyCRM) — приймаємо як є, навіть коротше
+      WHEN _authoritative THEN EXCLUDED.full_name
+      WHEN buyers.full_name IS NULL OR btrim(buyers.full_name) = '' THEN EXCLUDED.full_name
+      -- неавторитетне (заказ): не вкорочуємо вже відоме повне ім'я
       WHEN char_length(EXCLUDED.full_name) >= char_length(buyers.full_name) THEN EXCLUDED.full_name
       ELSE buyers.full_name
     END,
@@ -163,3 +172,6 @@ BEGIN
     last_synced_at   = NOW();
 END;
 $$;
+
+GRANT EXECUTE ON FUNCTION upsert_buyer_merge(BIGINT, TEXT, TEXT, TEXT, BOOLEAN, JSONB, TIMESTAMPTZ, BOOLEAN)
+  TO authenticated, anon, service_role;

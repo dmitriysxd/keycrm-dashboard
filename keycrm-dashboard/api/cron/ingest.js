@@ -668,6 +668,7 @@ async function detectMergesByPhone(apiKey, supabase, ctx, state) {
           _is_wholesale: parseWholesaleFlag(survivor),
           _custom_fields_raw: survivor.custom_fields || survivor.customFields || survivor.fields || null,
           _first_seen_at: null,
+          _authoritative: true, // джерело = картка KeyCRM
         });
       } catch (_) {}
       merges.push({ phone: g.phone, survivor: survivor.id, dead, dead_deleted: moved });
@@ -729,6 +730,7 @@ async function reconcileMergedBuyers(apiKey, supabase, ctx, opts) {
               _is_wholesale: parseWholesaleFlag(b),
               _custom_fields_raw: b.custom_fields || b.customFields || b.fields || null,
               _first_seen_at: null,
+              _authoritative: true, // джерело = картка KeyCRM
             });
             homelessBackfilled.push(id);
           }
@@ -849,6 +851,7 @@ async function reconcileMergedBuyers(apiKey, supabase, ctx, opts) {
           _is_wholesale: parseWholesaleFlag(b),
           _custom_fields_raw: b.custom_fields || b.customFields || b.fields || null,
           _first_seen_at: null,
+          _authoritative: true, // джерело = картка KeyCRM
         });
       }
     } catch (_) { /* survivor зник — рідкісно, ігноруємо */ }
