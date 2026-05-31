@@ -265,27 +265,41 @@ function pickBuyerObject(order) {
   return order.buyer || order.client || order.customer || null;
 }
 
+// KeyCRM /buyer/{id} віддає phone та email як МАСИВ (напр. ["+380.."]).
+// Беремо перший непорожній елемент, а не String(array) — інакше
+// багатоелементний масив склеювався у "a@b.com,c@d.net".
+function firstFromArrayOrScalar(v) {
+  if (v == null) return null;
+  if (Array.isArray(v)) {
+    for (const item of v) {
+      if (item == null) continue;
+      if (typeof item === "string") { if (item.trim() !== "") return item.trim(); }
+      else if (typeof item === "object") {
+        const inner = item.value || item.phone || item.number || item.email;
+        if (inner != null && String(inner).trim() !== "") return String(inner).trim();
+      }
+    }
+    return null;
+  }
+  return String(v).trim() !== "" ? String(v).trim() : null;
+}
+
 function pickPhone(b) {
   if (!b) return null;
-  const candidates = [b.phone, b.phone_number, b.mobile, b.tel];
+  const candidates = [b.phone, b.phone_number, b.mobile, b.tel, b.phones];
   for (const v of candidates) {
-    if (v != null && String(v).trim() !== "") return String(v).trim();
-  }
-  if (Array.isArray(b.phones) && b.phones.length) {
-    const f = b.phones[0];
-    if (typeof f === "string") return f;
-    if (f && typeof f === "object") return f.value || f.phone || f.number || null;
+    const got = firstFromArrayOrScalar(v);
+    if (got) return got;
   }
   return null;
 }
 
 function pickEmail(b) {
   if (!b) return null;
-  if (b.email && String(b.email).trim() !== "") return String(b.email).trim();
-  if (Array.isArray(b.emails) && b.emails.length) {
-    const f = b.emails[0];
-    if (typeof f === "string") return f;
-    if (f && typeof f === "object") return f.value || f.email || null;
+  const candidates = [b.email, b.emails];
+  for (const v of candidates) {
+    const got = firstFromArrayOrScalar(v);
+    if (got) return got;
   }
   return null;
 }
@@ -527,6 +541,131 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
   };
 }
 
+// ─── Reconcile: розпізнавання об'єднань покупців (merge) в KeyCRM ────────
+//
+// Коли в KeyCRM об'єднують дублі покупця, старий buyer_id видаляється
+// (наш backfill ставить йому full_name="(видалено в KeyCRM)"), а всі його
+// замовлення перепривʼязуються на survivor. Але в нашій sales вони лишаються
+// висіти на мертвому id. Цей крок:
+//   1. бере "мертві" профілі, що ще мають замовлення (merged_buyer_candidates),
+//   2. перечитує кожне їх замовлення з KeyCRM /order/{id} → знаходить survivor,
+//   3. UPDATE sales SET buyer_id = survivor,
+//   4. перечитує картку survivor /buyer/{id} → відновлює опт/ім'я/email,
+//   5. видаляє порожні мертві профілі (cleanup_orphan_deleted_buyers).
+//
+// Дешевий у звичайні дні (кандидатів зазвичай 0 — швидкий no-op RPC).
+async function reconcileMergedBuyers(apiKey, supabase, ctx, opts) {
+  opts = opts || {};
+  const startMs = Date.now();
+  const timeBudgetMs = opts.timeBudgetMs || 45000;
+  const maxBuyers = opts.maxBuyers || 25;
+  const maxOrderFetches = opts.maxOrderFetches || 120;
+
+  const reattributed = [];        // {order_id, from, to}
+  const deletedOrphans = [];
+  const survivors = new Set();
+  let orderFetches = 0;
+
+  const cand = await supabase.rpc("merged_buyer_candidates", { _limit: maxBuyers });
+  if (cand.error) throw new Error("merged_buyer_candidates: " + cand.error.message);
+  const candidates = cand.data || [];
+
+  for (const c of candidates) {
+    if (Date.now() - startMs > timeBudgetMs) break;
+    if (orderFetches >= maxOrderFetches) break;
+    const deadId = c.buyer_id;
+
+    // Усі замовлення, що ще висять на мертвому id.
+    const ordRes = await supabase.from("sales").select("order_id").eq("buyer_id", deadId);
+    if (ordRes.error) throw new Error("sales select for reconcile: " + ordRes.error.message);
+    const orderIds = Array.from(new Set((ordRes.data || []).map((r) => r.order_id)));
+
+    for (const oid of orderIds) {
+      if (orderFetches >= maxOrderFetches) break;
+      if (Date.now() - startMs > timeBudgetMs) break;
+      orderFetches++;
+      let survivor = null;
+      try {
+        const resp = await get("/order/" + oid, { include: "buyer" }, apiKey, ctx);
+        const order = (resp && resp.data) || resp;
+        survivor = pickBuyerId(order);
+      } catch (e) {
+        // /order/{id} 404 → саме замовлення видалене в KeyCRM. Пропускаємо.
+        await sleep(120);
+        continue;
+      }
+      if (survivor && survivor !== deadId) {
+        const upd = await supabase
+          .from("sales")
+          .update({ buyer_id: survivor })
+          .eq("order_id", oid)
+          .eq("buyer_id", deadId);
+        if (!upd.error) {
+          reattributed.push({ order_id: oid, from: deadId, to: survivor });
+          survivors.add(survivor);
+        }
+      }
+      await sleep(120);
+    }
+
+    // Якщо на мертвому id більше немає замовлень — видаляємо профіль.
+    const rem = await supabase
+      .from("sales")
+      .select("order_id", { count: "exact", head: true })
+      .eq("buyer_id", deadId);
+    if (!rem.error && (rem.count || 0) === 0) {
+      await supabase.from("buyers").delete().eq("buyer_id", deadId);
+      deletedOrphans.push(deadId);
+    }
+  }
+
+  // Перечитуємо картки survivor'ів — відновлюємо опт-прапорець / ім'я / email,
+  // які могли не підтягнутись (survivor синкався ДО об'єднання).
+  for (const sid of survivors) {
+    if (Date.now() - startMs > timeBudgetMs) break;
+    try {
+      const resp = await get("/buyer/" + sid, { include: "custom_fields" }, apiKey, ctx);
+      const b = (resp && resp.data) || resp;
+      if (b && b.id) {
+        await supabase.rpc("upsert_buyer_merge", {
+          _buyer_id: sid,
+          _full_name: pickFullName(b),
+          _phone: pickPhone(b),
+          _email: pickEmail(b),
+          _is_wholesale: parseWholesaleFlag(b),
+          _custom_fields_raw: b.custom_fields || b.customFields || b.fields || null,
+          _first_seen_at: null,
+        });
+      }
+    } catch (_) { /* survivor зник — рідкісно, ігноруємо */ }
+    await sleep(120);
+  }
+
+  // Прибираємо порожні мертві профілі (включно з тими, що очистились
+  // автоматично через updated_between-пас у sales).
+  let orphanStubsCleaned = 0;
+  try {
+    const cl = await supabase.rpc("cleanup_orphan_deleted_buyers");
+    if (!cl.error && cl.data != null) orphanStubsCleaned = parseInt(cl.data) || 0;
+  } catch (_) {}
+
+  // Якщо щось рухали — освіжаємо buyer_rfm.
+  if (reattributed.length || survivors.size || deletedOrphans.length || orphanStubsCleaned) {
+    try { await supabase.rpc("refresh_buyer_rfm"); } catch (_) {}
+  }
+
+  return {
+    candidates_seen: candidates.length,
+    order_fetches: orderFetches,
+    reattributed_count: reattributed.length,
+    reattributed_sample: reattributed.slice(0, 30),
+    survivors_resynced: Array.from(survivors),
+    deleted_orphan_buyers: deletedOrphans,
+    orphan_stubs_cleaned: orphanStubsCleaned,
+    more: candidates.length >= maxBuyers || orderFetches >= maxOrderFetches,
+  };
+}
+
 async function deactivateMissing(supabase, runStartIso) {
   await supabase
     .from("skus")
@@ -742,6 +881,26 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
         result.metrics_rfm_error = (err && err.message) || String(err);
       }
 
+      // Після метрик — крок reconcile (розпізнавання об'єднань покупців).
+      await writeState(supabase, {
+        current_step: "reconcile",
+        current_page: 1,
+        last_chunk_at: new Date().toISOString(),
+      });
+      result.advanced = "reconcile";
+    } else if (stepName === "reconcile") {
+      // Розпізнавання merge'ів. У звичайні дні кандидатів 0 — швидкий no-op.
+      // Тримаємо tight cap, щоб не вибити денний бюджет якщо KeyCRM повільний.
+      // Помилки тут НЕ валять цикл — завжди завершуємо 'done'.
+      try {
+        result.reconcile = await reconcileMergedBuyers(apiKey, supabase, ctx, {
+          timeBudgetMs: 30000,
+          maxBuyers: 10,
+          maxOrderFetches: 60,
+        });
+      } catch (err) {
+        result.reconcile_error = (err && err.message) || String(err);
+      }
       await writeState(supabase, {
         current_step: "done",
         current_page: 1,
@@ -889,6 +1048,16 @@ module.exports = async function handler(req, res) {
       if (refresh.error) throw new Error("refresh_sku_metrics: " + refresh.error.message);
       didMetrics = true;
     }
+    let reconcileResult = null;
+    if (step === "reconcile") {
+      // Ручний/повний прогін розпізнавання об'єднань. Більший бюджет і ліміти,
+      // ніж у авто-циклі — щоб за один-два виклики добити весь backlog.
+      reconcileResult = await reconcileMergedBuyers(apiKey, supabase, ctx, {
+        timeBudgetMs: 50000,
+        maxBuyers: 40,
+        maxOrderFetches: 150,
+      });
+    }
     let backfillSource = null;
     if (step === "backfill_source") {
       // One-off бекфіл: підтягує source_id/source_name для всіх історичних
@@ -1017,6 +1186,7 @@ module.exports = async function handler(req, res) {
       next_page: nextPage,
       more: nextPage !== null,
       backfill_source: backfillSource,
+      reconcile: reconcileResult,
     });
   } catch (err) {
     const msg = (err && err.message) || String(err);
