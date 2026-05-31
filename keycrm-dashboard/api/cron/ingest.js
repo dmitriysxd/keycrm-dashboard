@@ -542,11 +542,134 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
 }
 
 // ─── Reconcile: розпізнавання об'єднань покупців (merge) в KeyCRM ────────
+
+// Нормалізація телефону: витягуємо всі цифрові послідовності і беремо
+// останні 10 цифр кожної (нац. номер без коду країни/плюса/пробілів).
+// Один запис може мати кілька номерів ("+380..,+420..") → повертаємо масив.
+function normalizePhones(p) {
+  if (p == null) return [];
+  const runs = String(p).match(/\d{6,}/g) || [];
+  const out = [];
+  for (const r of runs) {
+    const tail = r.slice(-10);
+    if (tail.length === 10 && !out.includes(tail)) out.push(tail);
+  }
+  return out;
+}
+
+async function fetchAllBuyersLite(supabase) {
+  const out = [];
+  for (let from = 0; from < 50000; from += 1000) {
+    const { data, error } = await supabase
+      .from("buyers")
+      .select("buyer_id, phone, full_name, is_wholesale")
+      .range(from, from + 999);
+    if (error) throw new Error("buyers lite select: " + error.message);
+    if (!data || !data.length) break;
+    out.push(...data);
+    if (data.length < 1000) break;
+  }
+  return out;
+}
+
+// Проактивне виявлення merge'ів за дублем телефону. Знаходить у нашій базі
+// групи buyer'ів з однаковим номером, перевіряє кожного в KeyCRM:
+//   • той, що віддає 404 → видалений (смерджений) → переносимо його sales
+//     на живого survivor і видаляємо мертвий профіль;
+//   • survivor перечитуємо з KeyCRM → відновлюємо опт-прапорець / ім'я / email.
+// Спрацьовує ОДРАЗУ після об'єднання в KeyCRM, не чекаючи backfill-маркера.
+async function detectMergesByPhone(apiKey, supabase, ctx, state) {
+  const { startMs, timeBudgetMs, maxGroups } = state;
+  const buyers = await fetchAllBuyersLite(supabase);
+
+  // Групуємо за нормалізованим номером.
+  const byPhone = new Map(); // norm → [{buyer_id, is_wholesale, full_name}]
+  for (const b of buyers) {
+    for (const ph of normalizePhones(b.phone)) {
+      if (!byPhone.has(ph)) byPhone.set(ph, []);
+      byPhone.get(ph).push(b);
+    }
+  }
+
+  // Лишаємо тільки групи з ≥2 різними buyer_id (потенційні дублі).
+  let groups = [];
+  for (const [ph, arr] of byPhone) {
+    const uniq = Array.from(new Map(arr.map((x) => [x.buyer_id, x])).values());
+    if (uniq.length >= 2) groups.push({ phone: ph, members: uniq });
+  }
+
+  // Пріоритет: спочатку групи зі ЗМІШАНИМ прапорцем (є опт + є не-опт) —
+  // це класичний слід мерджу (старий опт-профіль + новий "роздрібний").
+  groups.sort((a, b) => {
+    const mix = (g) => {
+      const hasW = g.members.some((m) => m.is_wholesale === true);
+      const hasN = g.members.some((m) => m.is_wholesale !== true);
+      return hasW && hasN ? 0 : 1;
+    };
+    return mix(a) - mix(b);
+  });
+
+  const merges = []; // {phone, survivor, dead:[ids], moved}
+  for (const g of groups.slice(0, maxGroups)) {
+    if (Date.now() - startMs > timeBudgetMs) break;
+    const alive = [];
+    const dead = [];
+    for (const m of g.members) {
+      if (Date.now() - startMs > timeBudgetMs) break;
+      try {
+        const resp = await get("/buyer/" + m.buyer_id, { include: "custom_fields" }, apiKey, ctx);
+        const bb = (resp && resp.data) || resp;
+        if (bb && bb.id) alive.push(bb);
+        else dead.push(m.buyer_id);
+      } catch (e) {
+        if (/HTTP 404/.test((e && e.message) || "")) dead.push(m.buyer_id);
+        // інші помилки — пропускаємо групу, не ризикуємо
+      }
+      await sleep(120);
+    }
+    // Діємо ТІЛЬКИ коли рівно один живий і є хоча б один мертвий —
+    // однозначний survivor. Якщо живих кілька (не змерджено) — не чіпаємо.
+    if (alive.length === 1 && dead.length >= 1) {
+      const survivor = alive[0];
+      let moved = 0;
+      for (const Y of dead) {
+        const upd = await supabase
+          .from("sales")
+          .update({ buyer_id: survivor.id })
+          .eq("buyer_id", Y);
+        if (!upd.error) {
+          const cntY = await supabase
+            .from("sales").select("order_id", { count: "exact", head: true }).eq("buyer_id", Y);
+          if (!cntY.error && (cntY.count || 0) === 0) {
+            await supabase.from("buyers").delete().eq("buyer_id", Y);
+            moved += 1;
+          }
+        }
+      }
+      // Перечитуємо survivor — повертаємо опт/ім'я/email.
+      try {
+        await supabase.rpc("upsert_buyer_merge", {
+          _buyer_id: survivor.id,
+          _full_name: pickFullName(survivor),
+          _phone: pickPhone(survivor),
+          _email: pickEmail(survivor),
+          _is_wholesale: parseWholesaleFlag(survivor),
+          _custom_fields_raw: survivor.custom_fields || survivor.customFields || survivor.fields || null,
+          _first_seen_at: null,
+        });
+      } catch (_) {}
+      merges.push({ phone: g.phone, survivor: survivor.id, dead, dead_deleted: moved });
+    }
+  }
+
+  return { dup_groups_total: groups.length, groups_checked: Math.min(groups.length, maxGroups), merges };
+}
 //
 // Коли в KeyCRM об'єднують дублі покупця, старий buyer_id видаляється
 // (наш backfill ставить йому full_name="(видалено в KeyCRM)"), а всі його
 // замовлення перепривʼязуються на survivor. Але в нашій sales вони лишаються
 // висіти на мертвому id. Цей крок:
+//   0. ПРОАКТИВНО: дублі за телефоном → знаходимо survivor одразу (detectMergesByPhone),
 //   1. бере "мертві" профілі (full_name="(видалено в KeyCRM)"),
 //   2. перечитує кожне їх замовлення з KeyCRM /order/{id} → знаходить survivor,
 //   3. UPDATE sales SET buyer_id = survivor,
@@ -562,12 +685,27 @@ async function reconcileMergedBuyers(apiKey, supabase, ctx, opts) {
   const timeBudgetMs = opts.timeBudgetMs || 45000;
   const maxBuyers = opts.maxBuyers || 25;
   const maxOrderFetches = opts.maxOrderFetches || 120;
+  const maxPhoneGroups = opts.maxPhoneGroups || 12;
 
   const reattributed = [];        // {order_id, from, to}
   const deletedOrphans = [];
   const survivors = new Set();
   let orderFetches = 0;
   let orphanStubsCleaned = 0;
+
+  // Крок 0 — проактивне виявлення merge'ів за дублем телефону.
+  let phoneMerges = null;
+  try {
+    phoneMerges = await detectMergesByPhone(apiKey, supabase, ctx, {
+      startMs, timeBudgetMs, maxGroups: maxPhoneGroups,
+    });
+    for (const m of (phoneMerges.merges || [])) {
+      survivors.add(m.survivor);
+      for (const d of m.dead) deletedOrphans.push(d);
+    }
+  } catch (e) {
+    phoneMerges = { error: (e && e.message) || String(e) };
+  }
 
   // Кандидати — профілі, видалені в KeyCRM (backfill позначив маркером).
   // Не залежимо від SQL-функцій (міграція 043 може бути ще не накатана):
@@ -680,6 +818,7 @@ async function reconcileMergedBuyers(apiKey, supabase, ctx, opts) {
   }
 
   return {
+    phone_merges: phoneMerges,
     candidates_seen: candidates.length,
     order_fetches: orderFetches,
     reattributed_count: reattributed.length,
