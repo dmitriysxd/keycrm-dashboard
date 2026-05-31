@@ -547,13 +547,15 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
 // (наш backfill ставить йому full_name="(видалено в KeyCRM)"), а всі його
 // замовлення перепривʼязуються на survivor. Але в нашій sales вони лишаються
 // висіти на мертвому id. Цей крок:
-//   1. бере "мертві" профілі, що ще мають замовлення (merged_buyer_candidates),
+//   1. бере "мертві" профілі (full_name="(видалено в KeyCRM)"),
 //   2. перечитує кожне їх замовлення з KeyCRM /order/{id} → знаходить survivor,
 //   3. UPDATE sales SET buyer_id = survivor,
 //   4. перечитує картку survivor /buyer/{id} → відновлює опт/ім'я/email,
-//   5. видаляє порожні мертві профілі (cleanup_orphan_deleted_buyers).
+//   5. видаляє порожні мертві профілі.
 //
-// Дешевий у звичайні дні (кандидатів зазвичай 0 — швидкий no-op RPC).
+// Працює на чистих Supabase-запитах — НЕ залежить від SQL-функцій з
+// міграції 043 (вона лише прискорює/прибирає косметику). Дешевий у звичайні
+// дні: кандидатів зазвичай 0.
 async function reconcileMergedBuyers(apiKey, supabase, ctx, opts) {
   opts = opts || {};
   const startMs = Date.now();
@@ -565,15 +567,44 @@ async function reconcileMergedBuyers(apiKey, supabase, ctx, opts) {
   const deletedOrphans = [];
   const survivors = new Set();
   let orderFetches = 0;
+  let orphanStubsCleaned = 0;
 
-  const cand = await supabase.rpc("merged_buyer_candidates", { _limit: maxBuyers });
-  if (cand.error) throw new Error("merged_buyer_candidates: " + cand.error.message);
-  const candidates = cand.data || [];
+  // Кандидати — профілі, видалені в KeyCRM (backfill позначив маркером).
+  // Не залежимо від SQL-функцій (міграція 043 може бути ще не накатана):
+  // тягнемо маркер-профілі напряму і ділимо на "з замовленнями" (треба
+  // перепривʼязати) та "порожні" (одразу видаляємо).
+  const markerRes = await supabase
+    .from("buyers")
+    .select("buyer_id")
+    .eq("full_name", "(видалено в KeyCRM)")
+    .limit(maxBuyers * 4);
+  if (markerRes.error) throw new Error("marker buyers select: " + markerRes.error.message);
+  const markerIds = (markerRes.data || []).map((r) => r.buyer_id);
 
-  for (const c of candidates) {
+  const candidates = [];        // мертві id, що ще мають замовлення
+  const emptyStubs = [];        // мертві id без замовлень — просто видалити
+  for (const id of markerIds) {
+    if (Date.now() - startMs > timeBudgetMs) break;
+    const cnt = await supabase
+      .from("sales")
+      .select("order_id", { count: "exact", head: true })
+      .eq("buyer_id", id);
+    if (!cnt.error && (cnt.count || 0) > 0) {
+      if (candidates.length < maxBuyers) candidates.push(id);
+    } else if (!cnt.error) {
+      emptyStubs.push(id);
+    }
+  }
+
+  // Порожні мертві профілі видаляємо одразу (їх замовлення вже переїхали).
+  if (emptyStubs.length) {
+    const del = await supabase.from("buyers").delete().in("buyer_id", emptyStubs);
+    if (!del.error) orphanStubsCleaned += emptyStubs.length;
+  }
+
+  for (const deadId of candidates) {
     if (Date.now() - startMs > timeBudgetMs) break;
     if (orderFetches >= maxOrderFetches) break;
-    const deadId = c.buyer_id;
 
     // Усі замовлення, що ще висять на мертвому id.
     const ordRes = await supabase.from("sales").select("order_id").eq("buyer_id", deadId);
@@ -641,13 +672,7 @@ async function reconcileMergedBuyers(apiKey, supabase, ctx, opts) {
     await sleep(120);
   }
 
-  // Прибираємо порожні мертві профілі (включно з тими, що очистились
-  // автоматично через updated_between-пас у sales).
-  let orphanStubsCleaned = 0;
-  try {
-    const cl = await supabase.rpc("cleanup_orphan_deleted_buyers");
-    if (!cl.error && cl.data != null) orphanStubsCleaned = parseInt(cl.data) || 0;
-  } catch (_) {}
+  // (Порожні мертві профілі вже прибрані вище — emptyStubs.)
 
   // Якщо щось рухали — освіжаємо buyer_rfm.
   if (reattributed.length || survivors.size || deletedOrphans.length || orphanStubsCleaned) {
