@@ -76,6 +76,28 @@ $$;
 GRANT EXECUTE ON FUNCTION cleanup_orphan_deleted_buyers() TO authenticated, anon, service_role;
 
 ------------------------------------------------------------
+-- 2b. sales_orphan_buyer_ids: "бездомні" buyer_id — присутні в sales,
+--     але відсутні в buyers. Виникають, коли після merge замовлення
+--     переїхали на survivor, а сам survivor-профіль ingest не створив.
+--     reconcile тягне їх з KeyCRM і створює картку.
+------------------------------------------------------------
+CREATE OR REPLACE FUNCTION sales_orphan_buyer_ids(_limit int DEFAULT 60)
+RETURNS TABLE(buyer_id bigint)
+LANGUAGE sql STABLE
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+  SELECT DISTINCT s.buyer_id
+  FROM sales s
+  LEFT JOIN buyers b ON b.buyer_id = s.buyer_id
+  WHERE s.buyer_id IS NOT NULL
+    AND b.buyer_id IS NULL
+  LIMIT _limit;
+$$;
+
+GRANT EXECUTE ON FUNCTION sales_orphan_buyer_ids(int) TO authenticated, anon, service_role;
+
+------------------------------------------------------------
 -- 3. upsert_buyer_merge: не "усихати" повне ім'я.
 --    Раніше на UPDATE будь-яке непорожнє EXCLUDED.full_name перетирало
 --    наявне — тому новий заказ із коротким іменем ("Лінецька Олена")
