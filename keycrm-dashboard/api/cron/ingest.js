@@ -860,8 +860,11 @@ async function reconcileMergedBuyers(apiKey, supabase, ctx, opts) {
 
   // (Порожні мертві профілі вже прибрані вище — emptyStubs.)
 
-  // Якщо щось рухали — освіжаємо buyer_rfm.
-  if (reattributed.length || survivors.size || deletedOrphans.length || orphanStubsCleaned) {
+  // Якщо щось рухали (вкл. homeless-backfill — нові опт-клієнти зʼявляються
+  // в buyers ПІСЛЯ кроку metrics, тож buyer_rfm про них ще не знає) —
+  // освіжаємо matview, щоб дашборд побачив зміни одразу.
+  if (reattributed.length || survivors.size || deletedOrphans.length
+      || orphanStubsCleaned || homelessBackfilled.length) {
     try { await supabase.rpc("refresh_buyer_rfm"); } catch (_) {}
   }
 
