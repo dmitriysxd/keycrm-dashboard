@@ -426,10 +426,20 @@ async function fetchOrderSources(apiKey, ctx) {
   return map;
 }
 
-async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate, toDate, sourcesMap) {
-  let page = 1;
+async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate, toDate, sourcesMap, opts) {
+  // opts: { fromPage, maxPages, timeBudgetMs, startMs }
+  // Returns: { ordersSeen, salesUpserted, lastPage, more }
+  opts = opts || {};
+  const fromPage = Math.max(1, opts.fromPage || 1);
+  const maxPages = opts.maxPages || 200;
+  const timeBudgetMs = opts.timeBudgetMs || 999999;
+  const startMs = opts.startMs || Date.now();
+
+  let page = fromPage;
   let total = 0;
   let upserted = 0;
+  let lastPage = fromPage - 1;
+  let more = false;
   const params = {
     include: "products.offer,status,buyer",
     limit: 50,
@@ -437,11 +447,13 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
   };
   params["filter[" + filterKey + "]"] = fromDate + "," + toDate;
 
-  while (page <= 200) {
+  while (page < fromPage + maxPages) {
+    if (Date.now() - startMs > timeBudgetMs) { more = true; break; }
     const resp = await get("/order", Object.assign({}, params, { page }), apiKey, ctx);
     const rows = resp.data || [];
-    if (!rows.length) break;
+    if (!rows.length) { more = false; break; }
     total += rows.length;
+    lastPage = page;
 
     const lines = [];
     for (const order of rows) {
@@ -520,14 +532,23 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
       if (ctx) ctx.buyersUpsertError = (e && e.message) || String(e);
     }
 
-    if (rows.length < 50) break;
+    if (rows.length < 50) { more = false; break; }
     page++;
+    more = true; // якщо вийдемо з циклу по maxPages — є ще
     await sleep(20);
   }
 
-  return { ordersSeen: total, salesUpserted: upserted };
+  return { ordersSeen: total, salesUpserted: upserted, lastPage, more };
 }
 
+// Number of /order pages per sales chunk in the auto-cycle. Tuned so a chunk
+// fits comfortably under Vercel's 60s function limit even on slow KeyCRM days:
+// 3 pages × 50 orders × ~20 line items + per-row buyer upserts ≈ 25-40 sec.
+const SALES_CHUNK_PAGES = 3;
+
+// Single-shot full ingest of sales — for manual /api/cron/ingest?step=sales
+// and other one-off needs. Uses the same fetchOrdersWithFilter under the hood
+// but without per-call time budgeting (caller manages timeouts).
 async function ingestSales(apiKey, supabase, ctx, sinceISO) {
   // Two-pass strategy to guarantee we capture both newly-created and recently-
   // updated orders. KeyCRM can be inconsistent: brand-new orders may not match
@@ -550,6 +571,42 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
   return {
     ordersSeen: a.ordersSeen + b.ordersSeen,
     salesUpserted: a.salesUpserted + b.salesUpserted,
+  };
+}
+
+// Chunked sales pass for the auto-cycle. Processes one sub-pass at a time
+// (substep = 'created' | 'updated'), starting from fromPage. Returns
+// { ordersSeen, salesUpserted, lastPage, more, substep, nextSubstep }.
+//
+// State machine semantics:
+//   substep=created, more=true  → next call: substep=created, page=lastPage+1
+//   substep=created, more=false → next call: substep=updated, page=1
+//   substep=updated, more=true  → next call: substep=updated, page=lastPage+1
+//   substep=updated, more=false → done (caller advances to metrics)
+async function ingestSalesChunk(apiKey, supabase, ctx, substep, fromPage, timeBudgetMs) {
+  const fromDate = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const toDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const startMs = Date.now();
+
+  // sourcesMap не кешуємо між викликами (стейт не вміщує JSONB), але це
+  // дешево — 1 запит на ~10 джерел.
+  const sourcesMap = await fetchOrderSources(apiKey, ctx);
+
+  const filterKey = substep === "updated" ? "updated_between" : "created_between";
+  const r = await fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate, toDate, sourcesMap, {
+    fromPage,
+    maxPages: SALES_CHUNK_PAGES,
+    timeBudgetMs: timeBudgetMs || 40000,
+    startMs,
+  });
+
+  return {
+    ordersSeen: r.ordersSeen,
+    salesUpserted: r.salesUpserted,
+    lastPage: r.lastPage,
+    more: r.more,
+    substep,
+    nextSubstep: r.more ? substep : (substep === "created" ? "updated" : null),
   };
 }
 
@@ -978,6 +1035,7 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
       cycle_date: today,
       cycle_started_at: new Date().toISOString(),
       current_step: "products",
+      current_substep: null,
       current_page: 1,
       status: "running",
       last_error: isStaleRunning ? "stale-running auto-recovered" : null,
@@ -1050,16 +1108,49 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
         result.advanced = "sales";
       }
     } else if (stepName === "sales") {
-      const since = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
-      const r = await ingestSales(apiKey, supabase, ctx, since);
+      // Chunked: 3 сторінки за виклик, два прохода (created → updated).
+      // current_substep тримає активний прохід ('created' або 'updated').
+      // current_page — наступна сторінка для цього прохода.
+      // Якщо current_substep NULL (новий цикл або старий state без поля) —
+      // починаємо з 'created' від сторінки 1.
+      const substep = state.current_substep || "created";
+      const fromPage = state.current_page || 1;
+      const r = await ingestSalesChunk(apiKey, supabase, ctx, substep, fromPage, 40000);
+      result.sales_substep = substep;
+      result.sales_from_page = fromPage;
+      result.sales_last_page = r.lastPage;
       result.orders = r.ordersSeen;
       result.sales_upserted = r.salesUpserted;
-      await writeState(supabase, {
-        current_step: "metrics",
-        current_page: 1,
-        last_chunk_at: new Date().toISOString(),
-      });
-      result.advanced = "metrics";
+      result.sales_more = r.more;
+
+      if (r.more) {
+        // Той самий substep, наступна сторінка
+        await writeState(supabase, {
+          current_step: "sales",
+          current_substep: substep,
+          current_page: r.lastPage + 1,
+          last_chunk_at: new Date().toISOString(),
+        });
+        result.advanced = "sales/" + substep + " continues";
+      } else if (r.nextSubstep) {
+        // Перехід created → updated, page=1
+        await writeState(supabase, {
+          current_step: "sales",
+          current_substep: r.nextSubstep,
+          current_page: 1,
+          last_chunk_at: new Date().toISOString(),
+        });
+        result.advanced = "sales/" + r.nextSubstep;
+      } else {
+        // Обидва проходи завершені — переходимо до metrics
+        await writeState(supabase, {
+          current_step: "metrics",
+          current_substep: null,
+          current_page: 1,
+          last_chunk_at: new Date().toISOString(),
+        });
+        result.advanced = "metrics";
+      }
     } else if (stepName === "metrics") {
       // Фінальний крок: рефреш обох matview. pg_cron більше не запускається
       // на фіксованому розкладі (міграція 036) — щоб уникнути гонки з ingest.
