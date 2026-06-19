@@ -1,0 +1,71 @@
+# Keepalive: пінг ingest endpoint кожні 2 години.
+#
+# Чому: Vercel cron на Hobby плані = 1 раз на добу. Якщо цикл застряг
+# (sales не вклався в 60с і Vercel вбив функцію посеред потоку), статус
+# лишається 'running' до наступного дзвінка. Без цього workflow recovery
+# спрацьовує тільки коли юзер РУЧНО натисне кнопку — а він не завжди це
+# помічає, тож дані тухнуть до доби.
+#
+# Auto-recovery в ingest.js: якщо status='running' >1 год — скидає на
+# свіжий цикл. Тож одного пінга кожні 2 години досить, щоб максимальний
+# простій був ~2 години, а не 24.
+#
+# Що робить:
+#   1. GET /api/cron/ingest?step=auto
+#   2. Якщо state='done' — повертає noop, ZERO worka (безпечно)
+#   3. Якщо state='running' >1h — recovery → reset → свіжий цикл
+#   4. Якщо state='running' <1h — продовжує з cursor'а
+#
+# Ідемпотентно і безпечно: за тиждень = 84 виклики, але корисна робота
+# тільки коли є застрягання.
+#
+# Зайвого навантаження немає: noop-режим = 1 SELECT в Supabase + повернення.
+#
+# CRON_SECRET потрібен у GitHub Secrets (вже налаштовано для інших workflows).
+
+name: Keepalive ingest
+
+on:
+  schedule:
+    # Кожні 2 години. Перевірено: cron у GitHub Actions має drift ~5-10 хв
+    # на безкоштовних runner'ах — це нормально, для нашої задачі (recovery
+    # в межах 2-3 год) це непомітно.
+    - cron: "15 */2 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping /api/cron/ingest?step=auto
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET not configured in GitHub Secrets"
+            exit 1
+          fi
+          set +e
+          HTTP=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+            --max-time 90 \
+            "https://keycrm-dashboard.vercel.app/api/cron/ingest?step=auto&secret=$CRON_SECRET")
+          echo "HTTP $HTTP"
+          cat /tmp/response.json | head -c 600
+          echo ""
+
+          # 200 OK — рахуємо успіхом навіть якщо noop (вже зроблено) або
+          # партіальний прогрес (chunk виконано, треба ще).
+          if [ "$HTTP" = "200" ]; then
+            # Витягуємо коротко що сталось — для зручності в GitHub Actions UI.
+            if grep -q '"reason":"already_done_today"' /tmp/response.json; then
+              echo "✓ noop — cycle already done for today"
+            elif grep -q '"completed":true' /tmp/response.json; then
+              echo "✓ cycle completed"
+            else
+              echo "↻ partial progress (next ping continues)"
+            fi
+            exit 0
+          fi
+          echo "::warning::HTTP $HTTP (не fatal — наступний пінг через 2 год)"
+          exit 0
