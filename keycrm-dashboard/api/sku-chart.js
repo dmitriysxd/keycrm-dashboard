@@ -5,6 +5,7 @@ const EXCLUDED_STATUSES = new Set([
   "cancelled", "rejected", "canceled",
   "Повернули", "Повернення", "Відмовились",
   "incorrect_data", "underbid",
+  "Перенос (дублікат)", // дубль незабраної посилки, скопійований у новий місяць
 ]);
 
 function isMergerStatus(status) {
