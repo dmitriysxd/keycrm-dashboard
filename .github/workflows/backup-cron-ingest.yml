@@ -45,14 +45,20 @@ jobs:
             echo "HTTP $HTTP"
             cat /tmp/response.json | head -c 500
             echo ""
-            if [ "$HTTP" = "200" ]; then
-              echo "✓ ingest triggered successfully"
+            # 200 = цикл (або чанк) відпрацював і повернувся штатно.
+            # 504 FUNCTION_INVOCATION_TIMEOUT = функція виконувалась, але
+            # перевищила Vercel-ліміт 60с. ВАЖЛИВО: стан зберігається після
+            # кожного чанка (writeState), тож робота НЕ втрачена — наступний
+            # виклик (keepalive/cron) продовжить з курсора. Тому 504 — це
+            # "в процесі", а не провал. Не спамимо алертами.
+            if [ "$HTTP" = "200" ] || [ "$HTTP" = "504" ]; then
+              echo "✓ ingest triggered (HTTP $HTTP — 504 = timed out mid-chunk, progress saved)"
               exit 0
             fi
-            echo "Attempt $i failed, waiting before retry..."
+            echo "Attempt $i failed (HTTP $HTTP), waiting before retry..."
             sleep $((i * 30))
           done
-          echo "::error::All 3 attempts failed"
+          echo "::error::All 3 attempts failed (no 200/504 — endpoint unreachable?)"
           exit 1
 
       - name: Backfill all buyers (ім'я, телефон, опт-флаг)

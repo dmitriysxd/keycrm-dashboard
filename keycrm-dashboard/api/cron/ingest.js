@@ -1115,7 +1115,7 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
       // починаємо з 'created' від сторінки 1.
       const substep = state.current_substep || "created";
       const fromPage = state.current_page || 1;
-      const r = await ingestSalesChunk(apiKey, supabase, ctx, substep, fromPage, 40000);
+      const r = await ingestSalesChunk(apiKey, supabase, ctx, substep, fromPage, 18000);
       result.sales_substep = substep;
       result.sales_from_page = fromPage;
       result.sales_last_page = r.lastPage;
@@ -1270,7 +1270,12 @@ module.exports = async function handler(req, res) {
       // function limit; state is persisted per-chunk so next-day cron
       // resumes if today's invocation runs out of time.
       const startMs = Date.now();
-      const TIME_BUDGET_MS = 55 * 1000;
+      // 40с (було 55): лишаємо більше запасу під Vercel-ліміт 60с, бо чанк,
+      // що ЩОЙНО стартував, ще має добігти. Раніше цикл перевіряв бюджет
+      // ТІЛЬКИ перед чанком, тож sales/metrics могли стартувати на 54с і
+      // добігати до 90с → 504. Тепер 40с + ранній вихід перед важкими
+      // кроками (нижче) тримають повний виклик під 60с.
+      const TIME_BUDGET_MS = 40 * 1000;
       let chunksProcessed = 0;
       let totalProducts = 0, totalOrders = 0, totalSalesUpserted = 0;
       let lastResult = null;
@@ -1283,6 +1288,11 @@ module.exports = async function handler(req, res) {
         totalSalesUpserted += lastResult.sales_upserted || 0;
         const stateAfter = await readState(supabase);
         if (!stateAfter || stateAfter.status !== "running") break;
+        // Важкі кроки (metrics = refresh matview до ~50с; reconcile = fan-out
+        // /buyer запитів) можуть самі зʼїсти майже весь 60с-ліміт. НЕ стекуємо
+        // їх поверх уже витрачених секунд — виходимо, щоб наступний виклик
+        // (keepalive/cron/backup) дав їм чистий виклик із повними 60с.
+        if (stateAfter.current_step === "metrics" || stateAfter.current_step === "reconcile") break;
       }
 
       const finalState = await readState(supabase);
