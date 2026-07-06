@@ -596,7 +596,9 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
 // Фаза 1: перелік живих order_id з KeyCRM у буфер. Resumable.
 async function enumAliveOrders(apiKey, supabase, ctx, fromPage) {
   const startMs = Date.now();
-  const TIME_BUDGET_MS = 45000;
+  // 38с (не 45): лишаємо запас, бо остання KeyCRM-сторінка може добігати з
+  // 429-backoff (до ~8с) — інакше сумарно > 60с і Vercel вбиває функцію.
+  const TIME_BUDGET_MS = 38000;
   fromPage = Math.max(1, parseInt(fromPage || 1));
 
   // На старті (page 1) очищаємо буфер — свіжий знімок.
@@ -1544,7 +1546,10 @@ module.exports = async function handler(req, res) {
     let enumAliveResult = null;
     if (step === "enum_alive_orders") {
       // Фаза 1: перелік живих order_id з KeyCRM у буфер. ?from_page=N для resume.
-      enumAliveResult = await enumAliveOrders(apiKey, supabase, ctx, fromPage);
+      // Приймаємо і from_page, і from (сумісність) — головне НЕ ігнорувати,
+      // інакше кожен виклик рестартує з 1 і чистить буфер.
+      const ep = (req.query && (req.query.from_page || req.query.from)) || 1;
+      enumAliveResult = await enumAliveOrders(apiKey, supabase, ctx, ep);
     }
     let purgeResult = null;
     if (step === "purge_deleted_orders") {
@@ -1553,9 +1558,8 @@ module.exports = async function handler(req, res) {
       const apply = !!(req.query && req.query.apply === "true");
       purgeResult = await purgeDeletedOrders(apiKey, supabase, ctx, {
         apply,
-        timeBudgetMs: 50000,
-        enumBudgetMs: 30000,
-        maxConfirm: 300,
+        timeBudgetMs: 40000,
+        maxConfirm: 200,
       });
     }
     let backfillSource = null;
