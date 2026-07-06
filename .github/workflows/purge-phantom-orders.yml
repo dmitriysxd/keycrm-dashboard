@@ -1,0 +1,73 @@
+# Одноразова чистка фантомних (видалених у KeyCRM) замовлень.
+#
+# Історично юзер копіював незабрані посилки в новий місяць і ВИДАЛЯВ старі —
+# видалені лишались у нашій sales → задвоєння обороту/LTV/продажів товарів.
+#
+# Цей workflow:
+#   1. Перелічує ВСІ живі order_id з KeyCRM у буфер keycrm_alive_orders
+#      (крок enum_alive_orders, resumable по next_page — ~155 сторінок).
+#   2. Робить СУХИЙ прогін purge (dry-run) — показує скільки фантомів і суму.
+#   3. Якщо запущено з apply=true — ще й видаляє (кілька разів, поки не 0).
+#
+# Запуск ТІЛЬКИ вручну (workflow_dispatch). За замовч. apply=false (безпечно).
+#
+# Потрібна міграція 046 (таблиця keycrm_alive_orders + RPC).
+# CRON_SECRET уже в GitHub Secrets.
+
+name: Purge phantom orders
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Реально видалити фантоми? (false = лише сухий прогін)'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Enumerate alive KeyCRM orders into buffer
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then echo "::error::CRON_SECRET missing"; exit 1; fi
+          BASE="https://keycrm-dashboard.vercel.app/api/cron/ingest"
+          PAGE=1
+          for i in $(seq 1 60); do
+            echo "=== enum_alive_orders from_page=$PAGE (iter $i) ==="
+            RESP=$(curl -s --max-time 90 "$BASE?step=enum_alive_orders&from_page=$PAGE&secret=$CRON_SECRET")
+            echo "$RESP" | head -c 400; echo ""
+            DONE=$(echo "$RESP" | grep -o '"done":true' || true)
+            NEXT=$(echo "$RESP" | grep -o '"next_page":[0-9]*' | grep -o '[0-9]*' || true)
+            if [ -n "$DONE" ]; then echo "✓ enumeration complete"; break; fi
+            if [ -z "$NEXT" ]; then echo "::warning::no next_page and not done — stopping"; break; fi
+            PAGE=$NEXT
+            sleep 3
+          done
+
+      - name: Purge (dry-run or apply)
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          APPLY: ${{ github.event.inputs.apply }}
+        run: |
+          BASE="https://keycrm-dashboard.vercel.app/api/cron/ingest"
+          Q="step=purge_deleted_orders&secret=$CRON_SECRET"
+          if [ "$APPLY" = "true" ]; then Q="$Q&apply=true"; fi
+          echo "apply=$APPLY"
+          for i in $(seq 1 40); do
+            echo "=== purge iter $i ==="
+            RESP=$(curl -s --max-time 90 "$BASE?$Q")
+            echo "$RESP" | head -c 700; echo ""
+            MORE=$(echo "$RESP" | grep -o '"more_to_process":true' || true)
+            # У сухому прогоні не крутимо повторно — один звіт достатньо.
+            if [ "$APPLY" != "true" ]; then echo "dry-run done (single pass)"; break; fi
+            if [ -z "$MORE" ]; then echo "✓ nothing more to process"; break; fi
+            sleep 3
+          done
