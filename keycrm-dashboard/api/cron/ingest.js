@@ -574,6 +574,158 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
   };
 }
 
+// ─── Purge deleted orders: прибирання "фантомних" замовлень ──────────────
+//
+// Історична проблема: юзер наприкінці місяця копіював незабрані посилки в
+// новий місяць (нове замовлення) і ВИДАЛЯВ старе. Наш ingest видалення не
+// обробляє → видалене замовлення лишалось у sales назавжди → задвоєння
+// обороту/LTV у всіх минулих місяцях.
+//
+// Логіка (KeyCRM = джерело правди):
+//   1. Перелічуємо ВСІ поточні order_id з KeyCRM /order (пагінація) → present-set.
+//   2. Стрімимо order_id з нашої sales → ті, кого НЕМА в present-set = кандидати.
+//   3. КОЖНОГО кандидата перепровіряємо /order/{id}: тільки 404 (реально
+//      видалений) → у список на видалення. Якщо існує (пагінація пропустила) —
+//      НЕ чіпаємо. Подвійна перевірка = не видалимо реальне замовлення.
+//   4. dryRun=true (за замовч.): лише рахуємо + рахуємо суму. apply=true: DELETE.
+//
+// Resumable: apply видаляє підтверджені → наступний виклик має менше кандидатів,
+// збігається. Час обмежений — великі backlog добиваються кількома викликами.
+async function purgeDeletedOrders(apiKey, supabase, ctx, opts) {
+  opts = opts || {};
+  const apply = !!opts.apply;
+  const startMs = Date.now();
+  const timeBudgetMs = opts.timeBudgetMs || 50000;
+  const enumBudgetMs = opts.enumBudgetMs || 30000;
+  const maxConfirm = opts.maxConfirm || 300;
+
+  // 1. Перелічити всі живі order_id з KeyCRM.
+  const present = new Set();
+  let page = 1;
+  let enumComplete = false;
+  while (Date.now() - startMs < enumBudgetMs && page <= 5000) {
+    const resp = await get("/order", { page, limit: 100, sort: "id" }, apiKey, ctx);
+    const rows = (resp && resp.data) || [];
+    if (!rows.length) { enumComplete = true; break; }
+    for (const o of rows) if (o && o.id != null) present.add(Number(o.id));
+    if (rows.length < 100) { enumComplete = true; break; }
+    page++;
+  }
+  if (!enumComplete) {
+    // Не встигли перелічити всі замовлення — БЕЗ повного present-set будь-який
+    // "кандидат" ненадійний. Нічого не видаляємо, просимо збільшити бюджет.
+    return {
+      ok: false,
+      reason: "enumeration_incomplete",
+      enumerated_so_far: present.size,
+      hint: "KeyCRM має забагато замовлень для одного виклику. Збільш enumBudget або звернись до розробника.",
+    };
+  }
+
+  // 2. Стрімимо sales.order_id, збираємо кандидатів (нема в present).
+  const candidates = new Set();
+  let salesOrdersTotal = 0;
+  const seenSales = new Set();
+  for (let from = 0; from < 2000000; from += 1000) {
+    const { data, error } = await supabase
+      .from("sales").select("order_id").order("order_id").range(from, from + 999);
+    if (error) throw new Error("sales order_id stream: " + error.message);
+    if (!data || !data.length) break;
+    for (const r of data) {
+      const oid = r.order_id != null ? Number(r.order_id) : null;
+      if (oid == null || seenSales.has(oid)) continue;
+      seenSales.add(oid);
+      salesOrdersTotal++;
+      if (!present.has(oid)) candidates.add(oid);
+    }
+    if (data.length < 1000) break;
+  }
+
+  // 3. Перепровірка кандидатів через /order/{id} — тільки 404 = видалений.
+  const confirmed = [];
+  const falseAlarm = [];   // існує в KeyCRM (пагінація пропустила) — не чіпаємо
+  let confirmChecked = 0;
+  for (const oid of candidates) {
+    if (Date.now() - startMs > timeBudgetMs) break;
+    if (confirmChecked >= maxConfirm) break;
+    confirmChecked++;
+    try {
+      const resp = await get("/order/" + oid, {}, apiKey, ctx);
+      const o = (resp && resp.data) || resp;
+      if (o && o.id != null) falseAlarm.push(oid);
+      else confirmed.push(oid); // порожня відповідь трактуємо як відсутній
+    } catch (e) {
+      if (/HTTP 404/.test((e && e.message) || "")) confirmed.push(oid);
+      // інші помилки — пропускаємо (не видаляємо на невизначеності)
+    }
+    await sleep(120);
+  }
+
+  // 4. Оцінка впливу: сума grand_total і рядки по підтверджених.
+  let impactRevenue = 0;
+  let impactLines = 0;
+  const buyerSet = new Set();
+  const perOrder = [];
+  for (const chunk of chunkArray(confirmed, 200)) {
+    const { data } = await supabase
+      .from("sales")
+      .select("order_id, line_idx, buyer_id, order_grand_total, order_status, ordered_at")
+      .in("order_id", chunk);
+    const grandByOrder = new Map();
+    for (const r of data || []) {
+      impactLines++;
+      if (r.buyer_id != null) buyerSet.add(r.buyer_id);
+      if (!grandByOrder.has(r.order_id)) {
+        grandByOrder.set(r.order_id, r.order_grand_total);
+        perOrder.push({
+          order_id: r.order_id, buyer_id: r.buyer_id,
+          grand_total: r.order_grand_total, status: r.order_status, ordered_at: r.ordered_at,
+        });
+      }
+    }
+    for (const v of grandByOrder.values()) {
+      if (v != null && !isNaN(parseFloat(v))) impactRevenue += parseFloat(v);
+    }
+  }
+
+  // 5. Видалення (лише apply).
+  let deletedLines = 0;
+  if (apply && confirmed.length) {
+    for (const chunk of chunkArray(confirmed, 200)) {
+      const { error } = await supabase.from("sales").delete().in("order_id", chunk);
+      if (error) throw new Error("sales delete: " + error.message);
+      deletedLines += 1; // рахуємо батчі; точні рядки — impactLines
+    }
+    // Освіжаємо матв'юхи, щоб дашборд одразу показав виправлені цифри.
+    try { await supabase.rpc("refresh_sku_metrics"); } catch (_) {}
+    try { await supabase.rpc("refresh_buyer_rfm"); } catch (_) {}
+  }
+
+  return {
+    ok: true,
+    dry_run: !apply,
+    keycrm_orders_alive: present.size,
+    sales_orders_total: salesOrdersTotal,
+    candidates_missing_from_keycrm: candidates.size,
+    confirmed_deleted_in_keycrm: confirmed.length,
+    false_alarms_still_alive: falseAlarm.length,
+    confirm_checked_this_run: confirmChecked,
+    more_candidates_to_check: candidates.size > confirmChecked,
+    impact_orders: confirmed.length,
+    impact_lines: impactLines,
+    impact_buyers: buyerSet.size,
+    impact_revenue_uah: Math.round(impactRevenue * 100) / 100,
+    applied: apply,
+    sample_orders: perOrder.slice(0, 25),
+  };
+}
+
+function chunkArray(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
 // Chunked sales pass for the auto-cycle. Processes one sub-pass at a time
 // (substep = 'created' | 'updated'), starting from fromPage. Returns
 // { ordersSeen, salesUpserted, lastPage, more, substep, nextSubstep }.
@@ -1375,6 +1527,18 @@ module.exports = async function handler(req, res) {
         maxOrderFetches: 150,
       });
     }
+    let purgeResult = null;
+    if (step === "purge_deleted_orders") {
+      // Прибирання фантомних (видалених у KeyCRM) замовлень з sales.
+      // dryRun за замовчуванням — ?apply=true щоб реально видалити.
+      const apply = !!(req.query && req.query.apply === "true");
+      purgeResult = await purgeDeletedOrders(apiKey, supabase, ctx, {
+        apply,
+        timeBudgetMs: 50000,
+        enumBudgetMs: 30000,
+        maxConfirm: 300,
+      });
+    }
     let backfillSource = null;
     if (step === "backfill_source") {
       // One-off бекфіл: підтягує source_id/source_name для всіх історичних
@@ -1504,6 +1668,7 @@ module.exports = async function handler(req, res) {
       more: nextPage !== null,
       backfill_source: backfillSource,
       reconcile: reconcileResult,
+      purge_deleted_orders: purgeResult,
     });
   } catch (err) {
     const msg = (err && err.message) || String(err);
