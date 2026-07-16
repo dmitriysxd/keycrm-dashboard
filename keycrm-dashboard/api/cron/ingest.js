@@ -1192,12 +1192,16 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
   const isStaleError = state && state.status === "error"
     && (Date.now() - lastChunkMs) > 12 * 3600 * 1000;
   // Recover from stuck "running" state: якщо стан "running" і last_chunk_at
-  // старіший за 1 годину — значить Vercel функція впала по таймауту (60s)
-  // не встигнувши оновити статус. Скидаємо на свіжий цикл — наступний
-  // тригер (cron / manual / GitHub Actions backup) почне з products.
+  // старіший за 3 години — значить Vercel функція впала по таймауту (60s)
+  // не встигнувши оновити статус. Скидаємо на свіжий цикл.
+  //
+  // ВАЖЛИВО: поріг МАЄ бути ДОВШИЙ за інтервал keepalive-пінга (2 год),
+  // інакше цикл, що легально прогресує між пінгами, помилково вважається
+  // "застряглим" і скидається на products ДО того як добіжить до metrics —
+  // тому sku_metrics ніколи не освіжувався (баг: 75 год лагу). 3 год > 2 год.
   const isStaleRunning = state && state.status === "running"
     && lastChunkMs > 0
-    && (Date.now() - lastChunkMs) > 60 * 60 * 1000;
+    && (Date.now() - lastChunkMs) > 3 * 60 * 60 * 1000;
   if (isStaleDone || isStaleIdle || isStaleError || isStaleRunning) {
     const fresh = {
       cycle_date: today,
@@ -1456,11 +1460,13 @@ module.exports = async function handler(req, res) {
         totalSalesUpserted += lastResult.sales_upserted || 0;
         const stateAfter = await readState(supabase);
         if (!stateAfter || stateAfter.status !== "running") break;
-        // Важкі кроки (metrics = refresh matview до ~50с; reconcile = fan-out
-        // /buyer запитів) можуть самі зʼїсти майже весь 60с-ліміт. НЕ стекуємо
-        // їх поверх уже витрачених секунд — виходимо, щоб наступний виклик
-        // (keepalive/cron/backup) дав їм чистий виклик із повними 60с.
-        if (stateAfter.current_step === "metrics" || stateAfter.current_step === "reconcile") break;
+        // reconcile може робити fan-out /buyer запитів (до 30с) — не стекуємо
+        // його поверх уже витрачених секунд, даємо чистий виклик.
+        // metrics — НЕ перериваємо: refresh обох matview займає ~10с (виміряно),
+        // спокійно влазить після sales у тому ж виклику. Раніше розрив ТУТ +
+        // 2-годинний keepalive + 1-годинний stale-скид спричиняли нескінченний
+        // ресет циклу ДО metrics → sku_metrics висів 75 год без освіження.
+        if (stateAfter.current_step === "reconcile") break;
       }
 
       const finalState = await readState(supabase);
