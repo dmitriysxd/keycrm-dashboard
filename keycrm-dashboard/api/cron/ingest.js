@@ -549,15 +549,20 @@ const SALES_CHUNK_PAGES = 3;
 // Single-shot full ingest of sales — for manual /api/cron/ingest?step=sales
 // and other one-off needs. Uses the same fetchOrdersWithFilter under the hood
 // but without per-call time budgeting (caller manages timeouts).
-async function ingestSales(apiKey, supabase, ctx, sinceISO) {
+async function ingestSales(apiKey, supabase, ctx, sinceISO, untilISO) {
   // Two-pass strategy to guarantee we capture both newly-created and recently-
   // updated orders. KeyCRM can be inconsistent: brand-new orders may not match
   // updated_between, and historical order edits may not match created_between.
   // We always +1 day on the end boundary so today's events aren't cut off by
   // exclusive-end-date interpretations on the API side. upsert by
   // (order_id, line_idx) deduplicates the overlap between passes.
+  //
+  // untilISO (опційно) — верхня межа вікна для історичного backfill по
+  // діапазону дат (?from=...&to=...). Без неї — завтра (звичайний режим).
   const fromDate = (sinceISO || new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()).slice(0, 10);
-  const toDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const toDate = (untilISO
+    ? new Date(untilISO)
+    : new Date(Date.now() + 24 * 60 * 60 * 1000)).toISOString().slice(0, 10);
 
   // Завантажуємо словник джерел один раз. /order повертає тільки source_id
   // без назви — підставляємо name з цього словника.
@@ -571,6 +576,8 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO) {
   return {
     ordersSeen: a.ordersSeen + b.ordersSeen,
     salesUpserted: a.salesUpserted + b.salesUpserted,
+    from_date: fromDate,
+    to_date: toDate,
   };
 }
 
@@ -1499,6 +1506,7 @@ module.exports = async function handler(req, res) {
 
     // Manual one-shot modes (for debugging / forced runs).
     let productsSeen = 0, offersSeen = 0, ordersSeen = 0, salesUpserted = 0;
+    let salesWindow = null;
     let didMetrics = false;
     let nextPage = null;
 
@@ -1529,14 +1537,27 @@ module.exports = async function handler(req, res) {
       }
     }
     if (step === "sales" || step === "all") {
-      // ?days=N — наскільки назад тягнути (за замовч. 3). Для разового
-      // backfill'у пропущеного періоду (напр. ?days=25 якщо цикл стояв).
-      // Обмежуємо 90 днями, щоб не покласти функцію на величезному вікні.
-      const daysBack = Math.max(1, Math.min(90, parseInt((req.query && req.query.days) || "3")));
-      const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
-      const r = await ingestSales(apiKey, supabase, ctx, since);
+      // Історичний backfill по діапазону дат: ?from=YYYY-MM-DD&to=YYYY-MM-DD
+      // (to опційно, за замовч. завтра). Для заповнення пропущеного періоду
+      // шматками, бо широке вікно за один виклик не влазить у 60с.
+      // Інакше ?days=N (lookback, за замовч. 3).
+      const fromQ = req.query && req.query.from;   // YYYY-MM-DD
+      const toQ = req.query && req.query.to;        // YYYY-MM-DD (опц.)
+      let sinceISO, untilISO;
+      if (fromQ && /^\d{4}-\d{2}-\d{2}$/.test(String(fromQ))) {
+        sinceISO = new Date(fromQ + "T00:00:00Z").toISOString();
+        if (toQ && /^\d{4}-\d{2}-\d{2}$/.test(String(toQ))) {
+          // +1 день до верхньої межі, щоб останній день був включений
+          untilISO = new Date(new Date(toQ + "T00:00:00Z").getTime() + 86400000).toISOString();
+        }
+      } else {
+        const daysBack = Math.max(1, Math.min(90, parseInt((req.query && req.query.days) || "3")));
+        sinceISO = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+      }
+      const r = await ingestSales(apiKey, supabase, ctx, sinceISO, untilISO);
       ordersSeen = r.ordersSeen;
       salesUpserted = r.salesUpserted;
+      salesWindow = { from: r.from_date, to: r.to_date };
     }
     if (step === "metrics" || step === "all") {
       const refresh = await supabase.rpc("refresh_sku_metrics");
@@ -1692,6 +1713,7 @@ module.exports = async function handler(req, res) {
       offers: offersSeen,
       orders: ordersSeen,
       sales_upserted: salesUpserted,
+      sales_window: salesWindow,
       metrics_refreshed: didMetrics,
       restocks_flagged: restocksFlagged,
       sample_keys: productsSampleKeys,
