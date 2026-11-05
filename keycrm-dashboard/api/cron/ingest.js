@@ -549,7 +549,7 @@ const SALES_CHUNK_PAGES = 3;
 // Single-shot full ingest of sales — for manual /api/cron/ingest?step=sales
 // and other one-off needs. Uses the same fetchOrdersWithFilter under the hood
 // but without per-call time budgeting (caller manages timeouts).
-async function ingestSales(apiKey, supabase, ctx, sinceISO, untilISO) {
+async function ingestSales(apiKey, supabase, ctx, sinceISO, untilISO, createdOnly) {
   // Two-pass strategy to guarantee we capture both newly-created and recently-
   // updated orders. KeyCRM can be inconsistent: brand-new orders may not match
   // updated_between, and historical order edits may not match created_between.
@@ -557,16 +557,23 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO, untilISO) {
   // exclusive-end-date interpretations on the API side. upsert by
   // (order_id, line_idx) deduplicates the overlap between passes.
   //
-  // untilISO (опційно) — верхня межа вікна для історичного backfill по
-  // діапазону дат (?from=...&to=...). Без неї — завтра (звичайний режим).
+  // untilISO (опц.) — верхня межа вікна для історичного backfill по датах.
+  // createdOnly (опц.) — тільки прохід created_between. Для backfill по
+  // діапазону дат: прохід updated_between тягне ВСІ заказы зі зміною статусу
+  // в цьому вікні (можуть бути тисячі) → 504. Для заповнення пропусків нам
+  // потрібні саме СТВОРЕНІ у вікні заказы, тож один прохід достатньо.
   const fromDate = (sinceISO || new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()).slice(0, 10);
   const toDate = (untilISO
     ? new Date(untilISO)
     : new Date(Date.now() + 24 * 60 * 60 * 1000)).toISOString().slice(0, 10);
 
-  // Завантажуємо словник джерел один раз. /order повертає тільки source_id
-  // без назви — підставляємо name з цього словника.
   const sourcesMap = await fetchOrderSources(apiKey, ctx);
+
+  if (createdOnly) {
+    const a = await fetchOrdersWithFilter(apiKey, supabase, ctx, "created_between", fromDate, toDate, sourcesMap);
+    return { ordersSeen: a.ordersSeen, salesUpserted: a.salesUpserted, from_date: fromDate, to_date: toDate };
+  }
+
   // Run both passes in parallel — they hit different filters so KeyCRM
   // returns disjoint sets and the upsert dedupes anyway.
   const [a, b] = await Promise.all([
@@ -1543,9 +1550,10 @@ module.exports = async function handler(req, res) {
       // Інакше ?days=N (lookback, за замовч. 3).
       const fromQ = req.query && req.query.from;   // YYYY-MM-DD
       const toQ = req.query && req.query.to;        // YYYY-MM-DD (опц.)
-      let sinceISO, untilISO;
+      let sinceISO, untilISO, createdOnly = false;
       if (fromQ && /^\d{4}-\d{2}-\d{2}$/.test(String(fromQ))) {
         sinceISO = new Date(fromQ + "T00:00:00Z").toISOString();
+        createdOnly = true; // режим діапазону дат — один прохід (created), щоб не ловити 504
         if (toQ && /^\d{4}-\d{2}-\d{2}$/.test(String(toQ))) {
           // +1 день до верхньої межі, щоб останній день був включений
           untilISO = new Date(new Date(toQ + "T00:00:00Z").getTime() + 86400000).toISOString();
@@ -1554,7 +1562,7 @@ module.exports = async function handler(req, res) {
         const daysBack = Math.max(1, Math.min(90, parseInt((req.query && req.query.days) || "3")));
         sinceISO = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
       }
-      const r = await ingestSales(apiKey, supabase, ctx, sinceISO, untilISO);
+      const r = await ingestSales(apiKey, supabase, ctx, sinceISO, untilISO, createdOnly);
       ordersSeen = r.ordersSeen;
       salesUpserted = r.salesUpserted;
       salesWindow = { from: r.from_date, to: r.to_date };
