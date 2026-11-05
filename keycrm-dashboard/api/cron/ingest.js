@@ -1224,8 +1224,12 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
   const lastChunkMs = state && state.last_chunk_at
     ? new Date(state.last_chunk_at).getTime()
     : 0;
+  // Помилка (напр. transient statement_timeout) — відновлюємося ШВИДКО:
+  // через 10 хв наступний виклик скидає цикл на свіжий і повторює. Раніше
+  // було 12 год — цикл висів у 'error' півдня. 10 хв дає ретрай у межах
+  // найближчого keepalive-пінга, але не частіше (анти-флуд).
   const isStaleError = state && state.status === "error"
-    && (Date.now() - lastChunkMs) > 12 * 3600 * 1000;
+    && (Date.now() - lastChunkMs) > 10 * 60 * 1000;
   // Recover from stuck "running" state: якщо стан "running" і last_chunk_at
   // старіший за 3 години — значить Vercel функція впала по таймауту (60s)
   // не встигнувши оновити статус. Скидаємо на свіжий цикл.
