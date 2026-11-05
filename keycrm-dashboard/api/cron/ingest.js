@@ -514,11 +514,16 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
     }
 
     if (lines.length) {
-      const { error } = await supabase
-        .from("sales")
-        .upsert(lines, { onConflict: "order_id,line_idx" });
-      if (error) throw new Error("sales upsert: " + error.message);
-      upserted += lines.length;
+      // Дрібними батчами (300 рядків) — щоб один upsert не впирався в
+      // statement_timeout на великій таблиці sales.
+      for (let i = 0; i < lines.length; i += 300) {
+        const slice = lines.slice(i, i + 300);
+        const { error } = await supabase
+          .from("sales")
+          .upsert(slice, { onConflict: "order_id,line_idx" });
+        if (error) throw new Error("sales upsert: " + error.message);
+        upserted += slice.length;
+      }
     }
 
     // Покупатели — отдельный UPSERT, чтобы карточка клиента подтягивалась
@@ -1472,21 +1477,18 @@ module.exports = async function handler(req, res) {
       // ланцюга за кілька хвилин, БЕЗ залежності від GitHub-пінгів (Vercel
       // крон не вимикається за неактивність, на відміну від GitHub Actions).
       //
-      // Guard проти паралельних ланцюгів: зовнішній пінг (без chain=1), що
-      // прийшов поки ланцюг активний (last_chunk_at свіжий, < 90с) — відходить
-      // (noop), щоб не ганяти той самий state двічі. Chain-продовження
-      // (chain=1) завжди проходить. Якщо ланцюг обірвався (last_chunk > 90с) —
-      // зовнішній пінг підхоплює і перезапускає ланцюг (self-healing бекап).
-      const isChain = !!(req.query && req.query.chain === "1");
-      if (!isChain) {
-        const g = await readState(supabase);
-        if (g && g.status === "running" && g.last_chunk_at
-            && (Date.now() - new Date(g.last_chunk_at).getTime()) < 90 * 1000) {
-          await supabase.from("ingest_runs")
-            .update({ finished_at: new Date().toISOString(), status: "ok",
-                      meta: { step: "auto", skipped: "chain_active" } }).eq("id", runId);
-          return res.status(200).json({ ok: true, step: "auto", skipped: "chain_active", state: g });
-        }
+      // АТОМАРНИЙ ЛОК проти паралельних циклів: рівно один auto-виклик працює
+      // водночас. Зовнішній пінг (keepalive/cron), що прийшов поки активний
+      // інший виклик — не отримує лок і відходить (noop). Ланка ланцюга
+      // отримує лок, бо попередня його ЗВІЛЬНИЛА перед fireSelf (нижче).
+      // Лізинг 70с: якщо виклик упав не звільнивши — лок сам протухне.
+      const claim = await supabase.rpc("claim_ingest_lock", { _seconds: 70 });
+      const locked = !claim.error && claim.data === true;
+      if (!locked) {
+        await supabase.from("ingest_runs")
+          .update({ finished_at: new Date().toISOString(), status: "ok",
+                    meta: { step: "auto", skipped: "locked" } }).eq("id", runId);
+        return res.status(200).json({ ok: true, step: "auto", skipped: "locked" });
       }
 
       const startMs = Date.now();
@@ -1532,6 +1534,9 @@ module.exports = async function handler(req, res) {
           meta: { step: "auto", chunks_processed: chunksProcessed, last_chunk: lastResult, completed },
         })
         .eq("id", runId);
+
+      // Звільняємо лок ПЕРЕД запуском наступної ланки, щоб вона його отримала.
+      try { await supabase.rpc("release_ingest_lock"); } catch (_) {}
 
       // Цикл не закінчено → запускаємо наступну ланку ланцюга (chain=1) перед
       // поверненням. await — бо на Vercel функція "замерзає" одразу після
