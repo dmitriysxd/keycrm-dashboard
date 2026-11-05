@@ -523,13 +523,15 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
 
     // Покупатели — отдельный UPSERT, чтобы карточка клиента подтягивалась
     // ежедневно из новых/обновлённых заказов (имя, телефон, флаг "опт").
-    try {
-      await upsertBuyersFromOrders(supabase, rows);
-    } catch (e) {
-      // Не валим инжест из-за проблем со схемой клиентов — таблица buyers
-      // может ещё не существовать (миграция не накатана). Логируем и едем
-      // дальше.
-      if (ctx) ctx.buyersUpsertError = (e && e.message) || String(e);
+    // skipBuyers=true у режимі історичного backfill — апсерт покупця це до 50
+    // RPC на сторінку (8-10с), що й давало 504. Заказы важливіші; клієнтів
+    // добʼє backfill-buyers (вони беруться з distinct sales.buyer_id).
+    if (!opts.skipBuyers) {
+      try {
+        await upsertBuyersFromOrders(supabase, rows);
+      } catch (e) {
+        if (ctx) ctx.buyersUpsertError = (e && e.message) || String(e);
+      }
     }
 
     if (rows.length < 50) { more = false; break; }
@@ -570,8 +572,18 @@ async function ingestSales(apiKey, supabase, ctx, sinceISO, untilISO, createdOnl
   const sourcesMap = await fetchOrderSources(apiKey, ctx);
 
   if (createdOnly) {
-    const a = await fetchOrdersWithFilter(apiKey, supabase, ctx, "created_between", fromDate, toDate, sourcesMap);
-    return { ordersSeen: a.ordersSeen, salesUpserted: a.salesUpserted, from_date: fromDate, to_date: toDate };
+    // Backfill по датах: один прохід, БЕЗ апсерту покупців (швидко), з
+    // таймбюджетом 45с і раннім виходом — щоб повернути 200 замість 504.
+    const a = await fetchOrdersWithFilter(apiKey, supabase, ctx, "created_between", fromDate, toDate, sourcesMap, {
+      skipBuyers: true,
+      timeBudgetMs: 45000,
+      startMs: Date.now(),
+    });
+    return {
+      ordersSeen: a.ordersSeen, salesUpserted: a.salesUpserted,
+      from_date: fromDate, to_date: toDate,
+      incomplete: a.more === true, last_page: a.lastPage,
+    };
   }
 
   // Run both passes in parallel — they hit different filters so KeyCRM
@@ -1565,7 +1577,11 @@ module.exports = async function handler(req, res) {
       const r = await ingestSales(apiKey, supabase, ctx, sinceISO, untilISO, createdOnly);
       ordersSeen = r.ordersSeen;
       salesUpserted = r.salesUpserted;
-      salesWindow = { from: r.from_date, to: r.to_date };
+      salesWindow = {
+        from: r.from_date, to: r.to_date,
+        incomplete: r.incomplete === true,
+        note: r.incomplete ? "вікно не влізло в 45с — звузь діапазон (напр. 1 тиждень)" : undefined,
+      };
     }
     if (step === "metrics" || step === "all") {
       const refresh = await supabase.rpc("refresh_sku_metrics");
