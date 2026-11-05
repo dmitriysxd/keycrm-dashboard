@@ -1487,8 +1487,13 @@ module.exports = async function handler(req, res) {
       // отримує лок, бо попередня його ЗВІЛЬНИЛА перед fireSelf (нижче).
       // Лізинг 70с: якщо виклик упав не звільнивши — лок сам протухне.
       const claim = await supabase.rpc("claim_ingest_lock", { _seconds: 70 });
-      const locked = !claim.error && claim.data === true;
-      if (!locked) {
+      // Якщо RPC відсутній (міграція 047 не накатана) — НЕ блокуємо ingest:
+      // працюємо без лока (деградація), а не скіпаємо все підряд. Інакше
+      // забута міграція повністю зупиняє інгест.
+      const lockAvailable = !claim.error;
+      const gotLock = lockAvailable && claim.data === true;
+      if (lockAvailable && !gotLock) {
+        // Лок реально зайнятий іншим активним циклом — відходимо.
         await supabase.from("ingest_runs")
           .update({ finished_at: new Date().toISOString(), status: "ok",
                     meta: { step: "auto", skipped: "locked" } }).eq("id", runId);
@@ -1540,7 +1545,7 @@ module.exports = async function handler(req, res) {
         .eq("id", runId);
 
       // Звільняємо лок ПЕРЕД запуском наступної ланки, щоб вона його отримала.
-      try { await supabase.rpc("release_ingest_lock"); } catch (_) {}
+      if (lockAvailable) { try { await supabase.rpc("release_ingest_lock"); } catch (_) {} }
 
       // Цикл не закінчено → запускаємо наступну ланку ланцюга (chain=1) перед
       // поверненням. await — бо на Vercel функція "замерзає" одразу після
