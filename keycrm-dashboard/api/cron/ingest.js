@@ -1183,7 +1183,11 @@ function selfTriggerUrl(req) {
   const headerAuth = req.headers["authorization"] || req.headers["Authorization"] || "";
   const headerSecret = headerAuth.startsWith("Bearer ") ? headerAuth.slice(7) : "";
   const secret = (req.query && req.query.secret) || headerSecret || process.env.CRON_SECRET || "";
-  return base + "/api/cron/ingest?step=auto&secret=" + encodeURIComponent(secret);
+  // chain=1 позначає, що це ПРОДОВЖЕННЯ ланцюга self-trigger (а не зовнішній
+  // пінг). Guard на вході пропускає тільки chain-продовження, поки цикл
+  // активний — щоб зовнішні пінги (keepalive) не створювали паралельний
+  // ланцюг і не ганяли той самий state двічі.
+  return base + "/api/cron/ingest?step=auto&chain=1&secret=" + encodeURIComponent(secret);
 }
 
 async function fireSelf(req) {
@@ -1461,12 +1465,30 @@ module.exports = async function handler(req, res) {
     runId = ins.data.id;
 
     if (step === "auto") {
-      // Process chunks in a tight loop within a single function invocation.
-      // Avoids the previous self-trigger pattern, which was flaky on cron
-      // cold-starts (chain dropped after 1-5 chunks instead of completing
-      // ~12 chunks). Time budget 50s leaves headroom under Vercel's 60s
-      // function limit; state is persisted per-chunk so next-day cron
-      // resumes if today's invocation runs out of time.
+      // SELF-CHAINING: одна добова Vercel-крон-подія сама доводить цикл до
+      // кінця. Кожен виклик робить батч чанків (~40с), і якщо цикл ще не
+      // 'done' — запускає НАСТУПНИЙ виклик (fireSelf, chain=1) перед
+      // поверненням. Так ~20 чанків повного циклу проходять за 4-5 ланок
+      // ланцюга за кілька хвилин, БЕЗ залежності від GitHub-пінгів (Vercel
+      // крон не вимикається за неактивність, на відміну від GitHub Actions).
+      //
+      // Guard проти паралельних ланцюгів: зовнішній пінг (без chain=1), що
+      // прийшов поки ланцюг активний (last_chunk_at свіжий, < 90с) — відходить
+      // (noop), щоб не ганяти той самий state двічі. Chain-продовження
+      // (chain=1) завжди проходить. Якщо ланцюг обірвався (last_chunk > 90с) —
+      // зовнішній пінг підхоплює і перезапускає ланцюг (self-healing бекап).
+      const isChain = !!(req.query && req.query.chain === "1");
+      if (!isChain) {
+        const g = await readState(supabase);
+        if (g && g.status === "running" && g.last_chunk_at
+            && (Date.now() - new Date(g.last_chunk_at).getTime()) < 90 * 1000) {
+          await supabase.from("ingest_runs")
+            .update({ finished_at: new Date().toISOString(), status: "ok",
+                      meta: { step: "auto", skipped: "chain_active" } }).eq("id", runId);
+          return res.status(200).json({ ok: true, step: "auto", skipped: "chain_active", state: g });
+        }
+      }
+
       const startMs = Date.now();
       // 40с (було 55): лишаємо більше запасу під Vercel-ліміт 60с, бо чанк,
       // що ЩОЙНО стартував, ще має добігти. Раніше цикл перевіряв бюджет
@@ -1511,12 +1533,22 @@ module.exports = async function handler(req, res) {
         })
         .eq("id", runId);
 
+      // Цикл не закінчено → запускаємо наступну ланку ланцюга (chain=1) перед
+      // поверненням. await — бо на Vercel функція "замерзає" одразу після
+      // res.json, тож fire-and-forget без await не встигає відправити запит.
+      let chained = false;
+      if (!completed && finalState && finalState.status === "running") {
+        await fireSelf(req);
+        chained = true;
+      }
+
       return res.status(200).json({
         ok: true,
         step: "auto",
         run_id: runId,
         chunks_processed: chunksProcessed,
         completed,
+        chained,
         state: finalState,
         last_chunk: lastResult,
         api_calls: ctx.apiCalls,
