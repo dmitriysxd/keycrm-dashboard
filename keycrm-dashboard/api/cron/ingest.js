@@ -1529,7 +1529,11 @@ module.exports = async function handler(req, res) {
       }
     }
     if (step === "sales" || step === "all") {
-      const since = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+      // ?days=N — наскільки назад тягнути (за замовч. 3). Для разового
+      // backfill'у пропущеного періоду (напр. ?days=25 якщо цикл стояв).
+      // Обмежуємо 90 днями, щоб не покласти функцію на величезному вікні.
+      const daysBack = Math.max(1, Math.min(90, parseInt((req.query && req.query.days) || "3")));
+      const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
       const r = await ingestSales(apiKey, supabase, ctx, since);
       ordersSeen = r.ordersSeen;
       salesUpserted = r.salesUpserted;
