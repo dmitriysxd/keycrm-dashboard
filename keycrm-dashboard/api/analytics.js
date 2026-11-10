@@ -233,18 +233,37 @@ function monthDiff(from, to) {
 // ══════════════════════════════════════════════════════════
 
 // utm_source → канал. Fallback на «Джерело» (source_name) з KeyCRM.
-function normChannel(utmSource, sourceName) {
+function normChannel(utmSource, utmMedium, sourceName) {
   const s = (utmSource || "").toLowerCase().trim();
+  const med = (utmMedium || "").toLowerCase().trim();
+  const paidMedium = /cpc|ppc|paid/.test(med); // платний сигнал
   if (s) {
-    if (/lama|google|gads|adwords|gclid/.test(s)) return "Google Ads";
-    if (/instagram|insta|facebook|\bfb\b|meta|\big\b/.test(s)) return "Meta Ads";
-    if (/sendpulse|email|e-mail|mail/.test(s)) return "Email (розсилка)";
+    // Застосунок (PWA) / прямі
+    if (/homescreen|b2c_app|standalone|\bpwa\b/.test(s)) return "Застосунок / прямі";
+    if (s === "(direct)" || /^direct$|^прям/.test(s)) return "Прямі";
+    // Голий "google": medium=cpc → платний Google Ads; інакше — органіка/реферал.
+    // (Платний контекст тегується як lama, але частина платних кліків втрачає
+    //  тег і прилітає як google — розводимо за medium, а не на око.)
+    if (s === "google") return paidMedium ? "Google Ads" : "Google (органіка/реферал)";
+    // Пошук / органіка / реферали (НЕ реклама) — перевіряємо ДО google-ads,
+    // щоб google-пошук/застосунки не потрапили в платний Google Ads.
+    if (/googlequicksearchbox|accounts\.google|gemini\.google|google\.com|android\.gm|google\.android|bing\.|duckduckgo|yandex/.test(s)) return "Пошук / органіка";
+    if (/^organic$|^seo$/.test(s)) return "Пошук / органіка";
+    // Google Ads (платний тег = lama за вашим тегуванням; + pmax/adwords/…)
+    if (/lama|adwords|\bgads\b|pmax|gclid|google_/.test(s)) return "Google Ads";
+    // Meta Ads
+    if (/facebook|instagram|instarosso|\bfb\b|\big\b|^meta$|site_source_name/.test(s)) return "Meta Ads";
+    // Email / CRM-розсилки
+    if (/sendpulse|esputnik|^email$|e-mail|^mail$|ukr\.net/.test(s)) return "Email (розсилка)";
     if (/\bsms\b/.test(s)) return "SMS";
     if (/viber/.test(s)) return "Viber";
     if (/telegram|\btg\b/.test(s)) return "Telegram";
     if (/tiktok/.test(s)) return "TikTok";
-    if (/direct|прям/.test(s)) return "Прямі / не визначено";
-    return "utm: " + s;
+    if (/^prom/.test(s)) return "Prom.ua";
+    if (/rtbhouse|criteo|\brtb\b/.test(s)) return "Ретаргетинг (RTB/Criteo)";
+    if (/kim|affiliate|partner/.test(s)) return "Партнерки / афіліати";
+    if (/chatgpt|openai|perplexity|gemini/.test(s)) return "AI-референси";
+    return "Інше: " + s;
   }
   const n = (sourceName || "").toLowerCase();
   if (!n) return "Прямі / не визначено";
@@ -268,10 +287,12 @@ async function handleMarketing(req, res, supabase) {
   const since = new Date();
   since.setUTCFullYear(since.getUTCFullYear() - 2);
 
-  const [salesRows, buyerRows, ftRows, costRows] = await Promise.all([
+  // v_order_facts — дедуп на рівні заказу робить Postgres (GROUP BY order_id),
+  // тож у Node їде ~10k замовлень, а не ~100k рядків-позицій (інакше 504).
+  const [orderRows, buyerRows, ftRows, costRows] = await Promise.all([
     fetchAll(() => supabase
-      .from("sales")
-      .select("order_id, buyer_id, ordered_at, order_status, revenue, order_grand_total, source_name, utm_source, utm_medium, utm_campaign")
+      .from("v_order_facts")
+      .select("order_id, buyer_id, ordered_at, order_status, revenue, utm_source, utm_medium, source_name")
       .gte("ordered_at", since.toISOString())),
     fetchAll(() => supabase.from("buyers").select("buyer_id, client_type")),
     fetchAll(() => supabase.from("v_buyer_first_touch").select("buyer_id, first_source")),
@@ -283,24 +304,20 @@ async function handleMarketing(req, res, supabase) {
   const ftMap = new Map();
   for (const f of ftRows) if (!ftMap.has(f.buyer_id)) ftMap.set(f.buyer_id, f.first_source || null);
 
-  const orders = new Map();
-  for (const r of salesRows) {
+  const orderList = [];
+  for (const r of orderRows) {
     if (isExcluded(r.order_status)) continue;
     if (!r.ordered_at) continue;
-    let o = orders.get(r.order_id);
-    if (!o) {
-      o = {
-        order_id: r.order_id, buyer_id: r.buyer_id || null, ordered_at: r.ordered_at,
-        utm_source: r.utm_source || null, source_name: r.source_name || null,
-        grand: r.order_grand_total != null ? parseFloat(r.order_grand_total) : null, line_rev: 0,
-      };
-      orders.set(r.order_id, o);
-    }
-    if (o.grand == null) o.line_rev += r.revenue != null ? parseFloat(r.revenue) : 0;
-    if (!o.utm_source && r.utm_source) o.utm_source = r.utm_source;
-    if (!o.source_name && r.source_name) o.source_name = r.source_name;
+    orderList.push({
+      order_id: r.order_id,
+      buyer_id: r.buyer_id || null,
+      ordered_at: r.ordered_at,
+      utm_source: r.utm_source || null,
+      utm_medium: r.utm_medium || null,
+      source_name: r.source_name || null,
+      revenue: r.revenue != null ? parseFloat(r.revenue) : 0,
+    });
   }
-  const orderList = Array.from(orders.values()).map((o) => ({ ...o, revenue: o.grand != null ? o.grand : o.line_rev }));
 
   const firstOrderAt = new Map();
   for (const o of orderList) {
@@ -331,7 +348,7 @@ async function handleMarketing(req, res, supabase) {
     if (m) monthsSet.add(m);
     if (!inSegment(o.buyer_id)) continue;
     if (period !== "all" && m !== period) continue;
-    const ch = normChannel(o.utm_source, o.source_name);
+    const ch = normChannel(o.utm_source, o.utm_medium, o.source_name);
     const b = bucket(ch);
     const isNew = !o.buyer_id ? true : (o.ordered_at === firstOrderAt.get(o.buyer_id));
     b.orders++; b.revenue += o.revenue;
@@ -375,7 +392,7 @@ async function handleMarketing(req, res, supabase) {
   let ftMatched = 0;
   for (const [buyerId, ltv] of ltvByBuyer.entries()) {
     const src = ftMap.get(buyerId);
-    const ch = src ? normChannel(src, null) : "— немає first-touch —";
+    const ch = src ? normChannel(src, null, null) : "— немає first-touch —";
     if (src) ftMatched++;
     let a = ftAgg.get(ch);
     if (!a) { a = { channel: ch, buyers: 0, ltv: 0 }; ftAgg.set(ch, a); }
