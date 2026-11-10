@@ -491,7 +491,7 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
   let lastPage = fromPage - 1;
   let more = false;
   const params = {
-    include: "products.offer,status,buyer",
+    include: "products.offer,status,buyer,marketing",
     limit: 50,
     sort: "id",
   };
@@ -1758,7 +1758,7 @@ module.exports = async function handler(req, res) {
         // include=products.offer — щоб у відповіді була і структура позицій
         // з purchased_price для бекфілу sales.line_cost (точна закупка на
         // момент створення замовлення).
-        const resp = await get("/order", { page, limit: 50, include: "products.offer" }, apiKey, ctx);
+        const resp = await get("/order", { page, limit: 50, include: "products.offer,marketing" }, apiKey, ctx);
         const rows = (resp && resp.data) || [];
         if (!rows.length) { endReached = true; break; }
         ordersSeenBf += rows.length;
@@ -1770,16 +1770,18 @@ module.exports = async function handler(req, res) {
           let sName = srcObj && srcObj.name ? String(srcObj.name)
             : (order.source_name ? String(order.source_name) : null);
           if (!sName && sId != null && sourcesMap[String(sId)]) sName = sourcesMap[String(sId)];
+          // UTM (last-touch) з order.marketing — бекфіл історії.
+          const utm = extractUtm(order);
+          const updateObj = {
+            utm_source: utm.source, utm_medium: utm.medium, utm_campaign: utm.campaign,
+            utm_content: utm.content, utm_term: utm.term,
+          };
           if (sId != null || sName) {
-            const upd = await supabase
-              .from("sales")
-              .update({
-                source_id: sId && !isNaN(sId) ? sId : null,
-                source_name: sName,
-              })
-              .eq("order_id", order.id);
-            if (!upd.error) ordersUpdated++;
+            updateObj.source_id = sId && !isNaN(sId) ? sId : null;
+            updateObj.source_name = sName;
           }
+          const upd = await supabase.from("sales").update(updateObj).eq("order_id", order.id);
+          if (!upd.error) ordersUpdated++;
 
           // 2) line_cost для кожної позиції з item.purchased_price (snapshot)
           const products = order.products || [];
