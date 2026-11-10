@@ -236,15 +236,29 @@ function monthDiff(from, to) {
 function normChannel(utmSource, sourceName) {
   const s = (utmSource || "").toLowerCase().trim();
   if (s) {
-    if (/lama|google|gads|adwords|gclid/.test(s)) return "Google Ads";
-    if (/instagram|insta|facebook|\bfb\b|meta|\big\b/.test(s)) return "Meta Ads";
-    if (/sendpulse|email|e-mail|mail/.test(s)) return "Email (розсилка)";
+    // Застосунок (PWA) / прямі
+    if (/homescreen|b2c_app|standalone|\bpwa\b/.test(s)) return "Застосунок / прямі";
+    if (s === "(direct)" || /^direct$|^прям/.test(s)) return "Прямі";
+    // Пошук / органіка / реферали (НЕ реклама) — перевіряємо ДО google-ads,
+    // щоб google-пошук/застосунки не потрапили в платний Google Ads.
+    if (s === "google") return "Google (органіка/реферал)";
+    if (/googlequicksearchbox|accounts\.google|gemini\.google|google\.com|android\.gm|google\.android|bing\.|duckduckgo|yandex/.test(s)) return "Пошук / органіка";
+    if (/^organic$|^seo$/.test(s)) return "Пошук / органіка";
+    // Google Ads (платний тег = lama за вашим тегуванням; + pmax/adwords/…)
+    if (/lama|adwords|\bgads\b|pmax|gclid|google_/.test(s)) return "Google Ads";
+    // Meta Ads
+    if (/facebook|instagram|instarosso|\bfb\b|\big\b|^meta$|site_source_name/.test(s)) return "Meta Ads";
+    // Email / CRM-розсилки
+    if (/sendpulse|esputnik|^email$|e-mail|^mail$|ukr\.net/.test(s)) return "Email (розсилка)";
     if (/\bsms\b/.test(s)) return "SMS";
     if (/viber/.test(s)) return "Viber";
     if (/telegram|\btg\b/.test(s)) return "Telegram";
     if (/tiktok/.test(s)) return "TikTok";
-    if (/direct|прям/.test(s)) return "Прямі / не визначено";
-    return "utm: " + s;
+    if (/^prom/.test(s)) return "Prom.ua";
+    if (/rtbhouse|criteo|\brtb\b/.test(s)) return "Ретаргетинг (RTB/Criteo)";
+    if (/kim|affiliate|partner/.test(s)) return "Партнерки / афіліати";
+    if (/chatgpt|openai|perplexity|gemini/.test(s)) return "AI-референси";
+    return "Інше: " + s;
   }
   const n = (sourceName || "").toLowerCase();
   if (!n) return "Прямі / не визначено";
