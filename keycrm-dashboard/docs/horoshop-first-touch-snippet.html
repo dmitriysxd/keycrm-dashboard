@@ -1,0 +1,165 @@
+<!--
+  First-touch трекер для сайту bijboom-opt.com.ua (Horoshop).
+
+  КУДИ ВСТАВЛЯТИ:
+    Налаштування → Загальні налаштування → Скрипти
+    (глобально, вантажиться на всіх сторінках, включно з оформленням заказу).
+
+  ЩО РОБИТЬ:
+    1. При ПЕРШОМУ візиті запам'ятовує джерело (utm / referrer) у браузері на
+       180 днів — це і є "перший дотик". Надалі НЕ перезаписує.
+    2. При оформленні заказу читає телефон із форми і шле на наш ендпоінт
+       {телефон, перший дотик, поточне джерело}. Ключ зв'язку з KeyCRM — телефон.
+
+  БЕЗПЕКА ДЛЯ САЙТУ:
+    • нуль залежностей, ~2 КБ, усе в try/catch — не кидає помилок;
+    • НЕ блокує і НЕ затримує відправку форми (navigator.sendBeacon асинхронно);
+    • слухачі у capture-фазі, без preventDefault — поведінка сайту не змінюється;
+    • дедуплікація: один телефон шлеться раз за сесію;
+    • якщо ендпоінт недоступний — сайт працює як завжди, просто без запису.
+
+  ПІСЛЯ ВСТАНОВЛЕННЯ: зробити один тестовий заказ і сказати — перевіримо,
+  що {телефон, джерело} долетіли (GET /api/first-touch).
+-->
+<script>
+(function () {
+  "use strict";
+  if (window.__btt) return;            // не ініціалізуємось двічі
+  window.__btt = 1;
+
+  // ── НАЛАШТУВАННЯ ───────────────────────────────────────
+  // Якщо дашборд на кастомному домені — заміни URL нижче.
+  var ENDPOINT = "https://keycrm-dashboard.vercel.app/api/first-touch";
+  var FT_KEY   = "btt_ft";             // ключ першого дотику в localStorage
+  var TTL_DAYS = 180;                  // скільки зберігати перший дотик
+  var now = Date.now();
+
+  // ── безпечні обгортки сховищ (приватний режим може кидати) ──
+  function lsGet(k){ try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k,v){ try { localStorage.setItem(k,v); } catch (e) {} }
+  function ssGet(k){ try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+  function ssSet(k,v){ try { sessionStorage.setItem(k,v); } catch (e) {} }
+
+  function clip(s){ return s ? String(s).slice(0, 200) : ""; }
+
+  function utm() {
+    var q = {};
+    try {
+      var sp = new URLSearchParams(location.search);
+      ["source","medium","campaign","content","term"].forEach(function (k) {
+        var v = sp.get("utm_" + k);
+        if (v) q[k] = clip(v);
+      });
+    } catch (e) {}
+    return q;
+  }
+
+  function refHost() {
+    try {
+      if (!document.referrer) return "";
+      var h = new URL(document.referrer).hostname || "";
+      // зовнішній реферер (не наш же домен)
+      if (h && location.hostname.indexOf(h) === -1 && h.indexOf(location.hostname) === -1) return clip(h);
+    } catch (e) {}
+    return "";
+  }
+
+  // поточний "дотик" (це відвідування)
+  var q = utm();
+  var cur = {
+    s: q.source || "", m: q.medium || "", c: q.campaign || "",
+    ct: q.content || "", t: q.term || "",
+    ref: refHost(), lp: clip(location.pathname || ""), ts: now
+  };
+
+  // ── перший дотик: пишемо раз; оновлюємо лише якщо протух або був "порожній
+  //    прямий", а зараз з'явилась реальна мітка ──
+  var ft = null;
+  try { ft = JSON.parse(lsGet(FT_KEY) || "null"); } catch (e) {}
+  var expired = ft && ft.ts && (now - ft.ts > TTL_DAYS * 864e5);
+  var ftEmpty = ft && !ft.s && !ft.ref;      // збережене було прямим/без інфи
+  var curInfo = !!(cur.s || cur.ref);
+  if (!ft || expired || (ftEmpty && curInfo)) {
+    ft = cur;
+    lsSet(FT_KEY, JSON.stringify(ft));
+  }
+
+  // ── телефон ────────────────────────────────────────────
+  function digits(s){ return (s || "").replace(/\D/g, ""); }
+  function looksPhone(v){ var d = digits(v); return d.length >= 9 && d.length <= 15; }
+
+  function findPhone(root) {
+    root = root || document;
+    var sels = [
+      'input[type="tel"]', 'input[autocomplete="tel"]',
+      'input[name*="phone" i]', 'input[name*="tel" i]',
+      'input[id*="phone" i]',   'input[id*="tel" i]'
+    ];
+    for (var i = 0; i < sels.length; i++) {
+      try {
+        var list = root.querySelectorAll(sels[i]);
+        for (var j = 0; j < list.length; j++) {
+          if (list[j].value && looksPhone(list[j].value)) return list[j].value;
+        }
+      } catch (e) {}
+    }
+    // крайній випадок: будь-який input зі значенням схожим на UA-телефон
+    try {
+      var all = root.querySelectorAll("input");
+      for (var k = 0; k < all.length; k++) {
+        var vv = all[k].value;
+        if (vv && looksPhone(vv) && /(380|^0)\d{7,}/.test(digits(vv))) return vv;
+      }
+    } catch (e) {}
+    return "";
+  }
+
+  // ── відправка (дедуплікація: один телефон раз за сесію) ──
+  function send(phone) {
+    if (!phone) return;
+    var d = digits(phone);
+    if (d.length < 9) return;
+    var key = "btt_s_" + d.slice(-9);
+    if (ssGet(key)) return;
+    var body = JSON.stringify({ phone: phone, ft: ft, lt: cur, href: clip(location.href) });
+    var ok = false;
+    try {
+      if (navigator.sendBeacon) {
+        ok = navigator.sendBeacon(ENDPOINT, new Blob([body], { type: "text/plain;charset=UTF-8" }));
+      }
+    } catch (e) {}
+    if (!ok) {
+      try {
+        fetch(ENDPOINT, {
+          method: "POST", mode: "no-cors", keepalive: true,
+          headers: { "Content-Type": "text/plain;charset=UTF-8" }, body: body
+        });
+      } catch (e) {}
+    }
+    ssSet(key, "1");
+  }
+
+  function capture(scope) {
+    try { var p = findPhone(scope); if (p) send(p); } catch (e) {}
+  }
+
+  // 1) відправка форми (будь-якої з телефоном) — основний шлях, не блокуючий
+  document.addEventListener("submit", function (ev) {
+    try { var f = ev.target; if (f && f.querySelectorAll) capture(f); } catch (e) {}
+  }, true);
+
+  // 2) клік по кнопці оформлення — запасний шлях для AJAX-чекаутів.
+  //    textContent (не innerText) — щоб не викликати reflow.
+  var ORDER_RE = /(оформ|замов|придба|купит|checkout|order|підтверд|заказ)/i;
+  document.addEventListener("click", function (ev) {
+    try {
+      var el = ev.target, hops = 0;
+      while (el && hops++ < 4) {
+        var txt = (el.textContent || "") + " " + (el.className || "") + " " + (el.id || "") + " " + (el.value || "");
+        if (ORDER_RE.test(txt)) { capture(document); break; }
+        el = el.parentElement;
+      }
+    } catch (e) {}
+  }, true);
+})();
+</script>
