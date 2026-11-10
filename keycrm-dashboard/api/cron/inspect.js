@@ -455,12 +455,34 @@ module.exports = async function handler(req, res) {
       let sourcesList = null;
       let sourcesError = null;
 
+      let utmProbe = null;
       if (orderId) {
         try {
           const resp = await get("/order/" + orderId, { include: "products.offer,status,buyer,manager" }, apiKey, ctx);
           raw = (resp && resp.data) || resp || null;
         } catch (e) {
           rawError = (e && e.message) || String(e);
+        }
+
+        // UTM-проб: пробуємо різні include, щоб знайти де KeyCRM віддає utm-мітки.
+        const candidates = ["marketing", "products.offer,status,buyer,marketing", "utm", "page", "buyer,marketing", "custom_fields"];
+        utmProbe = [];
+        for (const inc of candidates) {
+          try {
+            const r = await get("/order/" + orderId, { include: inc }, apiKey, ctx);
+            const o = (r && r.data) || r || {};
+            const keys = o && typeof o === "object" ? Object.keys(o) : [];
+            const utmKeys = keys.filter((k) => /utm|marketing|source_uuid/i.test(k));
+            utmProbe.push({
+              include: inc,
+              ok: true,
+              utm_related_keys: utmKeys,
+              marketing: o && o.marketing !== undefined ? o.marketing : null,
+              utm: o && o.utm !== undefined ? o.utm : null,
+            });
+          } catch (e) {
+            utmProbe.push({ include: inc, ok: false, error: ((e && e.message) || String(e)).slice(0, 120) });
+          }
         }
       }
 
@@ -485,6 +507,7 @@ module.exports = async function handler(req, res) {
         keycrm_order_raw: raw,
         keycrm_order_error: rawError,
         keycrm_top_level_keys: topLevelKeys,
+        utm_probe: utmProbe,
         keycrm_sources_list: sourcesList,
         keycrm_sources_error_tried: sourcesError,
         hint: "Шукай поле з ID джерела (source_id / source.id). Якщо назви немає на замовленні — sources_list має містити мапу id→name.",
