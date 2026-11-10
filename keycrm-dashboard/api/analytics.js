@@ -293,6 +293,7 @@ async function handleMarketing(req, res, supabase) {
     fetchAll(() => supabase
       .from("v_order_facts")
       .select("order_id, buyer_id, ordered_at, order_status, revenue, utm_source, utm_medium, source_name")
+      .eq("source_name", "bijboom-opt.com.ua") // лише замовлення з сайту (Horoshop); gamijok/Prom/ручні — поза маркетингом
       .gte("ordered_at", since.toISOString())),
     fetchAll(() => supabase.from("buyers").select("buyer_id, client_type")),
     fetchAll(() => supabase.from("v_buyer_first_touch").select("buyer_id, first_source")),
