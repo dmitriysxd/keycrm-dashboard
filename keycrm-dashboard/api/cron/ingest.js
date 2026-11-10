@@ -1725,7 +1725,7 @@ module.exports = async function handler(req, res) {
       // замовлень з KeyCRM /order і UPDATE'ить sales WHERE source_id IS NULL.
       // Не state-machine — приймає ?from=N, повертає next_page.
       const startMs = Date.now();
-      const TIME_BUDGET_MS = 50 * 1000;
+      const TIME_BUDGET_MS = 45 * 1000;
       const fromP = Math.max(1, parseInt(fromPage || 1));
 
       // Завантажуємо мапу id→name джерел з KeyCRM один раз.
@@ -1762,15 +1762,18 @@ module.exports = async function handler(req, res) {
         const rows = (resp && resp.data) || [];
         if (!rows.length) { endReached = true; break; }
         ordersSeenBf += rows.length;
-        for (const order of rows) {
-          // 1) source_id / source_name
+        // Обробляємо заказы сторінки ПАРАЛЕЛЬНО чанками по 10 — послідовний
+        // UPDATE по кожному з 50 заказів давав ~0.5с×50=25-30с/сторінку, що
+        // перевищувало 60с ліміт Vercel і давало 504. Чанк обмежує
+        // одночасність, щоб не перевантажити Supabase.
+        async function processOrder(order) {
+          // 1) source_id / source_name + UTM (last-touch) з order.marketing
           const srcObj = order.source && typeof order.source === "object" ? order.source : null;
           const sId = srcObj && srcObj.id != null ? parseInt(srcObj.id)
             : (order.source_id != null ? parseInt(order.source_id) : null);
           let sName = srcObj && srcObj.name ? String(srcObj.name)
             : (order.source_name ? String(order.source_name) : null);
           if (!sName && sId != null && sourcesMap[String(sId)]) sName = sourcesMap[String(sId)];
-          // UTM (last-touch) з order.marketing — бекфіл історії.
           const utm = extractUtm(order);
           const updateObj = {
             utm_source: utm.source, utm_medium: utm.medium, utm_campaign: utm.campaign,
@@ -1792,16 +1795,14 @@ module.exports = async function handler(req, res) {
             costJobs.push({ idx, cost: parseFloat(c) });
           });
           if (costJobs.length) {
-            // Паралельний UPDATE по (order_id, line_idx) — швидко (~50ms/line).
             const results = await Promise.all(costJobs.map(j =>
-              supabase
-                .from("sales")
-                .update({ line_cost: j.cost })
-                .eq("order_id", order.id)
-                .eq("line_idx", j.idx)
+              supabase.from("sales").update({ line_cost: j.cost }).eq("order_id", order.id).eq("line_idx", j.idx)
             ));
             for (const r of results) if (!r.error) linesUpdated++;
           }
+        }
+        for (let ci = 0; ci < rows.length; ci += 10) {
+          await Promise.all(rows.slice(ci, ci + 10).map(processOrder));
         }
         pagesDone++;
         page++;
