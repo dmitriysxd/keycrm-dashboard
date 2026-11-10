@@ -1859,7 +1859,7 @@ async function renderMarketingPage() {
   const main = document.getElementById('main-area');
   main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Завантажуємо маркетинг</div></div>';
   try {
-    const r = await fetch(apiUrl('/api/marketing', 'period=' + encodeURIComponent(MKT_PERIOD) + '&segment=' + encodeURIComponent(MKT_SEGMENT)));
+    const r = await fetch(apiUrl('/api/analytics', 'type=marketing&period=' + encodeURIComponent(MKT_PERIOD) + '&segment=' + encodeURIComponent(MKT_SEGMENT)));
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
     MKT_DATA = j;
@@ -1879,7 +1879,7 @@ async function saveMktCost(el) {
   if (isNaN(amount) || amount < 0) { el.value = el.dataset.orig || ''; return; }
   el.disabled = true;
   try {
-    const r = await fetch(apiUrl('/api/marketing'), {
+    const r = await fetch(apiUrl('/api/analytics', 'type=marketing'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'set_cost', channel, period: MKT_PERIOD, amount }),
     });
@@ -1900,7 +1900,7 @@ async function addMktCost() {
   if (!channel) { alert('Оберіть канал'); return; }
   if (isNaN(amount) || amount < 0) { alert('Введіть суму ≥ 0'); return; }
   try {
-    const r = await fetch(apiUrl('/api/marketing'), {
+    const r = await fetch(apiUrl('/api/analytics', 'type=marketing'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'set_cost', channel, period: MKT_PERIOD, amount }),
     });
