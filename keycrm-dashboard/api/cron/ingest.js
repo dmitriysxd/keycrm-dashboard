@@ -1727,6 +1727,11 @@ module.exports = async function handler(req, res) {
       const startMs = Date.now();
       const TIME_BUDGET_MS = 45 * 1000;
       const fromP = Math.max(1, parseInt(fromPage || 1));
+      // line_cost вже залитий у попередній сесії. За замовчуванням його НЕ
+      // переписуємо (це ~3500 UPDATE/виклик = головна причина 504). Для UTM-
+      // бекфілу достатньо оновити source+utm на рівні заказу (~50/сторінку).
+      // За потреби знову залити line_cost: ?with_cost=1.
+      const withCost = (req.query && (req.query.with_cost === "1" || req.query.with_cost === "true")) || false;
 
       // Завантажуємо мапу id→name джерел з KeyCRM один раз.
       // KeyCRM має ендпойнт /order/source — список усіх джерел замовлень.
@@ -1794,7 +1799,7 @@ module.exports = async function handler(req, res) {
             if (c == null || isNaN(parseFloat(c))) return;
             costJobs.push({ idx, cost: parseFloat(c) });
           });
-          if (costJobs.length) {
+          if (withCost && costJobs.length) {
             const results = await Promise.all(costJobs.map(j =>
               supabase.from("sales").update({ line_cost: j.cost }).eq("order_id", order.id).eq("line_idx", j.idx)
             ));
