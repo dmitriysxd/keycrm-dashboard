@@ -44,6 +44,56 @@ function pickCreatedAt(obj) {
   return null;
 }
 
+// ── UTM (last-touch) з заказу KeyCRM ──────────────────────
+// Defensive: читаємо з усіх ймовірних місць, НЕ змінюючи include запиту
+// (щоб гарантовано не зламати /order). Якщо KeyCRM кладе мітки деінде —
+// поля лишаться null, поки не підтвердимо точне розташування.
+function _utmFirstStr() {
+  for (let i = 0; i < arguments.length; i++) {
+    const v = arguments[i];
+    if (v != null && String(v).trim() !== "") return String(v).trim();
+  }
+  return null;
+}
+
+function parseUtmString(s) {
+  const out = {};
+  if (!s || typeof s !== "string" || s.indexOf("utm_") === -1) return out;
+  const text = s.replace(/\s+/g, " ");
+  const re = /utm_(source|medium|campaign|content|term)\s*[:=]\s*([^&;,\s]+)/gi;
+  let m;
+  while ((m = re.exec(text))) {
+    let val = m[2];
+    try { val = decodeURIComponent(val); } catch (e) {}
+    out[m[1].toLowerCase()] = val;
+  }
+  return out;
+}
+
+function extractUtm(order) {
+  if (!order || typeof order !== "object") return {};
+  const mk = order.marketing && typeof order.marketing === "object" && !Array.isArray(order.marketing) ? order.marketing : null;
+  const uo = order.utm && typeof order.utm === "object" && !Array.isArray(order.utm) ? order.utm : null;
+  let source   = _utmFirstStr(order.utm_source,   mk && mk.utm_source,   mk && mk.source,   uo && uo.source,   uo && uo.utm_source);
+  let medium   = _utmFirstStr(order.utm_medium,   mk && mk.utm_medium,   mk && mk.medium,   uo && uo.medium,   uo && uo.utm_medium);
+  let campaign = _utmFirstStr(order.utm_campaign, mk && mk.utm_campaign, mk && mk.campaign, uo && uo.campaign, uo && uo.utm_campaign);
+  let content  = _utmFirstStr(order.utm_content,  mk && mk.utm_content,  mk && mk.content,  uo && uo.content,  uo && uo.utm_content);
+  let term     = _utmFirstStr(order.utm_term,     mk && mk.utm_term,     mk && mk.term,     uo && uo.term,     uo && uo.utm_term);
+  if (!source) {
+    const candidates = [order.utm, order.utm_tags, order.utm_marks, order.marketing, mk && mk.utm, mk && mk.tags];
+    for (const c of candidates) {
+      if (typeof c === "string" && c.indexOf("utm_") !== -1) {
+        const p = parseUtmString(c);
+        source = source || p.source; medium = medium || p.medium; campaign = campaign || p.campaign;
+        content = content || p.content; term = term || p.term;
+        if (source) break;
+      }
+    }
+  }
+  const clip = (v) => (v == null ? null : String(v).slice(0, 300));
+  return { source: clip(source), medium: clip(medium), campaign: clip(campaign), content: clip(content), term: clip(term) };
+}
+
 async function ingestProducts(apiKey, supabase, ctx, fromPage, take) {
   const today = todayDate();
   const startPage = Math.max(1, parseInt(fromPage || 1));
@@ -481,6 +531,7 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
       if (!sourceName && sourceId != null && sourcesMap && sourcesMap[String(sourceId)]) {
         sourceName = sourcesMap[String(sourceId)];
       }
+      const utm = extractUtm(order);
       const items = order.products || [];
       items.forEach((item, idx) => {
         const qty = lineQty(item);
@@ -509,6 +560,11 @@ async function fetchOrdersWithFilter(apiKey, supabase, ctx, filterKey, fromDate,
           order_discount: orderDiscount,
           source_id: sourceId && !isNaN(sourceId) ? sourceId : null,
           source_name: sourceName,
+          utm_source: utm.source,
+          utm_medium: utm.medium,
+          utm_campaign: utm.campaign,
+          utm_content: utm.content,
+          utm_term: utm.term,
         });
       });
     }

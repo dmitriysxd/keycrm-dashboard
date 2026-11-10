@@ -530,6 +530,9 @@
       <div class="nav-item" onclick="navigate('cohorts')">
         <span class="nav-icon">👥</span> Когорти
       </div>
+      <div class="nav-item" onclick="navigate('marketing')">
+        <span class="nav-icon">📣</span> Маркетинг
+      </div>
     </nav>
 
     <div class="sidebar-bottom">
@@ -859,6 +862,7 @@ async function renderCurrentPage() {
   else if (currentPage === 'clients')  { const ok = await loadClients(); if (ok) renderClients(); }
   else if (currentPage === 'trends')   { await renderTrendsPage(); }
   else if (currentPage === 'cohorts')  { await renderCohortsPage(); }
+  else if (currentPage === 'marketing'){ await renderMarketingPage(); }
 }
 
 function destroyCharts() {
@@ -1838,6 +1842,188 @@ function renderClientsTable() {
 // ── Trends page ────────────────────────────
 let TRENDS_DATA = null;
 let TRENDS_BUCKET = 'month';
+
+// ── Маркетинг ────────────────────────
+let MKT_DATA = null;
+let MKT_PERIOD = 'all';
+let MKT_SEGMENT = 'all';
+const MKT_KNOWN_CHANNELS = ['Meta Ads','Google Ads','Email (розсилка)','SMS','Viber','Telegram','TikTok','Сайт / прямі','Прямі / не визначено'];
+const MKT_MONTHS_UK = ['січ','лют','бер','кві','тра','чер','лип','сер','вер','жов','лис','гру'];
+function mktMonthLabel(ym) {
+  if (ym === 'all') return 'Увесь час';
+  const p = ym.split('-'); if (p.length !== 2) return ym;
+  return (MKT_MONTHS_UK[parseInt(p[1]) - 1] || p[1]) + ' ' + p[0];
+}
+
+async function renderMarketingPage() {
+  const main = document.getElementById('main-area');
+  main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Завантажуємо маркетинг</div></div>';
+  try {
+    const r = await fetch(apiUrl('/api/marketing', 'period=' + encodeURIComponent(MKT_PERIOD) + '&segment=' + encodeURIComponent(MKT_SEGMENT)));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    MKT_DATA = j;
+  } catch (err) {
+    main.innerHTML = `<div class="state-wrap"><div class="error-card"><div class="error-title">Помилка завантаження</div><div class="state-sub">${(err && err.message) || err}</div></div></div>`;
+    return;
+  }
+  renderMarketingView();
+}
+
+function setMktSegment(s) { MKT_SEGMENT = s; renderMarketingPage(); }
+function setMktPeriod(p) { MKT_PERIOD = p; renderMarketingPage(); }
+
+async function saveMktCost(el) {
+  const channel = el.dataset.channel;
+  const amount = parseFloat(el.value);
+  if (isNaN(amount) || amount < 0) { el.value = el.dataset.orig || ''; return; }
+  el.disabled = true;
+  try {
+    const r = await fetch(apiUrl('/api/marketing'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'set_cost', channel, period: MKT_PERIOD, amount }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Помилка');
+    await renderMarketingPage();
+  } catch (e) {
+    alert('Не вдалося зберегти витрату: ' + ((e && e.message) || e));
+    el.disabled = false;
+  }
+}
+
+async function addMktCost() {
+  const chSel = document.getElementById('mkt-add-channel');
+  const amtEl = document.getElementById('mkt-add-amount');
+  const channel = chSel && chSel.value;
+  const amount = parseFloat(amtEl && amtEl.value);
+  if (!channel) { alert('Оберіть канал'); return; }
+  if (isNaN(amount) || amount < 0) { alert('Введіть суму ≥ 0'); return; }
+  try {
+    const r = await fetch(apiUrl('/api/marketing'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'set_cost', channel, period: MKT_PERIOD, amount }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Помилка');
+    await renderMarketingPage();
+  } catch (e) { alert('Не вдалося: ' + ((e && e.message) || e)); }
+}
+
+function renderMarketingView() {
+  const d = MKT_DATA; if (!d) return;
+  const t = d.totals || {};
+  const months = d.months || [];
+  const editable = MKT_PERIOD !== 'all';
+  const segBtn = (val, label) => `<button onclick="setMktSegment('${val}')" style="padding:6px 14px;background:${MKT_SEGMENT===val?'var(--gold2)':'transparent'};color:${MKT_SEGMENT===val?'var(--gold)':'var(--muted)'};border:0;font-size:12px;cursor:pointer;font-weight:${MKT_SEGMENT===val?'600':'400'}">${label}</button>`;
+  const roasStr = (v) => v == null ? '<span style="color:var(--muted)">—</span>' : (v >= 1 ? `<span style="color:var(--green)">${v}×</span>` : `<span style="color:var(--red)">${v}×</span>`);
+
+  const periodOptions = ['<option value="all"' + (MKT_PERIOD==='all'?' selected':'') + '>Увесь час</option>']
+    .concat(months.map(m => `<option value="${m}"${MKT_PERIOD===m?' selected':''}>${mktMonthLabel(m)}</option>`)).join('');
+
+  // Головна таблиця каналів (last-touch)
+  const chanRows = (d.channels || []).map(c => {
+    const costCell = editable
+      ? `<input type="number" min="0" step="1" value="${c.cost || ''}" data-channel="${String(c.channel).replace(/"/g,'&quot;')}" data-orig="${c.cost || ''}"
+            onchange="saveMktCost(this)"
+            style="width:90px;background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 6px;text-align:right;font-size:12px" />`
+      : `<span style="color:var(--muted)">${c.cost ? fmtMoney(c.cost) : '—'}</span>`;
+    return `<tr>
+      <td>${c.channel}</td>
+      <td class="num">${fmt(c.orders)}</td>
+      <td class="num">${fmtMoney(c.revenue)}</td>
+      <td class="num" style="color:var(--green)">${fmt(c.new_orders)}</td>
+      <td class="num" style="color:#9ed1b3">${fmt(c.repeat_orders)}</td>
+      <td class="num">${fmtMoney(c.aov)}</td>
+      <td class="num">${costCell}</td>
+      <td class="num">${roasStr(c.roas)}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px">Немає даних за період</td></tr>`;
+
+  // First-touch LTV
+  const ftCov = d.first_touch_coverage || { matched_buyers: 0, total_buyers: 0 };
+  const ftRows = (d.first_touch || []).map(f => `<tr>
+      <td>${f.channel}</td>
+      <td class="num">${fmt(f.buyers)}</td>
+      <td class="num">${fmtMoney(f.ltv_total)}</td>
+      <td class="num">${fmtMoney(f.ltv_avg)}</td>
+    </tr>`).join('') || `<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px">Немає даних</td></tr>`;
+
+  const addChannelOpts = MKT_KNOWN_CHANNELS.map(c => `<option value="${c}">${c}</option>`).join('');
+
+  document.getElementById('main-area').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">Маркетинг · канали</div>
+        <div class="page-sub">${mktMonthLabel(MKT_PERIOD)} · ${fmt(t.orders||0)} замовлень · last-touch (UTM / Джерело)</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div style="display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+          ${segBtn('all','Усі')}${segBtn('opt','Опт')}${segBtn('retail','Роздріб')}
+        </div>
+        <select onchange="setMktPeriod(this.value)" style="background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 10px;font-size:12px">${periodOptions}</select>
+        <button class="refresh-btn" onclick="renderMarketingPage()"><span class="ri">↺</span> Оновити</button>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-accent green"></div>
+        <div class="kpi-label">Виручка</div>
+        <div class="kpi-val">${fmtMoney(t.revenue||0)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:var(--gold)"></div>
+        <div class="kpi-label">Замовлень · Нові / Повторні</div>
+        <div class="kpi-val">${fmt(t.orders||0)} <span style="font-size:13px;color:var(--muted)">· <span style="color:var(--green)">${fmt(t.new_orders||0)}</span> / <span style="color:#9ed1b3">${fmt(t.repeat_orders||0)}</span></span></div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:#e0a3a3"></div>
+        <div class="kpi-label">Витрати на рекламу</div>
+        <div class="kpi-val">${t.cost ? fmtMoney(t.cost) : '—'}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent purple"></div>
+        <div class="kpi-label">ROAS (виручка / витрати)</div>
+        <div class="kpi-val">${roasStr(t.roas)}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Канали · ${mktMonthLabel(MKT_PERIOD)}
+        <span style="font-weight:400;color:var(--muted);font-size:11px">
+          ${editable ? '— введи витрати в колонці «Витрати», ROAS порахується сам' : '— обери місяць у фільтрі, щоб вводити витрати'}
+        </span>
+      </div>
+      <div class="tbl-scroll">
+        <table>
+          <thead><tr>
+            <th>Канал</th><th class="num">Замовлення</th><th class="num">Виручка</th>
+            <th class="num">Нові</th><th class="num">Повторні</th><th class="num">Серед. чек</th>
+            <th class="num">Витрати</th><th class="num">ROAS</th>
+          </tr></thead>
+          <tbody>${chanRows}</tbody>
+        </table>
+      </div>
+      ${editable ? `
+      <div style="display:flex;gap:8px;align-items:center;padding:12px;border-top:1px solid var(--border);flex-wrap:wrap">
+        <span style="color:var(--muted);font-size:12px">Додати витрату на канал:</span>
+        <select id="mkt-add-channel" style="background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:12px">${addChannelOpts}</select>
+        <input id="mkt-add-amount" type="number" min="0" step="1" placeholder="сума ₴" style="width:110px;background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:12px" />
+        <button class="refresh-btn" onclick="addMktCost()">Зберегти</button>
+      </div>` : ''}
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">Привлечення: LTV по каналах першого дотику (first-touch)
+        <span style="font-weight:400;color:var(--muted);font-size:11px">— хто реально привів клієнта · покриття: ${fmt(ftCov.matched_buyers)}/${fmt(ftCov.total_buyers)} клієнтів</span>
+      </div>
+      <div class="tbl-scroll">
+        <table>
+          <thead><tr>
+            <th>Канал привлечення</th><th class="num">Клієнтів</th><th class="num">LTV сума</th><th class="num">LTV середній</th>
+          </tr></thead>
+          <tbody>${ftRows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
 
 async function renderTrendsPage() {
   const main = document.getElementById('main-area');
