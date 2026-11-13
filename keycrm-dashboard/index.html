@@ -49,20 +49,21 @@
   @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
   :root {
-    --bg:       #07070f;
-    --s1:       #0f0f1a;
-    --s2:       #16162a;
-    --s3:       #1e1e35;
-    --border:   rgba(255,255,255,0.06);
-    --gold:     #c9a96e;
-    --gold2:    rgba(201,169,110,0.15);
-    --purple:   #7c6ef5;
-    --purple2:  rgba(124,110,245,0.15);
-    --green:    #5cb88a;
-    --red:      #e06060;
-    --text:     #e8e4dc;
-    --muted:    rgba(232,228,220,0.45);
-    --muted2:   rgba(232,228,220,0.2);
+    /* ── Палітра HeadData (синій акцент, тёмна тема) ── */
+    --bg:       #000000;
+    --s1:       #0b0b0d;
+    --s2:       #161618;
+    --s3:       #1f1f20;
+    --border:   rgba(255,255,255,0.10);
+    --gold:     #1e9bff;               /* акцент (колишній золотий → синій HeadData) */
+    --gold2:    rgba(30,155,255,0.15);
+    --purple:   #8b5cf6;
+    --purple2:  rgba(139,92,246,0.15);
+    --green:    #2ecc81;
+    --red:      #ff5c73;
+    --text:     #ffffff;
+    --muted:    rgba(255,255,255,0.55);
+    --muted2:   rgba(255,255,255,0.22);
   }
 
   *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
@@ -73,6 +74,12 @@
     font-family: 'Inter', sans-serif;
     font-size: 13px;
     min-height: 100vh;
+  }
+
+  /* HeadData: цифри моноширинним JetBrains Mono */
+  .num, .kpi-val, .mono, .metric-val, .stat-val {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
   }
 
   /* ── Sidebar ── */
@@ -119,6 +126,7 @@
   }
   .nav-item:hover { color: var(--text); background: var(--s2); }
   .nav-item.active { color: var(--gold); border-left-color: var(--gold); background: var(--gold2); }
+  .nav-section { font-size: 9px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted2); padding: 16px 24px 6px; font-weight: 600; }
   .nav-icon { font-size: 14px; width: 18px; text-align: center; }
 
   .sidebar-bottom {
@@ -556,12 +564,14 @@
     </div>
 
     <nav>
+      <div class="nav-section">Дані</div>
       <div class="nav-item active" onclick="navigate('sku')">
         <span class="nav-icon">◉</span> SKU-аналітика
       </div>
       <div class="nav-item" onclick="navigate('clients')">
         <span class="nav-icon">☎</span> Клієнти
       </div>
+      <div class="nav-section">Звіти</div>
       <div class="nav-item" onclick="navigate('trends')">
         <span class="nav-icon">📈</span> Тренди
       </div>
@@ -569,7 +579,7 @@
         <span class="nav-icon">👥</span> Когорти
       </div>
       <div class="nav-item" onclick="navigate('marketing')">
-        <span class="nav-icon">📣</span> Маркетинг
+        <span class="nav-icon">📣</span> Наскрізна аналітика
       </div>
     </nav>
 
