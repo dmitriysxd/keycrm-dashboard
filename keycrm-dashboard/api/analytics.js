@@ -49,11 +49,14 @@ function isExcluded(orderStatus) {
 //     «Зв'язатись повторно», + будь-який НОВИЙ/невідомий статус (безпечний
 //     дефолт — не роздуває продажі).
 //   СКАСОВАНІ (не продажа): Повернули, canceled, Відмовились,
-//     «Об'єднання замовлень», underbid, «Перенос (дублікат)», incorrect_data,
-//     Повернення (усі вони в EXCLUDED_STATUSES / isExcluded).
-// Нові success-статуси додавати СЮДИ (а не в progress) свідомо.
+//     «Об'єднання замовлень», underbid, «Перенос (дублікат)», incorrect_data.
+// УВАГА: «Повернення» KeyCRM рахує як АКТИВНИЙ (в роботі), не скасований
+// (підтверджено листопадом: 19−5=14 = KeyCRM «Скасованих»). Воно є в
+// EXCLUDED_STATUSES (для trends/cohorts), тож у маркетингу робимо override.
 const DONE_STATUSES = new Set(["completed", "виконано", "виконан"]);
+const MKT_ACTIVE_OVERRIDE = new Set(["Повернення"]);
 function statusGroup(s) {
+  if (s && MKT_ACTIVE_OVERRIDE.has(s)) return "progress";
   if (isExcluded(s)) return "cancelled";
   if (s && DONE_STATUSES.has(s)) return "done";
   return "progress";
