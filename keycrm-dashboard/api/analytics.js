@@ -293,9 +293,20 @@ function normChannel(utmSource, utmMedium, sourceName) {
   return sourceName ? ("Джерело: " + sourceName) : "Прямі / не визначено";
 }
 
+// Місяць заказу рахуємо в КИЇВСЬКОМУ часовому поясі (як KeyCRM «Дата
+// оформлення»), а не UTC — інакше заказы біля опівночі на межі місяця
+// потрапляють не в той місяць (серпень +1 / вересень −1 проти KeyCRM).
+const _kyivYM = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Kyiv", year: "numeric", month: "2-digit" });
 function ymKey(dateStr) {
   if (!dateStr) return null;
-  return String(dateStr).slice(0, 7);
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return String(dateStr).slice(0, 7);
+  let y = "", m = "";
+  for (const p of _kyivYM.formatToParts(d)) {
+    if (p.type === "year") y = p.value;
+    else if (p.type === "month") m = p.value;
+  }
+  return y + "-" + m;
 }
 
 // Дзеркалить SQL normalize_phone: канонічний UA-формат '380XXXXXXXXX'.
