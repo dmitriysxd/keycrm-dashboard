@@ -302,14 +302,15 @@ async function handleMarketing(req, res, supabase) {
   // ДО агрегації (по індексах), одним запитом без пагінації. Вью v_order_facts
   // фільтрував після GROUP BY → агрегував усю sales щоразу → statement timeout.
   const [orderRows, buyerRows, ftRows, costRows] = await Promise.all([
-    (async () => {
-      const r = await supabase.rpc("marketing_order_facts", {
+    // Пагінуємо RPC (як fetchAll) — інакше PostgREST обрізає відповідь по
+    // db-max-rows і найсвіжіші заказы випадають (місяці обривались на серпні).
+    // .order(order_id) — щоб сторінки .range були стабільні.
+    fetchAll(() => supabase
+      .rpc("marketing_order_facts", {
         _since: since.toISOString(),
         _source: "bijboom-opt.com.ua", // лише замовлення з сайту (Horoshop)
-      });
-      if (r.error) throw new Error(r.error.message);
-      return r.data || [];
-    })(),
+      })
+      .order("order_id", { ascending: true })),
     fetchAll(() => supabase.from("buyers").select("buyer_id, client_type, phone")),
     fetchAll(() => supabase.from("first_touch").select("phone_norm, first_source")),
     fetchAll(() => supabase.from("channel_costs").select("channel, period, amount")),
