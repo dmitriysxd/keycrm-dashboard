@@ -1476,6 +1476,20 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
         result.reconcile_error = (err && err.message) || String(err);
       }
       await writeState(supabase, {
+        current_step: "refresh_open",
+        current_page: 1,
+        last_chunk_at: new Date().toISOString(),
+      });
+      result.advanced = "refresh_open";
+    } else if (stepName === "refresh_open") {
+      // Самопочинка статусів «відкритих» заказів (бюджет ~25с). Помилки тут
+      // НЕ валять цикл — завжди завершуємо 'done'.
+      try {
+        result.refresh_open = await refreshOpenOrders(apiKey, supabase, ctx, { timeBudgetMs: 25000, limit: 500 });
+      } catch (err) {
+        result.refresh_open_error = (err && err.message) || String(err);
+      }
+      await writeState(supabase, {
         current_step: "done",
         current_page: 1,
         status: "done",
@@ -1497,6 +1511,38 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
   }
 
   return result;
+}
+
+// Самопочинка статусів: перечитує «відкриті» (не фінальні) заказы з KeyCRM і
+// оновлює sales.order_status. Бюджетований; за дзвінок ~40 заказів (ліміт
+// 60 req/min). Виправляє застряглі статуси, які випали з 3-денного вікна.
+async function refreshOpenOrders(apiKey, supabase, ctx, opts) {
+  opts = opts || {};
+  const startMs = opts.startMs || Date.now();
+  const timeBudgetMs = opts.timeBudgetMs || 25000;
+  const offset = Math.max(0, parseInt(opts.offset || 0));
+  const { data: rows, error } = await supabase.rpc("open_order_ids", { _limit: opts.limit || 1000 });
+  if (error) throw new Error("open_order_ids: " + error.message);
+  const ids = (rows || []).map((r) => r.order_id);
+  let i = offset, updated = 0, missing = 0, checked = 0;
+  for (; i < ids.length; i++) {
+    if (Date.now() - startMs > timeBudgetMs) break;
+    const id = ids[i];
+    let order = null;
+    try {
+      const resp = await get("/order/" + id, { include: "status" }, apiKey, ctx);
+      order = (resp && resp.data) || resp || null;
+    } catch (e) {
+      missing++; checked++; continue; // 404/видалено — purge обробить окремо
+    }
+    checked++;
+    const newStatus = (order && order.status && (order.status.name || order.status.title)) || null;
+    if (!newStatus) continue;
+    const upd = await supabase.from("sales").update({ order_status: newStatus }).eq("order_id", id);
+    if (!upd.error) updated++;
+  }
+  const more = i < ids.length;
+  return { open_total: ids.length, from: offset, checked, updated, missing, next_offset: more ? i : null, done: !more };
 }
 
 module.exports = async function handler(req, res) {
@@ -1699,6 +1745,13 @@ module.exports = async function handler(req, res) {
         maxBuyers: 40,
         maxOrderFetches: 150,
       });
+    }
+    if (step === "refresh_open") {
+      // Ручний/повний прогін самопочинки статусів «відкритих» заказів.
+      // ?from=N — offset для продовження; викликай доки done=true.
+      const fromOffset = (req.query && (req.query.from || req.query.offset)) || 0;
+      const r = await refreshOpenOrders(apiKey, supabase, ctx, { timeBudgetMs: 50000, limit: 1000, offset: fromOffset });
+      return res.status(200).json({ ok: true, step: "refresh_open", ...r, api_calls: ctx.apiCalls });
     }
     let enumAliveResult = null;
     if (step === "enum_alive_orders") {
