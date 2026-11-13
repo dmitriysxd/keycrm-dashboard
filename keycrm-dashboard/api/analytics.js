@@ -324,8 +324,8 @@ async function handleMarketing(req, res, supabase) {
   const period = (req.query && req.query.period) || "all";
   const segment = (req.query && req.query.segment) || "all";
 
-  const since = new Date();
-  since.setUTCFullYear(since.getUTCFullYear() - 2);
+  // Уся історія заказів (не 2 роки) — для коректного «новий/повторний».
+  const since = new Date("2015-01-01T00:00:00Z");
 
   // marketing_order_facts(RPC) — дедуп і фільтр (сайт + період) робить Postgres
   // ДО агрегації (по індексах), одним запитом без пагінації. Вью v_order_facts
@@ -372,12 +372,13 @@ async function handleMarketing(req, res, supabase) {
     });
   }
 
-  // «Новий» клієнт = перша ЗАВЕРШЕНА покупка (серед done-заказів).
-  const firstDoneAt = new Map();
+  // «Новий» клієнт = перший заказ клієнта серед НЕ-скасованих (будь-який
+  // статус, крім скасування), по ВСІЙ історії.
+  const firstActiveAt = new Map();
   for (const o of orderList) {
-    if (o.grp !== "done" || !o.buyer_id) continue;
-    const cur = firstDoneAt.get(o.buyer_id);
-    if (!cur || o.ordered_at < cur) firstDoneAt.set(o.buyer_id, o.ordered_at);
+    if (o.grp === "cancelled" || !o.buyer_id) continue;
+    const cur = firstActiveAt.get(o.buyer_id);
+    if (!cur || o.ordered_at < cur) firstActiveAt.set(o.buyer_id, o.ordered_at);
   }
 
   function inSegment(buyerId) {
@@ -405,11 +406,11 @@ async function handleMarketing(req, res, supabase) {
     const ch = normChannel(o.utm_source, o.utm_medium, o.source_name);
     const b = bucket(ch);
     if (o.grp === "cancelled") { b.canc++; tCanc++; continue; }
-    if (o.grp === "progress")  { b.prog++; tProg++; continue; }
-    // done — реальна продажа: рахуємо виручку, нові/повторні, LTV
-    b.done++; tDone++; b.revenue += o.revenue; tRev += o.revenue;
+    // активний заказ (виконано АБО в роботі) — рахуємо ВСІ показники
+    if (o.grp === "done") { b.done++; tDone++; } else { b.prog++; tProg++; }
+    b.revenue += o.revenue; tRev += o.revenue;
     if (o.buyer_id) b.buyers.add(o.buyer_id);
-    const isNew = !o.buyer_id ? true : (o.ordered_at === firstDoneAt.get(o.buyer_id));
+    const isNew = !o.buyer_id ? true : (o.ordered_at === firstActiveAt.get(o.buyer_id));
     if (isNew) { b.newO++; tNew++; } else { b.repO++; tRep++; }
   }
 
@@ -427,7 +428,7 @@ async function handleMarketing(req, res, supabase) {
       done: b.done, progress: b.prog, cancelled: b.canc,
       new_orders: b.newO, repeat_orders: b.repO,
       revenue: Math.round(b.revenue), buyers: b.buyers.size,
-      aov: b.done ? Math.round(b.revenue / b.done) : 0,
+      aov: (b.done + b.prog) ? Math.round(b.revenue / (b.done + b.prog)) : 0,
       cost: Math.round(cost), roas: cost > 0 ? +(b.revenue / cost).toFixed(2) : null,
     };
   }).sort((a, b) => b.revenue - a.revenue);
@@ -439,10 +440,10 @@ async function handleMarketing(req, res, supabase) {
     }
   }
 
-  // LTV first-touch — тільки по завершених продажах.
+  // LTV first-touch — по НЕ-скасованих заказах (виконані + в роботі).
   const ltvByBuyer = new Map();
   for (const o of orderList) {
-    if (o.grp !== "done" || !o.buyer_id || !inSegment(o.buyer_id)) continue;
+    if (o.grp === "cancelled" || !o.buyer_id || !inSegment(o.buyer_id)) continue;
     ltvByBuyer.set(o.buyer_id, (ltvByBuyer.get(o.buyer_id) || 0) + o.revenue);
   }
   const ftAgg = new Map();
