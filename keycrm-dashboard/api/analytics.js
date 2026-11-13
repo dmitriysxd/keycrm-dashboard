@@ -42,9 +42,13 @@ function isExcluded(orderStatus) {
 }
 
 // Статус-групи для маркетингу (варіант 3): done / progress / cancelled.
-// done = завершена продажа; cancelled = «мертві» статуси (isExcluded);
-// progress = усе інше (новий, в роботі, в дорозі тощо).
-const DONE_STATUSES = new Set(["completed", "delivered", "виконано"]);
+// done = ЗАВЕРШЕНА продажа (клієнт забрав і оплатив) = лише "completed".
+// УВАГА: "delivered" у цьому KeyCRM = «відправлено/в дорозі, ще не забрано» —
+// це НЕ продажа, а «в роботі». Тому в done його НЕ включаємо.
+// cancelled = «мертві» статуси (isExcluded); progress = все інше
+// (новий / в роботі / в дорозі / delivered тощо) — безпечний дефолт:
+// невідомий статус рахується як «в роботі», а не роздуває продажі.
+const DONE_STATUSES = new Set(["completed", "виконано", "виконан"]);
 function statusGroup(s) {
   if (isExcluded(s)) return "cancelled";
   if (s && DONE_STATUSES.has(s)) return "done";
