@@ -1,0 +1,61 @@
+# Повний ре-інжест заказів за рік: по кожному місяцю дергає
+# /api/cron/ingest?step=sales&from=...&to=... (режим created_between).
+# Upsert → ВСТАВЛЯЄ пропущені заказы (що не доїхали за час простоїв) і
+# оновлює статуси/дані існуючих. Після цього місячні лічильники сходяться
+# з KeyCRM.
+#
+# Запускати вручну (workflow_dispatch). Безпечно повторювати.
+
+name: Re-sync year orders
+
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: 'Рік (YYYY)'
+        required: false
+        default: '2026'
+
+jobs:
+  resync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-ingest each month of the year
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          YEAR: ${{ github.event.inputs.year }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET не налаштовано"; exit 1
+          fi
+          set +e
+          Y=${YEAR:-2026}
+          TODAY=$(date -u +%Y-%m-%d)
+          for M in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            FROM=$(printf "%04d-%02d-01" "$Y" "$M")
+            if [ "$FROM" \> "$TODAY" ]; then echo "skip $FROM (майбутнє)"; break; fi
+            NEXT=$(date -u -d "$FROM +1 month" +%Y-%m-%d)
+            TO=$(date -u -d "$NEXT -1 day" +%Y-%m-%d)
+            echo "=================== $FROM .. $TO ==================="
+            for attempt in 1 2 3; do
+              HTTP=$(curl -s -o /tmp/r.json -w "%{http_code}" --max-time 90 \
+                "https://keycrm-dashboard.vercel.app/api/cron/ingest?step=sales&from=$FROM&to=$TO&secret=$CRON_SECRET")
+              echo "attempt $attempt → HTTP $HTTP"
+              cat /tmp/r.json | head -c 400; echo ""
+              if [ "$HTTP" = "200" ]; then
+                INC=$(python3 -c "import json;d=json.load(open('/tmp/r.json'));w=d.get('sales_window') or {};print('1' if w.get('incomplete') else '0')" 2>/dev/null)
+                if [ "$INC" = "1" ]; then
+                  echo "::warning::$FROM не вліз у вікно повністю — повторю звужено (половинами)"
+                  MID=$(date -u -d "$FROM +14 day" +%Y-%m-%d)
+                  curl -s --max-time 90 "https://keycrm-dashboard.vercel.app/api/cron/ingest?step=sales&from=$FROM&to=$MID&secret=$CRON_SECRET" | head -c 200; echo ""
+                  sleep 3
+                  MID2=$(date -u -d "$MID +1 day" +%Y-%m-%d)
+                  curl -s --max-time 90 "https://keycrm-dashboard.vercel.app/api/cron/ingest?step=sales&from=$MID2&to=$TO&secret=$CRON_SECRET" | head -c 200; echo ""
+                fi
+                break
+              fi
+              echo "retry in 15s"; sleep 15
+            done
+            sleep 3
+          done
+          echo "✓ Re-sync року завершено. Онови matview (refresh_sku_metrics) наступним авто-циклом."
