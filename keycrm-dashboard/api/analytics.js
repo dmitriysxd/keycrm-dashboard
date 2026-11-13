@@ -287,14 +287,18 @@ async function handleMarketing(req, res, supabase) {
   const since = new Date();
   since.setUTCFullYear(since.getUTCFullYear() - 2);
 
-  // v_order_facts — дедуп на рівні заказу робить Postgres (GROUP BY order_id),
-  // тож у Node їде ~10k замовлень, а не ~100k рядків-позицій (інакше 504).
+  // marketing_order_facts(RPC) — дедуп і фільтр (сайт + період) робить Postgres
+  // ДО агрегації (по індексах), одним запитом без пагінації. Вью v_order_facts
+  // фільтрував після GROUP BY → агрегував усю sales щоразу → statement timeout.
   const [orderRows, buyerRows, ftRows, costRows] = await Promise.all([
-    fetchAll(() => supabase
-      .from("v_order_facts")
-      .select("order_id, buyer_id, ordered_at, order_status, revenue, utm_source, utm_medium, source_name")
-      .eq("source_name", "bijboom-opt.com.ua") // лише замовлення з сайту (Horoshop); gamijok/Prom/ручні — поза маркетингом
-      .gte("ordered_at", since.toISOString())),
+    (async () => {
+      const r = await supabase.rpc("marketing_order_facts", {
+        _since: since.toISOString(),
+        _source: "bijboom-opt.com.ua", // лише замовлення з сайту (Horoshop)
+      });
+      if (r.error) throw new Error(r.error.message);
+      return r.data || [];
+    })(),
     fetchAll(() => supabase.from("buyers").select("buyer_id, client_type")),
     fetchAll(() => supabase.from("v_buyer_first_touch").select("buyer_id, first_source")),
     fetchAll(() => supabase.from("channel_costs").select("channel, period, amount")),
