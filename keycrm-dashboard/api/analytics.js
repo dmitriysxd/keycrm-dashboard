@@ -280,6 +280,17 @@ function ymKey(dateStr) {
   return String(dateStr).slice(0, 7);
 }
 
+// Дзеркалить SQL normalize_phone: канонічний UA-формат '380XXXXXXXXX'.
+function normPhone(raw) {
+  const d = (raw || "").replace(/\D/g, "");
+  if (d.length < 9) return null;
+  if (d.length === 12 && d.slice(0, 3) === "380") return d;
+  if (d.length === 11 && d.slice(0, 2) === "80") return "3" + d;
+  if (d.length === 10 && d[0] === "0") return "38" + d;
+  if (d.length === 9) return "380" + d;
+  return "380" + d.slice(-9);
+}
+
 async function handleMarketing(req, res, supabase) {
   const period = (req.query && req.query.period) || "all";
   const segment = (req.query && req.query.segment) || "all";
@@ -299,15 +310,22 @@ async function handleMarketing(req, res, supabase) {
       if (r.error) throw new Error(r.error.message);
       return r.data || [];
     })(),
-    fetchAll(() => supabase.from("buyers").select("buyer_id, client_type")),
-    fetchAll(() => supabase.from("v_buyer_first_touch").select("buyer_id, first_source")),
+    fetchAll(() => supabase.from("buyers").select("buyer_id, client_type, phone")),
+    fetchAll(() => supabase.from("first_touch").select("phone_norm, first_source")),
     fetchAll(() => supabase.from("channel_costs").select("channel, period, amount")),
   ]);
 
   const typeMap = new Map();
   for (const b of buyerRows) typeMap.set(b.buyer_id, b.client_type || null);
+  // first-touch матчимо в Node по нормалізованому телефону — без важкого JOIN
+  // через v_buyer_first_touch (normalize_phone по всіх покупцях давав timeout).
+  const ftByPhone = new Map();
+  for (const f of ftRows) if (f.phone_norm && !ftByPhone.has(f.phone_norm)) ftByPhone.set(f.phone_norm, f.first_source || null);
   const ftMap = new Map();
-  for (const f of ftRows) if (!ftMap.has(f.buyer_id)) ftMap.set(f.buyer_id, f.first_source || null);
+  for (const b of buyerRows) {
+    const pn = normPhone(b.phone);
+    if (pn && ftByPhone.has(pn)) ftMap.set(b.buyer_id, ftByPhone.get(pn));
+  }
 
   const orderList = [];
   for (const r of orderRows) {
