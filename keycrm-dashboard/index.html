@@ -8,7 +8,45 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;700&family=Inter:wght@300;400;500;600&display=swap');
+  /* ── HeadData-styled layer (ізольований, лише для сторінки «Маркетинг») ── */
+  .hd{
+    --hd-accent:#1e9bff; --hd-sky:#60cdff; --hd-pos:#2ecc81; --hd-neg:#ff5c73; --hd-warn:#ffb13d;
+    --hd-card:#0b0b0d; --hd-surf:#161618; --hd-bd:rgba(255,255,255,0.10); --hd-bd2:rgba(255,255,255,0.06);
+    --hd-t1:#fff; --hd-t2:rgba(255,255,255,0.86); --hd-t3:rgba(255,255,255,0.55);
+    color:var(--hd-t1); font-family:'Inter',system-ui,sans-serif;
+  }
+  .hd .mono{ font-family:'JetBrains Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums; }
+  .hd-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; margin-bottom:18px; }
+  .hd-h1{ font-size:1.375rem; font-weight:600; letter-spacing:-0.2px; color:var(--hd-t1); }
+  .hd-sub{ font-size:0.78rem; color:var(--hd-t3); margin-top:4px; }
+  .hd-filters{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .hd-seg{ display:inline-flex; border:1px solid var(--hd-bd); border-radius:10px; overflow:hidden; background:var(--hd-card); }
+  .hd-seg-b{ padding:7px 14px; background:transparent; border:0; color:var(--hd-t3); font-size:12px; cursor:pointer; font-weight:500; }
+  .hd-seg-b.on{ background:rgba(30,155,255,0.14); color:var(--hd-accent); }
+  .hd-select{ background:var(--hd-surf); border:1px solid var(--hd-bd); color:var(--hd-t1); border-radius:9px; padding:7px 10px; font-size:12px; cursor:pointer; }
+  .hd-btn{ background:var(--hd-surf); border:1px solid var(--hd-bd); color:var(--hd-t2); border-radius:9px; padding:7px 11px; font-size:13px; cursor:pointer; }
+  .hd-btn:hover{ background:rgba(255,255,255,0.08); }
+  .hd-btn-p{ background:var(--hd-accent); border-color:var(--hd-accent); color:#fff; }
+  .hd-kpis{ display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:16px; }
+  .hd-kpi{ background:var(--hd-card); border:1px solid var(--hd-bd2); border-radius:14px; padding:14px 16px; }
+  .hd-kpi-l{ font-size:0.68rem; text-transform:uppercase; letter-spacing:0.4px; color:var(--hd-t3); }
+  .hd-kpi-v{ font-size:1.4rem; font-weight:600; margin-top:6px; color:var(--hd-t1); }
+  .hd-kpi-x{ font-size:0.8rem; color:var(--hd-t3); margin-left:4px; }
+  .hd-card{ background:var(--hd-card); border:1px solid var(--hd-bd2); border-radius:16px; margin-top:16px; overflow:hidden; }
+  .hd-card-h{ padding:13px 16px; font-size:0.9rem; font-weight:600; border-bottom:1px solid var(--hd-bd2); color:var(--hd-t1); }
+  .hd-hint{ font-weight:400; color:var(--hd-t3); font-size:0.72rem; }
+  .hd-tw{ overflow-x:auto; }
+  .hd-table{ width:100%; border-collapse:collapse; font-size:0.8rem; }
+  .hd-table th{ position:sticky; top:0; background:var(--hd-card); text-align:right; padding:10px 12px; color:var(--hd-t3); font-weight:500; font-size:0.66rem; text-transform:uppercase; letter-spacing:0.3px; border-bottom:1px solid var(--hd-bd); white-space:nowrap; }
+  .hd-table th.hd-l, .hd-table td.hd-l{ text-align:left; }
+  .hd-table td{ padding:10px 12px; border-bottom:1px solid var(--hd-bd2); text-align:right; color:var(--hd-t2); white-space:nowrap; }
+  .hd-table tbody tr:hover{ background:rgba(255,255,255,0.04); }
+  .hd-table td.hd-l{ color:var(--hd-t1); font-weight:500; }
+  .hd-pos{ color:var(--hd-pos); } .hd-neg{ color:var(--hd-neg); } .hd-dim{ color:var(--hd-t3); }
+  .hd-empty{ text-align:center; color:var(--hd-t3); padding:26px; }
+  .hd-cost{ width:92px; background:var(--hd-surf); border:1px solid var(--hd-bd); color:var(--hd-t1); border-radius:7px; padding:5px 7px; text-align:right; font-size:12px; font-family:'JetBrains Mono',monospace; }
+  .hd-addcost{ display:flex; gap:8px; align-items:center; padding:12px 16px; border-top:1px solid var(--hd-bd2); flex-wrap:wrap; }
+  @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
   :root {
     --bg:       #07070f;
@@ -1915,114 +1953,92 @@ function renderMarketingView() {
   const t = d.totals || {};
   const months = d.months || [];
   const editable = MKT_PERIOD !== 'all';
-  const segBtn = (val, label) => `<button onclick="setMktSegment('${val}')" style="padding:6px 14px;background:${MKT_SEGMENT===val?'var(--gold2)':'transparent'};color:${MKT_SEGMENT===val?'var(--gold)':'var(--muted)'};border:0;font-size:12px;cursor:pointer;font-weight:${MKT_SEGMENT===val?'600':'400'}">${label}</button>`;
-  const roasStr = (v) => v == null ? '<span style="color:var(--muted)">—</span>' : (v >= 1 ? `<span style="color:var(--green)">${v}×</span>` : `<span style="color:var(--red)">${v}×</span>`);
+  const totRev = t.revenue || 0;
+  const seg = (val, label) => `<button class="hd-seg-b${MKT_SEGMENT===val?' on':''}" onclick="setMktSegment('${val}')">${label}</button>`;
+  const roasCell = (v) => v == null ? '<span class="hd-dim">—</span>' : `<span class="${v>=1?'hd-pos':'hd-neg'}">${Number(v).toFixed(2)}×</span>`;
 
   const periodOptions = ['<option value="all"' + (MKT_PERIOD==='all'?' selected':'') + '>Увесь час</option>']
     .concat(months.map(m => `<option value="${m}"${MKT_PERIOD===m?' selected':''}>${mktMonthLabel(m)}</option>`)).join('');
 
   // Головна таблиця каналів (last-touch)
   const chanRows = (d.channels || []).map(c => {
+    const share = totRev > 0 ? Math.round(c.revenue / totRev * 100) : 0;
     const costCell = editable
-      ? `<input type="number" min="0" step="1" value="${c.cost || ''}" data-channel="${String(c.channel).replace(/"/g,'&quot;')}" data-orig="${c.cost || ''}"
-            onchange="saveMktCost(this)"
-            style="width:90px;background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 6px;text-align:right;font-size:12px" />`
-      : `<span style="color:var(--muted)">${c.cost ? fmtMoney(c.cost) : '—'}</span>`;
+      ? `<input class="hd-cost" type="number" min="0" step="1" value="${c.cost || ''}" data-channel="${String(c.channel).replace(/"/g,'&quot;')}" data-orig="${c.cost || ''}" onchange="saveMktCost(this)" />`
+      : (c.cost ? `<span class="mono">${fmtMoney(c.cost)}</span>` : '<span class="hd-dim">—</span>');
     return `<tr>
-      <td>${c.channel}</td>
-      <td class="num">${fmt(c.orders)}</td>
-      <td class="num">${fmtMoney(c.revenue)}</td>
-      <td class="num" style="color:var(--green)">${fmt(c.new_orders)}</td>
-      <td class="num" style="color:#9ed1b3">${fmt(c.repeat_orders)}</td>
-      <td class="num">${fmtMoney(c.aov)}</td>
-      <td class="num">${costCell}</td>
-      <td class="num">${roasStr(c.roas)}</td>
+      <td class="hd-l">${c.channel}</td>
+      <td class="mono">${fmt(c.orders)}</td>
+      <td class="mono hd-pos">${fmt(c.new_orders)}</td>
+      <td class="mono" style="color:var(--hd-sky)">${fmt(c.repeat_orders)}</td>
+      <td class="mono">${fmtMoney(c.revenue)}</td>
+      <td class="mono hd-dim">${share}%</td>
+      <td class="mono">${fmtMoney(c.aov)}</td>
+      <td class="mono">${costCell}</td>
+      <td class="mono">${roasCell(c.roas)}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px">Немає даних за період</td></tr>`;
+  }).join('') || `<tr><td colspan="9" class="hd-empty">Немає даних за період</td></tr>`;
 
   // First-touch LTV
   const ftCov = d.first_touch_coverage || { matched_buyers: 0, total_buyers: 0 };
   const ftRows = (d.first_touch || []).map(f => `<tr>
-      <td>${f.channel}</td>
-      <td class="num">${fmt(f.buyers)}</td>
-      <td class="num">${fmtMoney(f.ltv_total)}</td>
-      <td class="num">${fmtMoney(f.ltv_avg)}</td>
-    </tr>`).join('') || `<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px">Немає даних</td></tr>`;
+      <td class="hd-l">${f.channel}</td>
+      <td class="mono">${fmt(f.buyers)}</td>
+      <td class="mono">${fmtMoney(f.ltv_total)}</td>
+      <td class="mono">${fmtMoney(f.ltv_avg)}</td>
+    </tr>`).join('') || `<tr><td colspan="4" class="hd-empty">Немає даних</td></tr>`;
 
   const addChannelOpts = MKT_KNOWN_CHANNELS.map(c => `<option value="${c}">${c}</option>`).join('');
 
   document.getElementById('main-area').innerHTML = `
-    <div class="page-header">
+  <div class="hd">
+    <div class="hd-head">
       <div>
-        <div class="page-title">Маркетинг · канали</div>
-        <div class="page-sub">${mktMonthLabel(MKT_PERIOD)} · ${fmt(t.orders||0)} замовлень · лише сайт bijboom-opt.com.ua · last-touch (UTM)</div>
+        <div class="hd-h1">Наскрізна аналітика по каналам</div>
+        <div class="hd-sub">лише сайт bijboom-opt.com.ua · ${mktMonthLabel(MKT_PERIOD)} · ${fmt(t.orders||0)} замовлень · last-touch</div>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <div style="display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden">
-          ${segBtn('all','Усі')}${segBtn('opt','Опт')}${segBtn('retail','Роздріб')}
-        </div>
-        <select onchange="setMktPeriod(this.value)" style="background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 10px;font-size:12px">${periodOptions}</select>
-        <button class="refresh-btn" onclick="renderMarketingPage()"><span class="ri">↺</span> Оновити</button>
+      <div class="hd-filters">
+        <div class="hd-seg">${seg('all','Усі')}${seg('opt','Опт')}${seg('retail','Роздріб')}</div>
+        <select class="hd-select" onchange="setMktPeriod(this.value)">${periodOptions}</select>
+        <button class="hd-btn" onclick="renderMarketingPage()">↺</button>
       </div>
     </div>
 
-    <div class="kpi-grid">
-      <div class="kpi"><div class="kpi-accent green"></div>
-        <div class="kpi-label">Виручка</div>
-        <div class="kpi-val">${fmtMoney(t.revenue||0)}</div>
-      </div>
-      <div class="kpi"><div class="kpi-accent" style="background:var(--gold)"></div>
-        <div class="kpi-label">Замовлень · Нові / Повторні</div>
-        <div class="kpi-val">${fmt(t.orders||0)} <span style="font-size:13px;color:var(--muted)">· <span style="color:var(--green)">${fmt(t.new_orders||0)}</span> / <span style="color:#9ed1b3">${fmt(t.repeat_orders||0)}</span></span></div>
-      </div>
-      <div class="kpi"><div class="kpi-accent" style="background:#e0a3a3"></div>
-        <div class="kpi-label">Витрати на рекламу</div>
-        <div class="kpi-val">${t.cost ? fmtMoney(t.cost) : '—'}</div>
-      </div>
-      <div class="kpi"><div class="kpi-accent purple"></div>
-        <div class="kpi-label">ROAS (виручка / витрати)</div>
-        <div class="kpi-val">${roasStr(t.roas)}</div>
-      </div>
+    <div class="hd-kpis">
+      <div class="hd-kpi"><div class="hd-kpi-l">Виручка</div><div class="hd-kpi-v mono">${fmtMoney(totRev)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Замовлення</div><div class="hd-kpi-v mono">${fmt(t.orders||0)} <span class="hd-kpi-x"><span class="hd-pos">${fmt(t.new_orders||0)}</span> / <span style="color:var(--hd-sky)">${fmt(t.repeat_orders||0)}</span></span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Витрати на рекламу</div><div class="hd-kpi-v mono">${t.cost ? fmtMoney(t.cost) : '—'}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">ROAS</div><div class="hd-kpi-v mono">${roasCell(t.roas)}</div></div>
     </div>
 
-    <div class="card">
-      <div class="card-title">Канали · ${mktMonthLabel(MKT_PERIOD)}
-        <span style="font-weight:400;color:var(--muted);font-size:11px">
-          ${editable ? '— введи витрати в колонці «Витрати», ROAS порахується сам' : '— обери місяць у фільтрі, щоб вводити витрати'}
-        </span>
-      </div>
-      <div class="tbl-scroll">
-        <table>
+    <div class="hd-card">
+      <div class="hd-card-h">Канали <span class="hd-hint">${editable ? '— введи витрати в колонці «Витрати», ROAS рахується сам' : '— обери місяць, щоб вводити витрати'}</span></div>
+      <div class="hd-tw">
+        <table class="hd-table">
           <thead><tr>
-            <th>Канал</th><th class="num">Замовлення</th><th class="num">Виручка</th>
-            <th class="num">Нові</th><th class="num">Повторні</th><th class="num">Серед. чек</th>
-            <th class="num">Витрати</th><th class="num">ROAS</th>
+            <th class="hd-l">Канал</th><th>Замовл.</th><th>Нові</th><th>Повт.</th><th>Виручка</th><th>Частка</th><th>Серед. чек</th><th>Витрати</th><th>ROAS</th>
           </tr></thead>
           <tbody>${chanRows}</tbody>
         </table>
       </div>
-      ${editable ? `
-      <div style="display:flex;gap:8px;align-items:center;padding:12px;border-top:1px solid var(--border);flex-wrap:wrap">
-        <span style="color:var(--muted);font-size:12px">Додати витрату на канал:</span>
-        <select id="mkt-add-channel" style="background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:12px">${addChannelOpts}</select>
-        <input id="mkt-add-amount" type="number" min="0" step="1" placeholder="сума ₴" style="width:110px;background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:12px" />
-        <button class="refresh-btn" onclick="addMktCost()">Зберегти</button>
+      ${editable ? `<div class="hd-addcost">
+        <span class="hd-dim">Додати витрату на канал:</span>
+        <select id="mkt-add-channel" class="hd-select">${addChannelOpts}</select>
+        <input id="mkt-add-amount" class="hd-cost" style="width:120px" type="number" min="0" step="1" placeholder="сума ₴" />
+        <button class="hd-btn hd-btn-p" onclick="addMktCost()">Зберегти</button>
       </div>` : ''}
     </div>
 
-    <div class="card" style="margin-top:16px">
-      <div class="card-title">Привлечення: LTV по каналах першого дотику (first-touch)
-        <span style="font-weight:400;color:var(--muted);font-size:11px">— хто реально привів клієнта · покриття: ${fmt(ftCov.matched_buyers)}/${fmt(ftCov.total_buyers)} клієнтів</span>
-      </div>
-      <div class="tbl-scroll">
-        <table>
-          <thead><tr>
-            <th>Канал привлечення</th><th class="num">Клієнтів</th><th class="num">LTV сума</th><th class="num">LTV середній</th>
-          </tr></thead>
+    <div class="hd-card">
+      <div class="hd-card-h">Привлечення · LTV по каналах першого дотику <span class="hd-hint">— хто реально привів клієнта · покриття ${fmt(ftCov.matched_buyers)}/${fmt(ftCov.total_buyers)}</span></div>
+      <div class="hd-tw">
+        <table class="hd-table">
+          <thead><tr><th class="hd-l">Канал привлечення</th><th>Клієнтів</th><th>LTV сума</th><th>LTV середній</th></tr></thead>
           <tbody>${ftRows}</tbody>
         </table>
       </div>
-    </div>`;
+    </div>
+  </div>`;
 }
 
 async function renderTrendsPage() {
