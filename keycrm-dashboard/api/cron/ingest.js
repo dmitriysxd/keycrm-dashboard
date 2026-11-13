@@ -1816,7 +1816,7 @@ module.exports = async function handler(req, res) {
         // include=products.offer — щоб у відповіді була і структура позицій
         // з purchased_price для бекфілу sales.line_cost (точна закупка на
         // момент створення замовлення).
-        const resp = await get("/order", { page, limit: 50, include: "products.offer,marketing" }, apiKey, ctx);
+        const resp = await get("/order", { page, limit: 50, include: "products.offer,marketing,status" }, apiKey, ctx);
         const rows = (resp && resp.data) || [];
         if (!rows.length) { endReached = true; break; }
         ordersSeenBf += rows.length;
@@ -1837,6 +1837,9 @@ module.exports = async function handler(req, res) {
             utm_source: utm.source, utm_medium: utm.medium, utm_campaign: utm.campaign,
             utm_content: utm.content, utm_term: utm.term,
           };
+          // Ре-синк статусу (фікс застряглих за час простоїв автозагрузки).
+          const bfStatus = (order.status && (order.status.name || order.status.title)) || null;
+          if (bfStatus) updateObj.order_status = bfStatus;
           if (sId != null || sName) {
             updateObj.source_id = sId && !isNaN(sId) ? sId : null;
             updateObj.source_name = sName;
