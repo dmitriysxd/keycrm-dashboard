@@ -1,0 +1,55 @@
+# Разова самопочинка статусів «відкритих» заказів: перечитує з KeyCRM усі
+# не-фінальні заказы і оновлює sales.order_status. Виправляє застряглі статуси
+# (напр. заказ, що завершився в KeyCRM у день, коли ingest висів).
+#
+# Щоденно це робить авто-цикл (крок refresh_open). Цей workflow — для РАЗОВОГО
+# повного прогону (або коли треба добити вручну).
+#
+# Потребує: міграцію 053 (open_order_ids) + задеплоєний step=refresh_open.
+
+name: Refresh open order statuses
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_iterations:
+        description: 'Макс ітерацій (по ~40-50 заказів кожна)'
+        required: false
+        default: '20'
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Loop refresh_open until done
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          MAX_ITER: ${{ github.event.inputs.max_iterations }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET не налаштовано"; exit 1
+          fi
+          set +e
+          OFFSET=0
+          TOTAL_UPD=0
+          for i in $(seq 1 ${MAX_ITER:-20}); do
+            echo "=== iteration $i · from=$OFFSET ==="
+            HTTP=$(curl -s -o /tmp/resp.json -w "%{http_code}" --max-time 90 \
+              "https://keycrm-dashboard.vercel.app/api/cron/ingest?step=refresh_open&from=$OFFSET&secret=$CRON_SECRET")
+            echo "HTTP $HTTP"
+            cat /tmp/resp.json | head -c 500; echo ""
+            if [ "$HTTP" != "200" ]; then
+              echo "::warning::HTTP $HTTP — чекаю 20s"; sleep 20; continue
+            fi
+            UPD=$(python3 -c "import json;d=json.load(open('/tmp/resp.json'));print(d.get('updated',0))")
+            DONE=$(python3 -c "import json;d=json.load(open('/tmp/resp.json'));print('1' if d.get('done') else '0')")
+            NEXT=$(python3 -c "import json;d=json.load(open('/tmp/resp.json'));v=d.get('next_offset');print(v if v is not None else '')")
+            TOTAL_UPD=$((TOTAL_UPD + UPD))
+            echo "Cumulative updated: $TOTAL_UPD"
+            if [ "$DONE" = "1" ]; then
+              echo "✓ Готово. Оновлено статусів: $TOTAL_UPD"; exit 0
+            fi
+            OFFSET=$NEXT
+            sleep 3
+          done
+          echo "::warning::MAX_ITER досягнуто, from=$OFFSET. Запусти ще раз."
