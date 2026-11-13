@@ -2007,7 +2007,7 @@ function renderMarketingView() {
     <div class="hd-head">
       <div>
         <div class="hd-h1">Наскрізна аналітика по каналам</div>
-        <div class="hd-sub">лише сайт bijboom-opt.com.ua · ${mktMonthLabel(MKT_PERIOD)} · ${fmt(t.done||0)} виконаних · last-touch</div>
+        <div class="hd-sub">лише сайт bijboom-opt.com.ua · ${mktMonthLabel(MKT_PERIOD)} · ${fmt((t.done||0)+(t.progress||0))} активних (без скасованих) · last-touch</div>
       </div>
       <div class="hd-filters">
         <div class="hd-seg">${seg('all','Усі')}${seg('opt','Опт')}${seg('retail','Роздріб')}</div>
@@ -2017,10 +2017,11 @@ function renderMarketingView() {
     </div>
 
     <div class="hd-kpis">
-      <div class="hd-kpi"><div class="hd-kpi-l">Виручка (виконані)</div><div class="hd-kpi-v mono">${fmtMoney(totRev)}</div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">Виконані · Нові / Повт.</div><div class="hd-kpi-v mono">${fmt(t.done||0)} <span class="hd-kpi-x"><span class="hd-pos">${fmt(t.new_orders||0)}</span> / <span style="color:var(--hd-sky)">${fmt(t.repeat_orders||0)}</span></span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Виручка</div><div class="hd-kpi-v mono">${fmtMoney(totRev)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Замовлення · Нові / Повт.</div><div class="hd-kpi-v mono">${fmt((t.done||0)+(t.progress||0))} <span class="hd-kpi-x"><span class="hd-pos">${fmt(t.new_orders||0)}</span> / <span style="color:var(--hd-sky)">${fmt(t.repeat_orders||0)}</span></span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Виконані</div><div class="hd-kpi-v mono">${fmt(t.done||0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">В роботі</div><div class="hd-kpi-v mono" style="color:var(--hd-warn)">${fmt(t.progress||0)}</div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">Скасовані</div><div class="hd-kpi-v mono hd-neg">${fmt(t.cancelled||0)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Скасовані (не враховуються)</div><div class="hd-kpi-v mono hd-neg">${fmt(t.cancelled||0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Витрати</div><div class="hd-kpi-v mono">${t.cost ? fmtMoney(t.cost) : '—'}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">ROAS</div><div class="hd-kpi-v mono">${roasCell(t.roas)}</div></div>
     </div>
