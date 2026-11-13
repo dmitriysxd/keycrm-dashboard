@@ -41,6 +41,16 @@ function isExcluded(orderStatus) {
   return false;
 }
 
+// Статус-групи для маркетингу (варіант 3): done / progress / cancelled.
+// done = завершена продажа; cancelled = «мертві» статуси (isExcluded);
+// progress = усе інше (новий, в роботі, в дорозі тощо).
+const DONE_STATUSES = new Set(["completed", "delivered", "виконано"]);
+function statusGroup(s) {
+  if (isExcluded(s)) return "cancelled";
+  if (s && DONE_STATUSES.has(s)) return "done";
+  return "progress";
+}
+
 // ── Бакет дати ─────────────────────────────────────────
 function bucketKey(date, bucket) {
   const d = new Date(date);
@@ -330,7 +340,6 @@ async function handleMarketing(req, res, supabase) {
 
   const orderList = [];
   for (const r of orderRows) {
-    if (isExcluded(r.order_status)) continue;
     if (!r.ordered_at) continue;
     orderList.push({
       order_id: r.order_id,
@@ -340,14 +349,16 @@ async function handleMarketing(req, res, supabase) {
       utm_medium: r.utm_medium || null,
       source_name: r.source_name || null,
       revenue: r.revenue != null ? parseFloat(r.revenue) : 0,
+      grp: statusGroup(r.order_status),
     });
   }
 
-  const firstOrderAt = new Map();
+  // «Новий» клієнт = перша ЗАВЕРШЕНА покупка (серед done-заказів).
+  const firstDoneAt = new Map();
   for (const o of orderList) {
-    if (!o.buyer_id) continue;
-    const cur = firstOrderAt.get(o.buyer_id);
-    if (!cur || o.ordered_at < cur) firstOrderAt.set(o.buyer_id, o.ordered_at);
+    if (o.grp !== "done" || !o.buyer_id) continue;
+    const cur = firstDoneAt.get(o.buyer_id);
+    if (!cur || o.ordered_at < cur) firstDoneAt.set(o.buyer_id, o.ordered_at);
   }
 
   function inSegment(buyerId) {
@@ -361,12 +372,12 @@ async function handleMarketing(req, res, supabase) {
   const chan = new Map();
   function bucket(ch) {
     let b = chan.get(ch);
-    if (!b) { b = { channel: ch, orders: 0, revenue: 0, newO: 0, repO: 0, newRev: 0, repRev: 0, buyers: new Set() }; chan.set(ch, b); }
+    if (!b) { b = { channel: ch, done: 0, prog: 0, canc: 0, revenue: 0, newO: 0, repO: 0, buyers: new Set() }; chan.set(ch, b); }
     return b;
   }
 
   const monthsSet = new Set();
-  let totOrders = 0, totRev = 0, totNew = 0, totRep = 0, totNewRev = 0, totRepRev = 0;
+  let tDone = 0, tProg = 0, tCanc = 0, tRev = 0, tNew = 0, tRep = 0;
   for (const o of orderList) {
     const m = ymKey(o.ordered_at);
     if (m) monthsSet.add(m);
@@ -374,12 +385,13 @@ async function handleMarketing(req, res, supabase) {
     if (period !== "all" && m !== period) continue;
     const ch = normChannel(o.utm_source, o.utm_medium, o.source_name);
     const b = bucket(ch);
-    const isNew = !o.buyer_id ? true : (o.ordered_at === firstOrderAt.get(o.buyer_id));
-    b.orders++; b.revenue += o.revenue;
+    if (o.grp === "cancelled") { b.canc++; tCanc++; continue; }
+    if (o.grp === "progress")  { b.prog++; tProg++; continue; }
+    // done — реальна продажа: рахуємо виручку, нові/повторні, LTV
+    b.done++; tDone++; b.revenue += o.revenue; tRev += o.revenue;
     if (o.buyer_id) b.buyers.add(o.buyer_id);
-    totOrders++; totRev += o.revenue;
-    if (isNew) { b.newO++; b.newRev += o.revenue; totNew++; totNewRev += o.revenue; }
-    else       { b.repO++; b.repRev += o.revenue; totRep++; totRepRev += o.revenue; }
+    const isNew = !o.buyer_id ? true : (o.ordered_at === firstDoneAt.get(o.buyer_id));
+    if (isNew) { b.newO++; tNew++; } else { b.repO++; tRep++; }
   }
 
   const costMap = new Map();
@@ -392,24 +404,26 @@ async function handleMarketing(req, res, supabase) {
     const cost = costMap.get(b.channel) || 0;
     totCost += cost;
     return {
-      channel: b.channel, orders: b.orders, revenue: Math.round(b.revenue),
+      channel: b.channel,
+      done: b.done, progress: b.prog, cancelled: b.canc,
       new_orders: b.newO, repeat_orders: b.repO,
-      new_revenue: Math.round(b.newRev), repeat_revenue: Math.round(b.repRev),
-      buyers: b.buyers.size, aov: b.orders ? Math.round(b.revenue / b.orders) : 0,
+      revenue: Math.round(b.revenue), buyers: b.buyers.size,
+      aov: b.done ? Math.round(b.revenue / b.done) : 0,
       cost: Math.round(cost), roas: cost > 0 ? +(b.revenue / cost).toFixed(2) : null,
     };
   }).sort((a, b) => b.revenue - a.revenue);
   for (const [ch, amount] of costMap.entries()) {
     if (!chan.has(ch) && amount > 0) {
-      channels.push({ channel: ch, orders: 0, revenue: 0, new_orders: 0, repeat_orders: 0,
-        new_revenue: 0, repeat_revenue: 0, buyers: 0, aov: 0, cost: Math.round(amount), roas: 0 });
+      channels.push({ channel: ch, done: 0, progress: 0, cancelled: 0, new_orders: 0, repeat_orders: 0,
+        revenue: 0, buyers: 0, aov: 0, cost: Math.round(amount), roas: 0 });
       totCost += amount;
     }
   }
 
+  // LTV first-touch — тільки по завершених продажах.
   const ltvByBuyer = new Map();
   for (const o of orderList) {
-    if (!o.buyer_id || !inSegment(o.buyer_id)) continue;
+    if (o.grp !== "done" || !o.buyer_id || !inSegment(o.buyer_id)) continue;
     ltvByBuyer.set(o.buyer_id, (ltvByBuyer.get(o.buyer_id) || 0) + o.revenue);
   }
   const ftAgg = new Map();
@@ -431,10 +445,9 @@ async function handleMarketing(req, res, supabase) {
   return res.status(200).json({
     period, segment, months, channels,
     totals: {
-      orders: totOrders, revenue: Math.round(totRev),
-      new_orders: totNew, repeat_orders: totRep,
-      new_revenue: Math.round(totNewRev), repeat_revenue: Math.round(totRepRev),
-      cost: Math.round(totCost), roas: totCost > 0 ? +(totRev / totCost).toFixed(2) : null,
+      done: tDone, progress: tProg, cancelled: tCanc,
+      revenue: Math.round(tRev), new_orders: tNew, repeat_orders: tRep,
+      cost: Math.round(totCost), roas: totCost > 0 ? +(tRev / totCost).toFixed(2) : null,
     },
     first_touch: firstTouch,
     first_touch_coverage: { matched_buyers: ftMatched, total_buyers: ltvByBuyer.size },

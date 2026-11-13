@@ -1978,7 +1978,9 @@ function renderMarketingView() {
       : (c.cost ? `<span class="mono">${fmtMoney(c.cost)}</span>` : '<span class="hd-dim">—</span>');
     return `<tr>
       <td class="hd-l">${c.channel}</td>
-      <td class="mono">${fmt(c.orders)}</td>
+      <td class="mono">${fmt(c.done)}</td>
+      <td class="mono" style="color:var(--hd-warn)">${fmt(c.progress)}</td>
+      <td class="mono hd-neg">${fmt(c.cancelled)}</td>
       <td class="mono hd-pos">${fmt(c.new_orders)}</td>
       <td class="mono" style="color:var(--hd-sky)">${fmt(c.repeat_orders)}</td>
       <td class="mono">${fmtMoney(c.revenue)}</td>
@@ -1987,7 +1989,7 @@ function renderMarketingView() {
       <td class="mono">${costCell}</td>
       <td class="mono">${roasCell(c.roas)}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="9" class="hd-empty">Немає даних за період</td></tr>`;
+  }).join('') || `<tr><td colspan="11" class="hd-empty">Немає даних за період</td></tr>`;
 
   // First-touch LTV
   const ftCov = d.first_touch_coverage || { matched_buyers: 0, total_buyers: 0 };
@@ -2005,7 +2007,7 @@ function renderMarketingView() {
     <div class="hd-head">
       <div>
         <div class="hd-h1">Наскрізна аналітика по каналам</div>
-        <div class="hd-sub">лише сайт bijboom-opt.com.ua · ${mktMonthLabel(MKT_PERIOD)} · ${fmt(t.orders||0)} замовлень · last-touch</div>
+        <div class="hd-sub">лише сайт bijboom-opt.com.ua · ${mktMonthLabel(MKT_PERIOD)} · ${fmt(t.done||0)} виконаних · last-touch</div>
       </div>
       <div class="hd-filters">
         <div class="hd-seg">${seg('all','Усі')}${seg('opt','Опт')}${seg('retail','Роздріб')}</div>
@@ -2015,9 +2017,11 @@ function renderMarketingView() {
     </div>
 
     <div class="hd-kpis">
-      <div class="hd-kpi"><div class="hd-kpi-l">Виручка</div><div class="hd-kpi-v mono">${fmtMoney(totRev)}</div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">Замовлення</div><div class="hd-kpi-v mono">${fmt(t.orders||0)} <span class="hd-kpi-x"><span class="hd-pos">${fmt(t.new_orders||0)}</span> / <span style="color:var(--hd-sky)">${fmt(t.repeat_orders||0)}</span></span></div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">Витрати на рекламу</div><div class="hd-kpi-v mono">${t.cost ? fmtMoney(t.cost) : '—'}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Виручка (виконані)</div><div class="hd-kpi-v mono">${fmtMoney(totRev)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Виконані · Нові / Повт.</div><div class="hd-kpi-v mono">${fmt(t.done||0)} <span class="hd-kpi-x"><span class="hd-pos">${fmt(t.new_orders||0)}</span> / <span style="color:var(--hd-sky)">${fmt(t.repeat_orders||0)}</span></span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">В роботі</div><div class="hd-kpi-v mono" style="color:var(--hd-warn)">${fmt(t.progress||0)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Скасовані</div><div class="hd-kpi-v mono hd-neg">${fmt(t.cancelled||0)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Витрати</div><div class="hd-kpi-v mono">${t.cost ? fmtMoney(t.cost) : '—'}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">ROAS</div><div class="hd-kpi-v mono">${roasCell(t.roas)}</div></div>
     </div>
 
@@ -2026,7 +2030,7 @@ function renderMarketingView() {
       <div class="hd-tw">
         <table class="hd-table">
           <thead><tr>
-            <th class="hd-l">Канал</th><th>Замовл.</th><th>Нові</th><th>Повт.</th><th>Виручка</th><th>Частка</th><th>Серед. чек</th><th>Витрати</th><th>ROAS</th>
+            <th class="hd-l">Канал</th><th>Виконані</th><th>В роботі</th><th>Скасов.</th><th>Нові</th><th>Повт.</th><th>Виручка</th><th>Частка</th><th>Серед. чек</th><th>Витрати</th><th>ROAS</th>
           </tr></thead>
           <tbody>${chanRows}</tbody>
         </table>
