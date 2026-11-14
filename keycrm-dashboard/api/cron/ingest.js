@@ -1565,7 +1565,7 @@ async function fetchMetaInsights(token, actId, since, until, ctx) {
   const ver = process.env.META_API_VERSION || "v21.0";
   const params = new URLSearchParams({
     level: "campaign",
-    fields: "campaign_id,campaign_name,spend,impressions,clicks",
+    fields: "campaign_id,campaign_name,spend,impressions,clicks,account_currency",
     time_increment: "1",
     time_range: JSON.stringify({ since, until }),
     limit: "200",
@@ -1594,15 +1594,48 @@ async function ingestMetaSpend(supabase, ctx, opts) {
   const until = opts.until || todayDate();
   const since = opts.since || new Date(Date.now() - (opts.days || 14) * 86400000).toISOString().slice(0, 10);
   const rows = await fetchMetaInsights(token, actId, since, until, ctx);
-  const batch = rows.map((r) => ({
-    date: r.date_start,
-    campaign_id: String(r.campaign_id || "unknown"),
-    campaign_name: r.campaign_name || null,
-    spend: parseFloat(r.spend || 0) || 0,
-    impressions: parseInt(r.impressions || 0, 10) || 0,
-    clicks: parseInt(r.clicks || 0, 10) || 0,
-    updated_at: new Date().toISOString(),
-  })).filter((r) => r.date && r.campaign_id);
+
+  // Конвертація у грн за офіційним курсом НБУ на ДАТУ розходу («на момент
+  // оплати»). Кеш по даті; вихідні/свята → переносимо попередній курс; якщо
+  // зовсім нема — fallback з env META_FX_FALLBACK (за замовч. 41).
+  const rateCache = new Map();
+  let lastRate = null;
+  const FALLBACK = parseFloat(process.env.META_FX_FALLBACK || "41") || 41;
+  async function uahRate(cur, dateYMD) {
+    if (!cur || cur === "UAH") return 1;
+    const key = cur + ":" + dateYMD;
+    if (rateCache.has(key)) return rateCache.get(key);
+    let rate = null;
+    try {
+      const url = "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange?valcode=" +
+        encodeURIComponent(cur) + "&date=" + dateYMD.replace(/-/g, "") + "&json";
+      const res = await fetch(url);
+      if (ctx) ctx.apiCalls = (ctx.apiCalls || 0) + 1;
+      const j = await res.json();
+      if (Array.isArray(j) && j[0] && j[0].rate) rate = parseFloat(j[0].rate);
+    } catch (e) { /* no-op */ }
+    if (rate) lastRate = rate; else rate = lastRate || FALLBACK;
+    rateCache.set(key, rate);
+    return rate;
+  }
+
+  const batch = [];
+  for (const r of rows) {
+    const date = r.date_start;
+    const cid = String(r.campaign_id || "unknown");
+    if (!date || !cid) continue;
+    const cur = String(r.account_currency || process.env.META_ACCOUNT_CURRENCY || "USD").toUpperCase();
+    const spend = parseFloat(r.spend || 0) || 0;
+    const rate = cur === "UAH" ? 1 : await uahRate(cur, date);
+    batch.push({
+      date, campaign_id: cid, campaign_name: r.campaign_name || null,
+      spend, currency: cur, fx_rate: cur === "UAH" ? 1 : (rate || null),
+      spend_uah: +(spend * (rate || 1)).toFixed(2),
+      impressions: parseInt(r.impressions || 0, 10) || 0,
+      clicks: parseInt(r.clicks || 0, 10) || 0,
+      updated_at: new Date().toISOString(),
+    });
+  }
   let upserted = 0;
   for (let i = 0; i < batch.length; i += 300) {
     const slice = batch.slice(i, i + 300);
@@ -1610,7 +1643,11 @@ async function ingestMetaSpend(supabase, ctx, opts) {
     if (error) throw new Error("meta_spend upsert: " + error.message);
     upserted += slice.length;
   }
-  return { since, until, rows: rows.length, upserted };
+  return {
+    since, until, rows: rows.length, upserted,
+    currency: batch[0] ? batch[0].currency : null,
+    sample_rate: batch.find((b) => b.currency !== "UAH") ? (batch.find((b) => b.currency !== "UAH").fx_rate) : null,
+  };
 }
 
 module.exports = async function handler(req, res) {

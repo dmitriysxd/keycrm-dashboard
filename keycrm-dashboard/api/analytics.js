@@ -342,7 +342,7 @@ async function handleMarketing(req, res, supabase) {
     fetchAll(() => supabase.from("buyers").select("buyer_id, client_type, phone")),
     fetchAll(() => supabase.from("first_touch").select("phone_norm, first_source")),
     fetchAll(() => supabase.from("channel_costs").select("channel, period, amount")),
-    fetchAll(() => supabase.from("meta_spend").select("date, spend, impressions, clicks")),
+    fetchAll(() => supabase.from("meta_spend").select("date, spend, spend_uah, impressions, clicks")),
   ]);
 
   const typeMap = new Map();
@@ -425,7 +425,8 @@ async function handleMarketing(req, res, supabase) {
   for (const r of (metaRows || [])) {
     const ym = (r.date || "").slice(0, 7);
     if (period !== "all" && ym !== period) continue;
-    metaSpend += parseFloat(r.spend || 0) || 0;
+    // spend_uah (конвертовано по курсу НБУ на дату розходу); fallback на spend.
+    metaSpend += parseFloat(r.spend_uah != null ? r.spend_uah : (r.spend || 0)) || 0;
     metaImpr += parseInt(r.impressions || 0, 10) || 0;
     metaClicks += parseInt(r.clicks || 0, 10) || 0;
   }
