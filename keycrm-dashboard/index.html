@@ -45,6 +45,10 @@
   .hd-pos{ color:var(--hd-pos); } .hd-neg{ color:var(--hd-neg); } .hd-dim{ color:var(--hd-t3); }
   .hd-empty{ text-align:center; color:var(--hd-t3); padding:26px; }
   .hd-cost{ width:92px; background:var(--hd-surf); border:1px solid var(--hd-bd); color:var(--hd-t1); border-radius:7px; padding:5px 7px; text-align:right; font-size:12px; font-family:'JetBrains Mono',monospace; }
+  .hd-daterow{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:-6px 0 18px; padding:12px 14px; background:var(--hd-card); border:1px solid var(--hd-bd); border-radius:12px; }
+  .hd-date{ background:var(--hd-surf); border:1px solid var(--hd-bd); color:var(--hd-t1); border-radius:9px; padding:7px 10px; font-size:13px; font-family:'JetBrains Mono',monospace; color-scheme:dark; cursor:pointer; }
+  .hd-date:focus{ outline:none; border-color:var(--hd-accent); }
+  .hd-daterow-sep{ width:1px; align-self:stretch; background:var(--hd-bd); margin:0 4px; }
   .hd-addcost{ display:flex; gap:8px; align-items:center; padding:12px 16px; border-top:1px solid var(--hd-bd2); flex-wrap:wrap; }
   @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
@@ -1893,7 +1897,8 @@ let TRENDS_BUCKET = 'month';
 
 // ── Маркетинг ────────────────────────
 let MKT_DATA = null;
-let MKT_PERIOD = 'all';
+let MKT_FROM = null;   // 'YYYY-MM-DD' або null (увесь час)
+let MKT_TO = null;
 let MKT_SEGMENT = 'all';
 const MKT_KNOWN_CHANNELS = ['Meta Ads','Google Ads','Email (розсилка)','SMS','Viber','Telegram','TikTok','Сайт / прямі','Прямі / не визначено'];
 const MKT_MONTHS_UK = ['січ','лют','бер','кві','тра','чер','лип','сер','вер','жов','лис','гру'];
@@ -1902,12 +1907,67 @@ function mktMonthLabel(ym) {
   const p = ym.split('-'); if (p.length !== 2) return ym;
   return (MKT_MONTHS_UK[parseInt(p[1]) - 1] || p[1]) + ' ' + p[0];
 }
+// Дата у Києві (YYYY-MM-DD).
+function mktTodayKyiv() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv' }).format(new Date()); }
+function mktPad(n) { return String(n).padStart(2, '0'); }
+function mktAddDays(ymd, delta) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + delta);
+  return dt.toISOString().slice(0, 10);
+}
+function mktDMY(ymd) { if (!ymd) return ''; const p = ymd.split('-'); return p[2] + '.' + p[1] + '.' + p[0]; }
+function mktRangeLabel() { return (MKT_FROM && MKT_TO) ? (mktDMY(MKT_FROM) + ' – ' + mktDMY(MKT_TO)) : 'Увесь час'; }
+// Якщо діапазон у межах одного місяця — повертаємо 'YYYY-MM' (для ручних витрат).
+function mktSingleMonth() {
+  if (!MKT_FROM || !MKT_TO) return null;
+  return (MKT_FROM.slice(0, 7) === MKT_TO.slice(0, 7)) ? MKT_FROM.slice(0, 7) : null;
+}
+// Пресети діапазону.
+function mktPreset(kind) {
+  const today = mktTodayKyiv();
+  const [Y, M] = today.split('-').map(Number);
+  const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
+  if (kind === 'all') { MKT_FROM = null; MKT_TO = null; }
+  else if (kind === 'this_month') { MKT_FROM = iso(Y, M, 1); MKT_TO = today; }
+  else if (kind === 'prev_month') {
+    let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
+    const lastDay = new Date(Date.UTC(py, pm, 0)).getUTCDate();
+    MKT_FROM = iso(py, pm, 1); MKT_TO = iso(py, pm, lastDay);
+  }
+  else if (kind === 'last7') { MKT_FROM = mktAddDays(today, -6); MKT_TO = today; }
+  else if (kind === 'last14') { MKT_FROM = mktAddDays(today, -13); MKT_TO = today; }
+  renderMarketingPage();
+}
+// Яка кнопка пресету зараз активна (для підсвічування).
+function mktActivePreset() {
+  const today = mktTodayKyiv();
+  const [Y, M] = today.split('-').map(Number);
+  const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
+  if (!MKT_FROM && !MKT_TO) return 'all';
+  if (MKT_FROM === iso(Y, M, 1) && MKT_TO === today) return 'this_month';
+  if (MKT_FROM === mktAddDays(today, -6) && MKT_TO === today) return 'last7';
+  if (MKT_FROM === mktAddDays(today, -13) && MKT_TO === today) return 'last14';
+  let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
+  const lastDay = new Date(Date.UTC(py, pm, 0)).getUTCDate();
+  if (MKT_FROM === iso(py, pm, 1) && MKT_TO === iso(py, pm, lastDay)) return 'prev_month';
+  return 'custom';
+}
+function mktApplyDates() {
+  const f = document.getElementById('mkt-from').value;
+  const t = document.getElementById('mkt-to').value;
+  if (!f || !t) { alert('Вкажіть обидві дати'); return; }
+  if (f > t) { alert('«Від» не може бути пізніше «До»'); return; }
+  MKT_FROM = f; MKT_TO = t; renderMarketingPage();
+}
 
 async function renderMarketingPage() {
   const main = document.getElementById('main-area');
   main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Завантажуємо маркетинг</div></div>';
   try {
-    const r = await fetch(apiUrl('/api/analytics', 'type=marketing&period=' + encodeURIComponent(MKT_PERIOD) + '&segment=' + encodeURIComponent(MKT_SEGMENT)));
+    let q = 'type=marketing&segment=' + encodeURIComponent(MKT_SEGMENT);
+    if (MKT_FROM && MKT_TO) q += '&from=' + MKT_FROM + '&to=' + MKT_TO;
+    const r = await fetch(apiUrl('/api/analytics', q));
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
     MKT_DATA = j;
@@ -1919,17 +1979,18 @@ async function renderMarketingPage() {
 }
 
 function setMktSegment(s) { MKT_SEGMENT = s; renderMarketingPage(); }
-function setMktPeriod(p) { MKT_PERIOD = p; renderMarketingPage(); }
 
 async function saveMktCost(el) {
   const channel = el.dataset.channel;
   const amount = parseFloat(el.value);
   if (isNaN(amount) || amount < 0) { el.value = el.dataset.orig || ''; return; }
+  const mPeriod = mktSingleMonth();
+  if (!mPeriod) { alert('Ручні витрати можна вводити лише коли діапазон у межах одного місяця'); el.value = el.dataset.orig || ''; return; }
   el.disabled = true;
   try {
     const r = await fetch(apiUrl('/api/analytics', 'type=marketing'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'set_cost', channel, period: MKT_PERIOD, amount }),
+      body: JSON.stringify({ action: 'set_cost', channel, period: mPeriod, amount }),
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || 'Помилка');
@@ -1947,10 +2008,12 @@ async function addMktCost() {
   const amount = parseFloat(amtEl && amtEl.value);
   if (!channel) { alert('Оберіть канал'); return; }
   if (isNaN(amount) || amount < 0) { alert('Введіть суму ≥ 0'); return; }
+  const mPeriod = mktSingleMonth();
+  if (!mPeriod) { alert('Ручні витрати можна вводити лише коли діапазон у межах одного місяця'); return; }
   try {
     const r = await fetch(apiUrl('/api/analytics', 'type=marketing'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'set_cost', channel, period: MKT_PERIOD, amount }),
+      body: JSON.stringify({ action: 'set_cost', channel, period: mPeriod, amount }),
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || 'Помилка');
@@ -1961,14 +2024,27 @@ async function addMktCost() {
 function renderMarketingView() {
   const d = MKT_DATA; if (!d) return;
   const t = d.totals || {};
-  const months = d.months || [];
-  const editable = MKT_PERIOD !== 'all';
+  const editable = mktSingleMonth() !== null;
   const totRev = t.revenue || 0;
   const seg = (val, label) => `<button class="hd-seg-b${MKT_SEGMENT===val?' on':''}" onclick="setMktSegment('${val}')">${label}</button>`;
   const roasCell = (v) => v == null ? '<span class="hd-dim">—</span>' : `<span class="${v>=1?'hd-pos':'hd-neg'}">${Number(v).toFixed(2)}×</span>`;
 
-  const periodOptions = ['<option value="all"' + (MKT_PERIOD==='all'?' selected':'') + '>Увесь час</option>']
-    .concat(months.map(m => `<option value="${m}"${MKT_PERIOD===m?' selected':''}>${mktMonthLabel(m)}</option>`)).join('');
+  // Верхня панель вибору дат: від/до по календарю + пресети.
+  const today = mktTodayKyiv();
+  const activePreset = mktActivePreset();
+  const presetBtn = (kind, label) => `<button class="hd-seg-b${activePreset===kind?' on':''}" onclick="mktPreset('${kind}')">${label}</button>`;
+  const dateBar = `
+    <div class="hd-daterow">
+      <span class="hd-dim" style="font-size:12px">Період:</span>
+      <input type="date" id="mkt-from" class="hd-date" value="${MKT_FROM||''}" max="${today}">
+      <span class="hd-dim">–</span>
+      <input type="date" id="mkt-to" class="hd-date" value="${MKT_TO||''}" max="${today}">
+      <button class="hd-btn hd-btn-p" onclick="mktApplyDates()">Застосувати</button>
+      <span class="hd-daterow-sep"></span>
+      <div class="hd-seg">
+        ${presetBtn('this_month','Поточний місяць')}${presetBtn('prev_month','Попередній місяць')}${presetBtn('last7','7 днів')}${presetBtn('last14','14 днів')}${presetBtn('all','Весь час')}
+      </div>
+    </div>`;
 
   // Головна таблиця каналів (last-touch)
   const chanRows = (d.channels || []).map(c => {
@@ -2011,14 +2087,14 @@ function renderMarketingView() {
     <div class="hd-head">
       <div>
         <div class="hd-h1">Наскрізна аналітика по каналам</div>
-        <div class="hd-sub">лише сайт bijboom-opt.com.ua · ${mktMonthLabel(MKT_PERIOD)} · ${fmt((t.done||0)+(t.progress||0))} активних (без скасованих) · last-touch</div>
+        <div class="hd-sub">лише сайт bijboom-opt.com.ua · ${mktRangeLabel()} · ${fmt((t.done||0)+(t.progress||0))} активних (без скасованих) · last-touch</div>
       </div>
       <div class="hd-filters">
         <div class="hd-seg">${seg('all','Усі')}${seg('opt','Опт')}${seg('retail','Роздріб')}</div>
-        <select class="hd-select" onchange="setMktPeriod(this.value)">${periodOptions}</select>
         <button class="hd-btn" onclick="renderMarketingPage()">↺</button>
       </div>
     </div>
+    ${dateBar}
 
     <div class="hd-kpis">
       <div class="hd-kpi"><div class="hd-kpi-l">Виручка</div><div class="hd-kpi-v mono">${fmtMoney(totRev)}</div></div>
@@ -2031,7 +2107,7 @@ function renderMarketingView() {
     </div>
 
     <div class="hd-card">
-      <div class="hd-card-h">Канали <span class="hd-hint">${editable ? '— введи витрати в колонці «Витрати», ROAS рахується сам' : '— обери місяць, щоб вводити витрати'}</span></div>
+      <div class="hd-card-h">Канали <span class="hd-hint">${editable ? '— введи витрати в колонці «Витрати», ROAS рахується сам' : '— обери діапазон у межах одного місяця, щоб вводити витрати вручну'}</span></div>
       <div class="hd-tw">
         <table class="hd-table">
           <thead><tr>

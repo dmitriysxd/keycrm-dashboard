@@ -308,6 +308,15 @@ function ymKey(dateStr) {
   return y + "-" + m;
 }
 
+// День у Києві (YYYY-MM-DD) — для фільтра по довільному діапазону дат.
+const _kyivYMD = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Kyiv", year: "numeric", month: "2-digit", day: "2-digit" });
+function ymdKey(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return String(dateStr).slice(0, 10);
+  return _kyivYMD.format(d); // "YYYY-MM-DD"
+}
+
 // Дзеркалить SQL normalize_phone: канонічний UA-формат '380XXXXXXXXX'.
 function normPhone(raw) {
   const d = (raw || "").replace(/\D/g, "");
@@ -322,6 +331,21 @@ function normPhone(raw) {
 async function handleMarketing(req, res, supabase) {
   const period = (req.query && req.query.period) || "all";
   const segment = (req.query && req.query.segment) || "all";
+
+  // Довільний діапазон дат (YYYY-MM-DD) — пріоритетний. Якщо не заданий,
+  // підтримуємо старий period=YYYY-MM (виводимо межі місяця). period=all → весь час.
+  const reDate = /^\d{4}-\d{2}-\d{2}$/;
+  let from = (req.query && req.query.from) || null;
+  let to = (req.query && req.query.to) || null;
+  if (!reDate.test(String(from))) from = null;
+  if (!reDate.test(String(to))) to = null;
+  if ((!from || !to) && /^\d{4}-\d{2}$/.test(period)) {
+    from = period + "-01";
+    to = period + "-31"; // порівняння рядків — "-31" покриває будь-який місяць
+  }
+  const hasRange = !!(from && to);
+  const fromM = from ? from.slice(0, 7) : null; // місяць "від" (для ручних витрат)
+  const toM = to ? to.slice(0, 7) : null;
 
   // Уся історія заказів (не 2 роки) — для коректного «новий/повторний».
   const since = new Date("2015-01-01T00:00:00Z");
@@ -404,7 +428,10 @@ async function handleMarketing(req, res, supabase) {
     const m = ymKey(o.ordered_at);
     if (m) monthsSet.add(m);
     if (!inSegment(o.buyer_id)) continue;
-    if (period !== "all" && m !== period) continue;
+    if (hasRange) {
+      const dk = ymdKey(o.ordered_at);
+      if (!dk || dk < from || dk > to) continue;
+    }
     const ch = normChannel(o.utm_source, o.utm_medium, o.source_name);
     const b = bucket(ch);
     if (o.grp === "cancelled") { b.canc++; tCanc++; continue; }
@@ -418,15 +445,15 @@ async function handleMarketing(req, res, supabase) {
 
   const costMap = new Map();
   for (const c of costRows) {
-    if (period !== "all" && c.period !== period) continue;
+    // Ручні витрати зберігаються по місяцях → беремо місяці в межах діапазону.
+    if (hasRange && (c.period < fromM || c.period > toM)) continue;
     costMap.set(c.channel, (costMap.get(c.channel) || 0) + (parseFloat(c.amount) || 0));
   }
 
   // Авто-розхід Meta (meta_spend) за період → каналу «Meta Ads».
   let metaSpend = 0, metaImpr = 0, metaClicks = 0;
   for (const r of (metaRows || [])) {
-    const ym = (r.date || "").slice(0, 7);
-    if (period !== "all" && ym !== period) continue;
+    if (hasRange && (!r.date || r.date < from || r.date > to)) continue;
     // spend_uah (конвертовано по курсу НБУ на дату розходу); fallback на spend.
     metaSpend += parseFloat(r.spend_uah != null ? r.spend_uah : (r.spend || 0)) || 0;
     metaImpr += parseInt(r.impressions || 0, 10) || 0;
@@ -435,8 +462,7 @@ async function handleMarketing(req, res, supabase) {
   // Авто-розхід Google Ads (google_spend) за період → каналу «Google Ads».
   let googleSpend = 0, googleImpr = 0, googleClicks = 0;
   for (const r of (googleRows || [])) {
-    const ym = (r.date || "").slice(0, 7);
-    if (period !== "all" && ym !== period) continue;
+    if (hasRange && (!r.date || r.date < from || r.date > to)) continue;
     googleSpend += parseFloat(r.spend_uah != null ? r.spend_uah : (r.spend || 0)) || 0;
     googleImpr += parseInt(r.impressions || 0, 10) || 0;
     googleClicks += parseInt(r.clicks || 0, 10) || 0;
@@ -515,6 +541,7 @@ async function handleMarketing(req, res, supabase) {
   const months = Array.from(monthsSet).sort().reverse();
   return res.status(200).json({
     period, segment, months, channels,
+    from: hasRange ? from : null, to: hasRange ? to : null,
     totals: {
       done: tDone, progress: tProg, cancelled: tCanc,
       revenue: Math.round(tRev), new_orders: tNew, repeat_orders: tRep,
