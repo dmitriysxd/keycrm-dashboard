@@ -2008,6 +2008,48 @@ module.exports = async function handler(req, res) {
       const r = await ingestGoogleSpend(supabase, ctx, gopts);
       return res.status(200).json({ ok: true, step: "google_spend", ...r, api_calls: ctx.apiCalls });
     }
+    if (step === "google_diag") {
+      // Діагностика Google Ads: показуємо сирі відповіді Google (без запису),
+      // щоб побачити, чи є доступ до акаунта і що саме повертає API.
+      const out = { ok: true };
+      try {
+        const token = await googleAccessToken();
+        out.has_token = !!token;
+        if (!token) { out.note = "no access token — перевір CLIENT_ID/SECRET/REFRESH"; return res.status(200).json(out); }
+        const ver = process.env.GOOGLE_ADS_API_VERSION || "v25";
+        const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
+        const cid = String(process.env.GOOGLE_ADS_CUSTOMER_ID || "").replace(/\D/g, "");
+        const loginCid = String(process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID || "").replace(/\D/g, "");
+        out.customer_id = cid; out.login_customer_id = loginCid || null; out.api_version = ver;
+        out.dev_token_len = devToken ? devToken.length : 0;
+        const baseHdr = { Authorization: "Bearer " + token, "developer-token": devToken || "" };
+        const headers = Object.assign({ "Content-Type": "application/json" }, baseHdr);
+        if (loginCid) headers["login-customer-id"] = loginCid;
+        // (a) які акаунти бачить цей OAuth-користувач
+        try {
+          const r1 = await fetch("https://googleads.googleapis.com/" + ver + "/customers:listAccessibleCustomers", { headers: baseHdr });
+          out.accessible_status = r1.status;
+          out.accessible = (await r1.text()).slice(0, 800);
+        } catch (e) { out.accessible_err = String((e && e.message) || e); }
+        // (b) чи читається сам акаунт
+        try {
+          const q = "SELECT customer.id, customer.descriptive_name, customer.currency_code FROM customer";
+          const r2 = await fetch("https://googleads.googleapis.com/" + ver + "/customers/" + cid + "/googleAds:search", { method: "POST", headers, body: JSON.stringify({ query: q }) });
+          out.customer_status = r2.status;
+          out.customer_body = (await r2.text()).slice(0, 1000);
+        } catch (e) { out.customer_err = String((e && e.message) || e); }
+        // (c) сирий запит розходу за 30 днів
+        try {
+          const until = todayDate();
+          const since = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+          const q = "SELECT campaign.id, campaign.name, metrics.cost_micros, segments.date FROM campaign WHERE segments.date BETWEEN '" + since + "' AND '" + until + "'";
+          const r3 = await fetch("https://googleads.googleapis.com/" + ver + "/customers/" + cid + "/googleAds:searchStream", { method: "POST", headers, body: JSON.stringify({ query: q }) });
+          out.spend_status = r3.status;
+          out.spend_body = (await r3.text()).slice(0, 1500);
+        } catch (e) { out.spend_err = String((e && e.message) || e); }
+      } catch (e) { out.error = String((e && e.message) || e); }
+      return res.status(200).json(out);
+    }
     let enumAliveResult = null;
     if (step === "enum_alive_orders") {
       // Фаза 1: перелік живих order_id з KeyCRM у буфер. ?from_page=N для resume.
