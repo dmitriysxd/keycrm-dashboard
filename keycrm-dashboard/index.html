@@ -1973,9 +1973,11 @@ function renderMarketingView() {
   // Головна таблиця каналів (last-touch)
   const chanRows = (d.channels || []).map(c => {
     const share = totRev > 0 ? Math.round(c.revenue / totRev * 100) : 0;
-    const costCell = editable
-      ? `<input class="hd-cost" type="number" min="0" step="1" value="${c.cost || ''}" data-channel="${String(c.channel).replace(/"/g,'&quot;')}" data-orig="${c.cost || ''}" onchange="saveMktCost(this)" />`
-      : (c.cost ? `<span class="mono">${fmtMoney(c.cost)}</span>` : '<span class="hd-dim">—</span>');
+    const costCell = c.auto_cost
+      ? `<span class="mono" title="авто з Meta Ads">${fmtMoney(c.cost)} <span class="hd-dim" style="font-size:9px">авто</span></span>`
+      : (editable
+          ? `<input class="hd-cost" type="number" min="0" step="1" value="${c.cost || ''}" data-channel="${String(c.channel).replace(/"/g,'&quot;')}" data-orig="${c.cost || ''}" onchange="saveMktCost(this)" />`
+          : (c.cost ? `<span class="mono">${fmtMoney(c.cost)}</span>` : '<span class="hd-dim">—</span>'));
     return `<tr>
       <td class="hd-l">${c.channel}</td>
       <td class="mono">${fmt(c.done)}</td>
@@ -1988,8 +1990,10 @@ function renderMarketingView() {
       <td class="mono">${fmtMoney(c.aov)}</td>
       <td class="mono">${costCell}</td>
       <td class="mono">${roasCell(c.roas)}</td>
+      <td class="mono hd-dim">${c.cpm != null ? fmt(c.cpm) : '—'}</td>
+      <td class="mono hd-dim">${c.ctr != null ? c.ctr + '%' : '—'}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="11" class="hd-empty">Немає даних за період</td></tr>`;
+  }).join('') || `<tr><td colspan="13" class="hd-empty">Немає даних за період</td></tr>`;
 
   // First-touch LTV
   const ftCov = d.first_touch_coverage || { matched_buyers: 0, total_buyers: 0 };
@@ -2031,7 +2035,7 @@ function renderMarketingView() {
       <div class="hd-tw">
         <table class="hd-table">
           <thead><tr>
-            <th class="hd-l">Канал</th><th>Виконані</th><th>В роботі</th><th>Скасов.</th><th>Нові</th><th>Повт.</th><th>Виручка</th><th>Частка</th><th>Серед. чек</th><th>Витрати</th><th>ROAS</th>
+            <th class="hd-l">Канал</th><th>Виконані</th><th>В роботі</th><th>Скасов.</th><th>Нові</th><th>Повт.</th><th>Виручка</th><th>Частка</th><th>Серед. чек</th><th>Витрати</th><th>ROAS</th><th>CPM</th><th>CTR</th>
           </tr></thead>
           <tbody>${chanRows}</tbody>
         </table>

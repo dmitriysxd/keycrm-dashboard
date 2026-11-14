@@ -329,7 +329,7 @@ async function handleMarketing(req, res, supabase) {
   // marketing_order_facts(RPC) — дедуп і фільтр (сайт + період) робить Postgres
   // ДО агрегації (по індексах), одним запитом без пагінації. Вью v_order_facts
   // фільтрував після GROUP BY → агрегував усю sales щоразу → statement timeout.
-  const [orderRows, buyerRows, ftRows, costRows] = await Promise.all([
+  const [orderRows, buyerRows, ftRows, costRows, metaRows] = await Promise.all([
     // Пагінуємо RPC (як fetchAll) — інакше PostgREST обрізає відповідь по
     // db-max-rows і найсвіжіші заказы випадають (місяці обривались на серпні).
     // .order(order_id) — щоб сторінки .range були стабільні.
@@ -342,6 +342,7 @@ async function handleMarketing(req, res, supabase) {
     fetchAll(() => supabase.from("buyers").select("buyer_id, client_type, phone")),
     fetchAll(() => supabase.from("first_touch").select("phone_norm, first_source")),
     fetchAll(() => supabase.from("channel_costs").select("channel, period, amount")),
+    fetchAll(() => supabase.from("meta_spend").select("date, spend, impressions, clicks")),
   ]);
 
   const typeMap = new Map();
@@ -418,25 +419,61 @@ async function handleMarketing(req, res, supabase) {
     if (period !== "all" && c.period !== period) continue;
     costMap.set(c.channel, (costMap.get(c.channel) || 0) + (parseFloat(c.amount) || 0));
   }
-  let totCost = 0;
-  const channels = Array.from(chan.values()).map((b) => {
-    const cost = costMap.get(b.channel) || 0;
-    totCost += cost;
+
+  // Авто-розхід Meta (meta_spend) за період → каналу «Meta Ads».
+  let metaSpend = 0, metaImpr = 0, metaClicks = 0;
+  for (const r of (metaRows || [])) {
+    const ym = (r.date || "").slice(0, 7);
+    if (period !== "all" && ym !== period) continue;
+    metaSpend += parseFloat(r.spend || 0) || 0;
+    metaImpr += parseInt(r.impressions || 0, 10) || 0;
+    metaClicks += parseInt(r.clicks || 0, 10) || 0;
+  }
+  const META_CH = "Meta Ads";
+  // Розхід каналу: Meta — авто з meta_spend; решта — ручний channel_costs.
+  function channelSpend(ch) {
+    if (ch === META_CH && metaSpend > 0) return { cost: metaSpend, impr: metaImpr, clicks: metaClicks, auto: true };
+    return { cost: costMap.get(ch) || 0, impr: 0, clicks: 0, auto: false };
+  }
+  function buildChannel(b, s) {
+    const active = b.done + b.prog;
     return {
       channel: b.channel,
       done: b.done, progress: b.prog, cancelled: b.canc,
       new_orders: b.newO, repeat_orders: b.repO,
       revenue: Math.round(b.revenue), buyers: b.buyers.size,
-      aov: (b.done + b.prog) ? Math.round(b.revenue / (b.done + b.prog)) : 0,
-      cost: Math.round(cost), roas: cost > 0 ? +(b.revenue / cost).toFixed(2) : null,
+      aov: active ? Math.round(b.revenue / active) : 0,
+      cost: Math.round(s.cost), auto_cost: s.auto,
+      impressions: s.impr, clicks: s.clicks,
+      cpm: s.impr > 0 ? +(s.cost / s.impr * 1000).toFixed(2) : null,
+      ctr: s.impr > 0 ? +(s.clicks / s.impr * 100).toFixed(2) : null,
+      roas: s.cost > 0 ? +(b.revenue / s.cost).toFixed(2) : null,
     };
+  }
+
+  let totCost = 0;
+  const channels = Array.from(chan.values()).map((b) => {
+    const s = channelSpend(b.channel);
+    totCost += s.cost;
+    return buildChannel(b, s);
   }).sort((a, b) => b.revenue - a.revenue);
-  for (const [ch, amount] of costMap.entries()) {
-    if (!chan.has(ch) && amount > 0) {
-      channels.push({ channel: ch, done: 0, progress: 0, cancelled: 0, new_orders: 0, repeat_orders: 0,
-        revenue: 0, buyers: 0, aov: 0, cost: Math.round(amount), roas: 0 });
-      totCost += amount;
-    }
+
+  // Канали з витратами, але без заказів у періоді (ручні або Meta-авто).
+  const spendOnly = new Set(costMap.keys());
+  if (metaSpend > 0) spendOnly.add(META_CH);
+  for (const ch of spendOnly) {
+    if (chan.has(ch)) continue;
+    const s = channelSpend(ch);
+    if (s.cost <= 0) continue;
+    channels.push({
+      channel: ch, done: 0, progress: 0, cancelled: 0, new_orders: 0, repeat_orders: 0,
+      revenue: 0, buyers: 0, aov: 0, cost: Math.round(s.cost), auto_cost: s.auto,
+      impressions: s.impr, clicks: s.clicks,
+      cpm: s.impr > 0 ? +(s.cost / s.impr * 1000).toFixed(2) : null,
+      ctr: s.impr > 0 ? +(s.clicks / s.impr * 100).toFixed(2) : null,
+      roas: 0,
+    });
+    totCost += s.cost;
   }
 
   // LTV first-touch — по НЕ-скасованих заказах (виконані + в роботі).
