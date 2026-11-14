@@ -1728,7 +1728,14 @@ async function fetchGoogleSpend(accessToken, since, until, ctx) {
   if (j && j.error) throw new Error("Google Ads API: " + String((j.error.message || JSON.stringify(j.error))).slice(0, 300));
   const out = [];
   const batches = Array.isArray(j) ? j : [j];
-  for (const b of batches) for (const row of (b.results || [])) out.push(row);
+  for (const b of batches) {
+    // searchStream повертає масив батчів; помилка може лежати ВСЕРЕДИНІ батча —
+    // її треба піднімати, інакше збій маскується під «0 рядків».
+    if (b && b.error) {
+      throw new Error("Google Ads API: " + String((b.error.message || JSON.stringify(b.error))).slice(0, 300));
+    }
+    for (const row of (b.results || [])) out.push(row);
+  }
   return out;
 }
 
