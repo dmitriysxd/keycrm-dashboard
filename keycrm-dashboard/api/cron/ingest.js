@@ -1490,6 +1490,19 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
         result.refresh_open_error = (err && err.message) || String(err);
       }
       await writeState(supabase, {
+        current_step: "meta_spend",
+        current_page: 1,
+        last_chunk_at: new Date().toISOString(),
+      });
+      result.advanced = "meta_spend";
+    } else if (stepName === "meta_spend") {
+      // Авто-розхід Meta (пропускається без токена). Помилки НЕ валять цикл.
+      try {
+        result.meta_spend = await ingestMetaSpend(supabase, ctx, { days: 7 });
+      } catch (err) {
+        result.meta_spend_error = (err && err.message) || String(err);
+      }
+      await writeState(supabase, {
         current_step: "done",
         current_page: 1,
         status: "done",
@@ -1543,6 +1556,61 @@ async function refreshOpenOrders(apiKey, supabase, ctx, opts) {
   }
   const more = i < ids.length;
   return { open_total: ids.length, from: offset, checked, updated, missing, next_offset: more ? i : null, done: !more };
+}
+
+// ── Meta Ads: авто-розхід (Meta Marketing API) ────────────
+// Тягне insights по кампаніях (spend/impressions/clicks) по днях і складає у
+// meta_spend. Пропускається, якщо META_ACCESS_TOKEN/META_AD_ACCOUNT_ID не задані.
+async function fetchMetaInsights(token, actId, since, until, ctx) {
+  const ver = process.env.META_API_VERSION || "v21.0";
+  const params = new URLSearchParams({
+    level: "campaign",
+    fields: "campaign_id,campaign_name,spend,impressions,clicks",
+    time_increment: "1",
+    time_range: JSON.stringify({ since, until }),
+    limit: "200",
+    access_token: token,
+  });
+  let url = "https://graph.facebook.com/" + ver + "/act_" + actId + "/insights?" + params.toString();
+  const rows = [];
+  let guard = 0;
+  while (url && guard++ < 60) {
+    if (ctx) ctx.apiCalls = (ctx.apiCalls || 0) + 1;
+    const res = await fetch(url);
+    const j = await res.json();
+    if (j && j.error) throw new Error("Meta API: " + (j.error.message || JSON.stringify(j.error)));
+    for (const r of (j.data || [])) rows.push(r);
+    url = j && j.paging && j.paging.next ? j.paging.next : null;
+  }
+  return rows;
+}
+
+async function ingestMetaSpend(supabase, ctx, opts) {
+  opts = opts || {};
+  const token = process.env.META_ACCESS_TOKEN;
+  let actId = process.env.META_AD_ACCOUNT_ID;
+  if (!token || !actId) return { skipped: "META_ACCESS_TOKEN / META_AD_ACCOUNT_ID не налаштовані" };
+  actId = String(actId).replace(/^act_/i, "").trim();
+  const until = opts.until || todayDate();
+  const since = opts.since || new Date(Date.now() - (opts.days || 14) * 86400000).toISOString().slice(0, 10);
+  const rows = await fetchMetaInsights(token, actId, since, until, ctx);
+  const batch = rows.map((r) => ({
+    date: r.date_start,
+    campaign_id: String(r.campaign_id || "unknown"),
+    campaign_name: r.campaign_name || null,
+    spend: parseFloat(r.spend || 0) || 0,
+    impressions: parseInt(r.impressions || 0, 10) || 0,
+    clicks: parseInt(r.clicks || 0, 10) || 0,
+    updated_at: new Date().toISOString(),
+  })).filter((r) => r.date && r.campaign_id);
+  let upserted = 0;
+  for (let i = 0; i < batch.length; i += 300) {
+    const slice = batch.slice(i, i + 300);
+    const { error } = await supabase.from("meta_spend").upsert(slice, { onConflict: "date,campaign_id" });
+    if (error) throw new Error("meta_spend upsert: " + error.message);
+    upserted += slice.length;
+  }
+  return { since, until, rows: rows.length, upserted };
 }
 
 module.exports = async function handler(req, res) {
@@ -1752,6 +1820,19 @@ module.exports = async function handler(req, res) {
       const fromOffset = (req.query && (req.query.from || req.query.offset)) || 0;
       const r = await refreshOpenOrders(apiKey, supabase, ctx, { timeBudgetMs: 50000, limit: 1000, offset: fromOffset });
       return res.status(200).json({ ok: true, step: "refresh_open", ...r, api_calls: ctx.apiCalls });
+    }
+    if (step === "meta_spend") {
+      // Авто-розхід Meta. ?days=N (за замовч. 14) або ?from=YYYY-MM-DD&to=...
+      const fromQ = req.query && req.query.from;
+      const toQ = req.query && req.query.to;
+      let mopts;
+      if (fromQ && /^\d{4}-\d{2}-\d{2}$/.test(String(fromQ))) {
+        mopts = { since: String(fromQ), until: (toQ && /^\d{4}-\d{2}-\d{2}$/.test(String(toQ))) ? String(toQ) : todayDate() };
+      } else {
+        mopts = { days: Math.max(1, Math.min(180, parseInt((req.query && req.query.days) || "14"))) };
+      }
+      const r = await ingestMetaSpend(supabase, ctx, mopts);
+      return res.status(200).json({ ok: true, step: "meta_spend", ...r, api_calls: ctx.apiCalls });
     }
     let enumAliveResult = null;
     if (step === "enum_alive_orders") {
