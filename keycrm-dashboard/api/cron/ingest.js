@@ -1711,7 +1711,7 @@ async function googleAccessToken() {
 }
 
 async function fetchGoogleSpend(accessToken, since, until, ctx) {
-  const ver = process.env.GOOGLE_ADS_API_VERSION || "v18";
+  const ver = process.env.GOOGLE_ADS_API_VERSION || "v25";
   const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
   const cid = String(process.env.GOOGLE_ADS_CUSTOMER_ID || "").replace(/\D/g, "");
   const loginCid = String(process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID || "").replace(/\D/g, "");
