@@ -1601,6 +1601,11 @@ async function ingestMetaSpend(supabase, ctx, opts) {
   const rateCache = new Map();
   let lastRate = null;
   const FALLBACK = parseFloat(process.env.META_FX_FALLBACK || "41") || 41;
+  // ПДВ, який Meta додає зверху при списанні (в Україні 20%). spend з API —
+  // без ПДВ; реально списується spend×(1+ПДВ). Override: META_VAT_PERCENT.
+  const _vatEnv = process.env.META_VAT_PERCENT;
+  const VAT = (_vatEnv != null && _vatEnv !== "") ? (parseFloat(_vatEnv) || 0) : 20;
+  const vatMul = 1 + VAT / 100;
   async function uahRate(cur, dateYMD) {
     if (!cur || cur === "UAH") return 1;
     const key = cur + ":" + dateYMD;
@@ -1630,7 +1635,8 @@ async function ingestMetaSpend(supabase, ctx, opts) {
     batch.push({
       date, campaign_id: cid, campaign_name: r.campaign_name || null,
       spend, currency: cur, fx_rate: cur === "UAH" ? 1 : (rate || null),
-      spend_uah: +(spend * (rate || 1)).toFixed(2),
+      spend_uah: +(spend * (rate || 1) * vatMul).toFixed(2), // грн з ПДВ
+
       impressions: parseInt(r.impressions || 0, 10) || 0,
       clicks: parseInt(r.clicks || 0, 10) || 0,
       updated_at: new Date().toISOString(),
@@ -1646,6 +1652,7 @@ async function ingestMetaSpend(supabase, ctx, opts) {
   return {
     since, until, rows: rows.length, upserted,
     currency: batch[0] ? batch[0].currency : null,
+    vat_percent: VAT,
     sample_rate: batch.find((b) => b.currency !== "UAH") ? (batch.find((b) => b.currency !== "UAH").fx_rate) : null,
   };
 }
