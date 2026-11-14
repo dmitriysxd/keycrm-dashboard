@@ -329,7 +329,7 @@ async function handleMarketing(req, res, supabase) {
   // marketing_order_facts(RPC) — дедуп і фільтр (сайт + період) робить Postgres
   // ДО агрегації (по індексах), одним запитом без пагінації. Вью v_order_facts
   // фільтрував після GROUP BY → агрегував усю sales щоразу → statement timeout.
-  const [orderRows, buyerRows, ftRows, costRows, metaRows] = await Promise.all([
+  const [orderRows, buyerRows, ftRows, costRows, metaRows, googleRows] = await Promise.all([
     // Пагінуємо RPC (як fetchAll) — інакше PostgREST обрізає відповідь по
     // db-max-rows і найсвіжіші заказы випадають (місяці обривались на серпні).
     // .order(order_id) — щоб сторінки .range були стабільні.
@@ -343,6 +343,8 @@ async function handleMarketing(req, res, supabase) {
     fetchAll(() => supabase.from("first_touch").select("phone_norm, first_source")),
     fetchAll(() => supabase.from("channel_costs").select("channel, period, amount")),
     fetchAll(() => supabase.from("meta_spend").select("date, spend, spend_uah, impressions, clicks")),
+    // google_spend може ще не існувати (міграція 057) — не валимо сторінку.
+    fetchAll(() => supabase.from("google_spend").select("date, spend, spend_uah, impressions, clicks")).catch(() => []),
   ]);
 
   const typeMap = new Map();
@@ -430,10 +432,21 @@ async function handleMarketing(req, res, supabase) {
     metaImpr += parseInt(r.impressions || 0, 10) || 0;
     metaClicks += parseInt(r.clicks || 0, 10) || 0;
   }
+  // Авто-розхід Google Ads (google_spend) за період → каналу «Google Ads».
+  let googleSpend = 0, googleImpr = 0, googleClicks = 0;
+  for (const r of (googleRows || [])) {
+    const ym = (r.date || "").slice(0, 7);
+    if (period !== "all" && ym !== period) continue;
+    googleSpend += parseFloat(r.spend_uah != null ? r.spend_uah : (r.spend || 0)) || 0;
+    googleImpr += parseInt(r.impressions || 0, 10) || 0;
+    googleClicks += parseInt(r.clicks || 0, 10) || 0;
+  }
   const META_CH = "Meta Ads";
-  // Розхід каналу: Meta — авто з meta_spend; решта — ручний channel_costs.
+  const GOOGLE_CH = "Google Ads";
+  // Розхід каналу: Meta/Google — авто (meta_spend/google_spend); решта — ручний channel_costs.
   function channelSpend(ch) {
     if (ch === META_CH && metaSpend > 0) return { cost: metaSpend, impr: metaImpr, clicks: metaClicks, auto: true };
+    if (ch === GOOGLE_CH && googleSpend > 0) return { cost: googleSpend, impr: googleImpr, clicks: googleClicks, auto: true };
     return { cost: costMap.get(ch) || 0, impr: 0, clicks: 0, auto: false };
   }
   function buildChannel(b, s) {
@@ -462,6 +475,7 @@ async function handleMarketing(req, res, supabase) {
   // Канали з витратами, але без заказів у періоді (ручні або Meta-авто).
   const spendOnly = new Set(costMap.keys());
   if (metaSpend > 0) spendOnly.add(META_CH);
+  if (googleSpend > 0) spendOnly.add(GOOGLE_CH);
   for (const ch of spendOnly) {
     if (chan.has(ch)) continue;
     const s = channelSpend(ch);

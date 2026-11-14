@@ -1503,6 +1503,19 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
         result.meta_spend_error = (err && err.message) || String(err);
       }
       await writeState(supabase, {
+        current_step: "google_spend",
+        current_page: 1,
+        last_chunk_at: new Date().toISOString(),
+      });
+      result.advanced = "google_spend";
+    } else if (stepName === "google_spend") {
+      // Авто-розхід Google Ads (пропускається без токена). Помилки НЕ валять цикл.
+      try {
+        result.google_spend = await ingestGoogleSpend(supabase, ctx, { days: 7 });
+      } catch (err) {
+        result.google_spend_error = (err && err.message) || String(err);
+      }
+      await writeState(supabase, {
         current_step: "done",
         current_page: 1,
         status: "done",
@@ -1655,6 +1668,110 @@ async function ingestMetaSpend(supabase, ctx, opts) {
     vat_percent: VAT,
     sample_rate: batch.find((b) => b.currency !== "UAH") ? (batch.find((b) => b.currency !== "UAH").fx_rate) : null,
   };
+}
+
+// ── Google Ads: авто-розхід (Google Ads API) ──────────────
+// Спільний конвертер у грн: курс НБУ на дату (кеш + перенос + fallback) + ПДВ.
+function makeFxConverter(ctx, fallbackRate, vatPercent) {
+  const cache = new Map();
+  let lastRate = null;
+  const vatMul = 1 + (vatPercent || 0) / 100;
+  async function rateFor(cur, dateYMD) {
+    if (!cur || cur === "UAH") return 1;
+    const key = cur + ":" + dateYMD;
+    if (cache.has(key)) return cache.get(key);
+    let rate = null;
+    try {
+      const url = "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange?valcode=" +
+        encodeURIComponent(cur) + "&date=" + dateYMD.replace(/-/g, "") + "&json";
+      const res = await fetch(url);
+      if (ctx) ctx.apiCalls = (ctx.apiCalls || 0) + 1;
+      const j = await res.json();
+      if (Array.isArray(j) && j[0] && j[0].rate) rate = parseFloat(j[0].rate);
+    } catch (e) { /* no-op */ }
+    if (rate) lastRate = rate; else rate = lastRate || fallbackRate;
+    cache.set(key, rate);
+    return rate;
+  }
+  return { vatMul, rateFor };
+}
+
+async function googleAccessToken() {
+  const id = process.env.GOOGLE_ADS_CLIENT_ID;
+  const secret = process.env.GOOGLE_ADS_CLIENT_SECRET;
+  const refresh = process.env.GOOGLE_ADS_REFRESH_TOKEN;
+  if (!id || !secret || !refresh) return null;
+  const body = new URLSearchParams({ client_id: id, client_secret: secret, refresh_token: refresh, grant_type: "refresh_token" });
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body,
+  });
+  const j = await res.json();
+  if (j && j.error) throw new Error("Google OAuth: " + (j.error_description || j.error));
+  return j.access_token || null;
+}
+
+async function fetchGoogleSpend(accessToken, since, until, ctx) {
+  const ver = process.env.GOOGLE_ADS_API_VERSION || "v18";
+  const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
+  const cid = String(process.env.GOOGLE_ADS_CUSTOMER_ID || "").replace(/\D/g, "");
+  const loginCid = String(process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID || "").replace(/\D/g, "");
+  const query = "SELECT campaign.id, campaign.name, metrics.cost_micros, metrics.impressions, " +
+    "metrics.clicks, customer.currency_code, segments.date FROM campaign " +
+    "WHERE segments.date BETWEEN '" + since + "' AND '" + until + "'";
+  const headers = { Authorization: "Bearer " + accessToken, "developer-token": devToken || "", "Content-Type": "application/json" };
+  if (loginCid) headers["login-customer-id"] = loginCid;
+  const res = await fetch("https://googleads.googleapis.com/" + ver + "/customers/" + cid + "/googleAds:searchStream", {
+    method: "POST", headers, body: JSON.stringify({ query }),
+  });
+  if (ctx) ctx.apiCalls = (ctx.apiCalls || 0) + 1;
+  const j = await res.json();
+  if (j && j.error) throw new Error("Google Ads API: " + String((j.error.message || JSON.stringify(j.error))).slice(0, 300));
+  const out = [];
+  const batches = Array.isArray(j) ? j : [j];
+  for (const b of batches) for (const row of (b.results || [])) out.push(row);
+  return out;
+}
+
+async function ingestGoogleSpend(supabase, ctx, opts) {
+  opts = opts || {};
+  if (!process.env.GOOGLE_ADS_DEVELOPER_TOKEN || !process.env.GOOGLE_ADS_CUSTOMER_ID) {
+    return { skipped: "GOOGLE_ADS_DEVELOPER_TOKEN / GOOGLE_ADS_CUSTOMER_ID не налаштовані" };
+  }
+  const accessToken = await googleAccessToken();
+  if (!accessToken) return { skipped: "GOOGLE_ADS_CLIENT_ID/SECRET/REFRESH_TOKEN не налаштовані" };
+  const until = opts.until || todayDate();
+  const since = opts.since || new Date(Date.now() - (opts.days || 14) * 86400000).toISOString().slice(0, 10);
+  const rows = await fetchGoogleSpend(accessToken, since, until, ctx);
+  const FALLBACK = parseFloat(process.env.META_FX_FALLBACK || "41") || 41;
+  const _v = process.env.GOOGLE_VAT_PERCENT;
+  const VAT = (_v != null && _v !== "") ? (parseFloat(_v) || 0) : 20;
+  const fx = makeFxConverter(ctx, FALLBACK, VAT);
+  const batch = [];
+  for (const r of rows) {
+    const date = r.segments && r.segments.date;
+    if (!date) continue;
+    const camp = r.campaign || {};
+    const m = r.metrics || {};
+    const cur = String((r.customer && r.customer.currencyCode) || process.env.GOOGLE_ADS_CURRENCY || "UAH").toUpperCase();
+    const spend = (parseInt(m.costMicros || 0, 10) || 0) / 1e6;
+    const rate = cur === "UAH" ? 1 : await fx.rateFor(cur, date);
+    batch.push({
+      date, campaign_id: String(camp.id || "unknown"), campaign_name: camp.name || null,
+      spend: +spend.toFixed(2), currency: cur, fx_rate: cur === "UAH" ? 1 : (rate || null),
+      spend_uah: +(spend * (rate || 1) * fx.vatMul).toFixed(2),
+      impressions: parseInt(m.impressions || 0, 10) || 0,
+      clicks: parseInt(m.clicks || 0, 10) || 0,
+      updated_at: new Date().toISOString(),
+    });
+  }
+  let upserted = 0;
+  for (let i = 0; i < batch.length; i += 300) {
+    const slice = batch.slice(i, i + 300);
+    const { error } = await supabase.from("google_spend").upsert(slice, { onConflict: "date,campaign_id" });
+    if (error) throw new Error("google_spend upsert: " + error.message);
+    upserted += slice.length;
+  }
+  return { since, until, rows: rows.length, upserted, currency: batch[0] ? batch[0].currency : null, vat_percent: VAT };
 }
 
 module.exports = async function handler(req, res) {
@@ -1877,6 +1994,19 @@ module.exports = async function handler(req, res) {
       }
       const r = await ingestMetaSpend(supabase, ctx, mopts);
       return res.status(200).json({ ok: true, step: "meta_spend", ...r, api_calls: ctx.apiCalls });
+    }
+    if (step === "google_spend") {
+      // Авто-розхід Google Ads. ?days=N (за замовч. 14) або ?from=YYYY-MM-DD&to=...
+      const fromQ = req.query && req.query.from;
+      const toQ = req.query && req.query.to;
+      let gopts;
+      if (fromQ && /^\d{4}-\d{2}-\d{2}$/.test(String(fromQ))) {
+        gopts = { since: String(fromQ), until: (toQ && /^\d{4}-\d{2}-\d{2}$/.test(String(toQ))) ? String(toQ) : todayDate() };
+      } else {
+        gopts = { days: Math.max(1, Math.min(180, parseInt((req.query && req.query.days) || "14"))) };
+      }
+      const r = await ingestGoogleSpend(supabase, ctx, gopts);
+      return res.status(200).json({ ok: true, step: "google_spend", ...r, api_calls: ctx.apiCalls });
     }
     let enumAliveResult = null;
     if (step === "enum_alive_orders") {
