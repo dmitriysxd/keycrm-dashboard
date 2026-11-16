@@ -2081,6 +2081,38 @@ module.exports = async function handler(req, res) {
       const r = await ingestMetaAdSpend(supabase, ctx, aopts);
       return res.status(200).json({ ok: true, step: "meta_ad_spend", ...r, api_calls: ctx.apiCalls });
     }
+    if (step === "meta_diag") {
+      // Діагностика Meta: пробуємо різні рівні insights + перевіряємо права
+      // токена, щоб зрозуміти, де гейт (рівень ad / поля / дозволи).
+      const out = { ok: true };
+      const token = process.env.META_ACCESS_TOKEN;
+      const actId = String(process.env.META_AD_ACCOUNT_ID || "").replace(/^act_/i, "").trim();
+      out.has_token = !!token; out.act = actId;
+      if (!token || !actId) { out.note = "META_ACCESS_TOKEN / META_AD_ACCOUNT_ID не задані"; return res.status(200).json(out); }
+      const ver = process.env.META_API_VERSION || "v21.0";
+      const until = todayDate();
+      const since = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
+      async function tryIns(label, level, fields) {
+        try {
+          const params = new URLSearchParams({ level, fields, time_increment: "1", time_range: JSON.stringify({ since, until }), limit: "5", access_token: token });
+          const r = await fetch("https://graph.facebook.com/" + ver + "/act_" + actId + "/insights?" + params.toString());
+          out[label + "_status"] = r.status;
+          const j = await r.json();
+          if (j && j.error) out[label] = "ERR " + j.error.code + "/" + (j.error.error_subcode || "") + " " + (j.error.message || "");
+          else out[label] = "OK rows=" + ((j.data || []).length);
+        } catch (e) { out[label] = "EXC " + ((e && e.message) || e); }
+      }
+      await tryIns("campaign", "campaign", "spend,impressions,clicks");
+      await tryIns("adset", "adset", "adset_id,spend");
+      await tryIns("ad_min", "ad", "ad_id,spend");
+      await tryIns("ad_named", "ad", "ad_id,ad_name,spend");
+      try {
+        const r = await fetch("https://graph.facebook.com/" + ver + "/me/permissions?access_token=" + encodeURIComponent(token));
+        const j = await r.json();
+        out.perms = (j.data || []).filter((p) => p.status === "granted").map((p) => p.permission).join(",");
+      } catch (e) { out.perms_err = String((e && e.message) || e); }
+      return res.status(200).json(out);
+    }
     if (step === "google_spend") {
       // Авто-розхід Google Ads. ?days=N (за замовч. 14) або ?from=YYYY-MM-DD&to=...
       const fromQ = req.query && req.query.from;
