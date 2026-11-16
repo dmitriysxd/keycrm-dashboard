@@ -251,16 +251,26 @@ function monthDiff(from, to) {
 
 // utm_source → канал. Згруповано за реальними мітками з заказів (див. аналіз
 // сирих utm_source/medium). Fallback на «Джерело» (source_name) з KeyCRM.
-function normChannel(utmSource, utmMedium, sourceName) {
+function normChannel(utmSource, utmMedium, sourceName, utmCampaign) {
   const s = (utmSource || "").toLowerCase().trim();
   const med = (utmMedium || "").toLowerCase().trim();
+  const cmp = (utmCampaign || "").toLowerCase().trim();
   const paidMedium = /cpc|ppc|paid/.test(med);        // платний сигнал
   const socialMedium = /^social$|referral/.test(med); // органічний/реферальний
 
+  // Листи за utm_medium (пріоритетно — не залежить від utm_source).
+  // Horoshop-тригери розводимо за utm_campaign.
+  if (med === "horoshop_trigger") {
+    if (/^hs_email_(password|registration|purchase)/.test(cmp)) return "Системні (Технічні)";
+    if (/^hs_email_(abandoned_cart|product_avaliable|product_available|review)/.test(cmp)) return "Авто-тригери CMS";
+    return "Інші тригери CMS";
+  }
+  if (med === "email") return "Email-маркетинг";
+
   if (s) {
-    // 1) Прямі / застосунок (PWA homescreen + direct + порожньо) — разом.
-    if (/homescreen|b2c_app|standalone|\bpwa\b/.test(s)) return "Прямі / застосунок";
-    if (s === "(direct)" || /^direct$|^прям/.test(s)) return "Прямі / застосунок";
+    // 1) Прямі (direct + PWA homescreen + порожньо) — разом.
+    if (/homescreen|b2c_app|standalone|\bpwa\b/.test(s)) return "Прямі";
+    if (s === "(direct)" || /^direct$|^прям/.test(s)) return "Прямі";
 
     // 2) AI-референси (до google — бо gemini.google.com).
     if (/chatgpt|openai|perplexity|gemini|copilot|claude\.ai/.test(s)) return "AI (ChatGPT/Gemini)";
@@ -283,8 +293,8 @@ function normChannel(utmSource, utmMedium, sourceName) {
     if (/googlequicksearchbox|accounts\.google|android\.gm|google\.android|google\.com|bing\.|duckduckgo|yandex/.test(s)) return "Пошук / органіка";
     if (/^organic$|^seo$/.test(s)) return "Пошук / органіка";
 
-    // 7) Email / CRM-розсилки.
-    if (/sendpulse|esputnik|^email$|e-mail|^mail$|ukr\.net/.test(s)) return "Email (розсилка)";
+    // 7) Email / CRM-розсилки (решта email-джерел без medium=email).
+    if (/sendpulse|esputnik|^email$|e-mail|^mail$|ukr\.net/.test(s)) return "Email-маркетинг";
 
     // 8) Месенджери.
     if (/viber/.test(s)) return "Viber";
@@ -301,13 +311,13 @@ function normChannel(utmSource, utmMedium, sourceName) {
   }
   // Без utm — fallback на source_name з KeyCRM.
   const n = (sourceName || "").toLowerCase();
-  if (!n) return "Прямі / застосунок";
+  if (!n) return "Прямі";
   if (/viber/.test(n)) return "Viber";
   if (/telegram/.test(n)) return "Telegram";
   if (/instagram|facebook|meta/.test(n)) return "Meta (органіка/реферал)";
-  if (/bijboom|horoshop|сайт|site|opt\.com/.test(n)) return "Прямі / застосунок";
+  if (/bijboom|horoshop|сайт|site|opt\.com/.test(n)) return "Прямі";
   if (/prom/.test(n)) return "Prom.ua";
-  return sourceName ? ("Джерело: " + sourceName) : "Прямі / застосунок";
+  return sourceName ? ("Джерело: " + sourceName) : "Прямі";
 }
 
 // Місяць заказу рахуємо в КИЇВСЬКОМУ часовому поясі (як KeyCRM «Дата
@@ -410,6 +420,7 @@ async function handleMarketing(req, res, supabase) {
       ordered_at: r.ordered_at,
       utm_source: r.utm_source || null,
       utm_medium: r.utm_medium || null,
+      utm_campaign: r.utm_campaign || null,
       source_name: r.source_name || null,
       revenue: r.revenue != null ? parseFloat(r.revenue) : 0,
       grp: statusGroup(r.order_status),
@@ -450,7 +461,7 @@ async function handleMarketing(req, res, supabase) {
       const dk = ymdKey(o.ordered_at);
       if (!dk || dk < from || dk > to) continue;
     }
-    const ch = normChannel(o.utm_source, o.utm_medium, o.source_name);
+    const ch = normChannel(o.utm_source, o.utm_medium, o.source_name, o.utm_campaign);
     const b = bucket(ch);
     if (o.grp === "cancelled") { b.canc++; tCanc++; continue; }
     // активний заказ (виконано АБО в роботі) — рахуємо ВСІ показники
