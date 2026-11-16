@@ -657,8 +657,10 @@ async function handleCampaigns(req, res, supabase) {
       buyer_id: r.buyer_id || null,
       ordered_at: r.ordered_at,
       src: (r.utm_source || "").toLowerCase().trim(),
+      medium: r.utm_medium || null,
       campaign: r.utm_campaign || null,
       content: r.utm_content || null,
+      source_name: r.source_name || null,
       revenue: r.revenue != null ? parseFloat(r.revenue) : 0,
       grp: statusGroup(r.order_status),
     };
@@ -727,21 +729,29 @@ async function handleCampaigns(req, res, supabase) {
     node.rev += o.revenue;
     if (isNew) node.newO++;
   }
+  // Хвіст: виручка каналу, яку не прив'язати до кампанії (стара розмітка lama,
+  // google без cid, старі fb/ig). Щоб сума по каналу сходилась із «загальним».
+  const mOther = rz(), gOther = rz();
   for (const o of orders) {
     if (hasRange) { const dk = ymdKey(o.ordered_at); if (!dk || dk < from || dk > to) continue; }
     if (!inSegment(o.buyer_id)) continue;
     const isNew = !o.buyer_id ? true : (o.ordered_at === firstActiveAt.get(o.buyer_id));
-    if (o.src === "meta") {
+    const ch = normChannel(o.src, o.medium, o.source_name, o.campaign);
+    if (ch === "Meta Ads") {
       const ck = _normName(o.campaign);
       const dn = adLookup.get(ck + SEP + _normName(o.content));
       if (dn) { addRev(dn, o, isNew); addRev(dn._adset, o, isNew); addRev(dn._camp, o, isNew); }
-      else { addRev(campLookup.get(ck), o, isNew); } // кампанія є, оголошення не зіставилось
-    } else if (o.src === "google") {
+      else {
+        const cn = campLookup.get(ck);
+        if (cn) addRev(cn, o, isNew); else addRev(mOther, o, isNew); // кампанія не зіставилась
+      }
+    } else if (ch === "Google Ads") {
       const cid = _gCid(o.campaign);
-      if (!cid) continue;
-      let c = gCampSpend.get(cid);
-      if (!c) { c = Object.assign({ spend: 0, impr: 0, clicks: 0, disp: null }, rz()); gCampSpend.set(cid, c); }
-      addRev(c, o, isNew);
+      if (cid) {
+        let c = gCampSpend.get(cid);
+        if (!c) { c = Object.assign({ spend: 0, impr: 0, clicks: 0, disp: null }, rz()); gCampSpend.set(cid, c); }
+        addRev(c, o, isNew);
+      } else { addRev(gOther, o, isNew); } // google без cid / стара lama
     }
   }
 
@@ -786,6 +796,14 @@ async function handleCampaigns(req, res, supabase) {
     gCampaigns.push(node2row(Object.assign({ name: c.disp || ("cid_" + cid) }, c), { campaign_id: cid, adsets: null }));
   }
   gCampaigns.sort(bySpend);
+
+  // Рядок-«хвіст» (виручка каналу без прив'язки до кампанії) — внизу списку.
+  const otherRow = (o, adsets) => {
+    if ((o.done + o.prog + o.canc) <= 0) return null;
+    return node2row(Object.assign({ name: "(без кампанії / стара розмітка)", spend: 0, impr: 0, clicks: 0 }, o), { campaign_id: null, adsets, is_other: true });
+  };
+  const mo = otherRow(mOther, null); if (mo) metaCampaigns.push(mo);
+  const go = otherRow(gOther, null); if (go) gCampaigns.push(go);
 
   function channelTotals(camps) {
     let spend = 0, impr = 0, clicks = 0, done = 0, prog = 0, canc = 0, rev = 0, nw = 0;
