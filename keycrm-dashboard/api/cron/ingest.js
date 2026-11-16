@@ -1503,6 +1503,19 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
         result.meta_spend_error = (err && err.message) || String(err);
       }
       await writeState(supabase, {
+        current_step: "meta_ad_spend",
+        current_page: 1,
+        last_chunk_at: new Date().toISOString(),
+      });
+      result.advanced = "meta_ad_spend";
+    } else if (stepName === "meta_ad_spend") {
+      // Авто-розхід Meta по оголошеннях (для звіту «Реклама»). Не валить цикл.
+      try {
+        result.meta_ad_spend = await ingestMetaAdSpend(supabase, ctx, { days: 7 });
+      } catch (err) {
+        result.meta_ad_spend_error = (err && err.message) || String(err);
+      }
+      await writeState(supabase, {
         current_step: "google_spend",
         current_page: 1,
         last_chunk_at: new Date().toISOString(),
@@ -1574,14 +1587,18 @@ async function refreshOpenOrders(apiKey, supabase, ctx, opts) {
 // ── Meta Ads: авто-розхід (Meta Marketing API) ────────────
 // Тягне insights по кампаніях (spend/impressions/clicks) по днях і складає у
 // meta_spend. Пропускається, якщо META_ACCESS_TOKEN/META_AD_ACCOUNT_ID не задані.
-async function fetchMetaInsights(token, actId, since, until, ctx) {
+async function fetchMetaInsights(token, actId, since, until, ctx, level) {
   const ver = process.env.META_API_VERSION || "v21.0";
+  level = level || "campaign";
+  const fields = level === "ad"
+    ? "campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,spend,impressions,clicks,account_currency"
+    : "campaign_id,campaign_name,spend,impressions,clicks,account_currency";
   const params = new URLSearchParams({
-    level: "campaign",
-    fields: "campaign_id,campaign_name,spend,impressions,clicks,account_currency",
+    level,
+    fields,
     time_increment: "1",
     time_range: JSON.stringify({ since, until }),
-    limit: "200",
+    limit: level === "ad" ? "500" : "200",
     access_token: token,
   });
   let url = "https://graph.facebook.com/" + ver + "/act_" + actId + "/insights?" + params.toString();
@@ -1668,6 +1685,50 @@ async function ingestMetaSpend(supabase, ctx, opts) {
     vat_percent: VAT,
     sample_rate: batch.find((b) => b.currency !== "UAH") ? (batch.find((b) => b.currency !== "UAH").fx_rate) : null,
   };
+}
+
+// Розхід Meta по ОГОЛОШЕННЯХ (level=ad) → meta_ad_spend. Для drill-down
+// кампанія→оголошення у звіті «Реклама». Конвертація грн+ПДВ як у кампаній.
+async function ingestMetaAdSpend(supabase, ctx, opts) {
+  opts = opts || {};
+  const token = process.env.META_ACCESS_TOKEN;
+  let actId = process.env.META_AD_ACCOUNT_ID;
+  if (!token || !actId) return { skipped: "META_ACCESS_TOKEN / META_AD_ACCOUNT_ID не налаштовані" };
+  actId = String(actId).replace(/^act_/i, "").trim();
+  const until = opts.until || todayDate();
+  const since = opts.since || new Date(Date.now() - (opts.days || 14) * 86400000).toISOString().slice(0, 10);
+  const rows = await fetchMetaInsights(token, actId, since, until, ctx, "ad");
+  const FALLBACK = parseFloat(process.env.META_FX_FALLBACK || "41") || 41;
+  const _v = process.env.META_VAT_PERCENT;
+  const VAT = (_v != null && _v !== "") ? (parseFloat(_v) || 0) : 20;
+  const fx = makeFxConverter(ctx, FALLBACK, VAT);
+  const batch = [];
+  for (const r of rows) {
+    const date = r.date_start;
+    const adId = String(r.ad_id || "unknown");
+    if (!date || !adId) continue;
+    const cur = String(r.account_currency || process.env.META_ACCOUNT_CURRENCY || "USD").toUpperCase();
+    const spend = parseFloat(r.spend || 0) || 0;
+    const rate = cur === "UAH" ? 1 : await fx.rateFor(cur, date);
+    batch.push({
+      date, ad_id: adId, ad_name: r.ad_name || null,
+      adset_id: r.adset_id || null, adset_name: r.adset_name || null,
+      campaign_id: String(r.campaign_id || "unknown"), campaign_name: r.campaign_name || null,
+      spend: +spend.toFixed(2), currency: cur, fx_rate: cur === "UAH" ? 1 : (rate || null),
+      spend_uah: +(spend * (rate || 1) * fx.vatMul).toFixed(2),
+      impressions: parseInt(r.impressions || 0, 10) || 0,
+      clicks: parseInt(r.clicks || 0, 10) || 0,
+      updated_at: new Date().toISOString(),
+    });
+  }
+  let upserted = 0;
+  for (let i = 0; i < batch.length; i += 300) {
+    const slice = batch.slice(i, i + 300);
+    const { error } = await supabase.from("meta_ad_spend").upsert(slice, { onConflict: "date,ad_id" });
+    if (error) throw new Error("meta_ad_spend upsert: " + error.message);
+    upserted += slice.length;
+  }
+  return { since, until, rows: rows.length, upserted, vat_percent: VAT };
 }
 
 // ── Google Ads: авто-розхід (Google Ads API) ──────────────
@@ -2001,6 +2062,19 @@ module.exports = async function handler(req, res) {
       }
       const r = await ingestMetaSpend(supabase, ctx, mopts);
       return res.status(200).json({ ok: true, step: "meta_spend", ...r, api_calls: ctx.apiCalls });
+    }
+    if (step === "meta_ad_spend") {
+      // Розхід Meta по оголошеннях. ?days=N або ?from=YYYY-MM-DD&to=... (бекфіл).
+      const fromQ = req.query && req.query.from;
+      const toQ = req.query && req.query.to;
+      let aopts;
+      if (fromQ && /^\d{4}-\d{2}-\d{2}$/.test(String(fromQ))) {
+        aopts = { since: String(fromQ), until: (toQ && /^\d{4}-\d{2}-\d{2}$/.test(String(toQ))) ? String(toQ) : todayDate() };
+      } else {
+        aopts = { days: Math.max(1, Math.min(180, parseInt((req.query && req.query.days) || "14"))) };
+      }
+      const r = await ingestMetaAdSpend(supabase, ctx, aopts);
+      return res.status(200).json({ ok: true, step: "meta_ad_spend", ...r, api_calls: ctx.apiCalls });
     }
     if (step === "google_spend") {
       // Авто-розхід Google Ads. ?days=N (за замовч. 14) або ?from=YYYY-MM-DD&to=...

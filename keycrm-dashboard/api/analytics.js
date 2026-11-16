@@ -604,6 +604,197 @@ async function handleMarketingPost(req, res, supabase) {
   return res.status(400).json({ error: "невідомий action" });
 }
 
+// ── Звіт «Реклама»: ROAS/CPS по кампаніях (Meta+Google) і оголошеннях (Meta) ──
+// Виручка береться лише з заказів із новою розміткою: Meta utm_source=meta
+// (utm_campaign=назва, utm_content=оголошення); Google utm_source=google +
+// utm_campaign=cid_<id>_... Розхід — з meta_ad_spend (кампанія+оголошення) і
+// google_spend (кампанія). Сходиться на рівні кампанії.
+function _decodeRaw(v) {
+  if (v == null) return "";
+  let s = String(v);
+  try { s = decodeURIComponent(s.replace(/\+/g, " ")); } catch (e) { s = s.replace(/\+/g, " "); }
+  return s.replace(/\s+/g, " ").trim();
+}
+function _normName(v) { return _decodeRaw(v).toLowerCase(); }
+function _gCid(camp) { const m = /cid_(\d+)/i.exec(camp || ""); return m ? m[1] : null; }
+
+async function handleCampaigns(req, res, supabase) {
+  const segment = (req.query && req.query.segment) || "all";
+  const reDate = /^\d{4}-\d{2}-\d{2}$/;
+  let from = (req.query && req.query.from) || null;
+  let to = (req.query && req.query.to) || null;
+  if (!reDate.test(String(from))) from = null;
+  if (!reDate.test(String(to))) to = null;
+  const hasRange = !!(from && to);
+
+  const since = new Date("2015-01-01T00:00:00Z");
+  const [orderRows, buyerRows, metaAdRows, googleRows] = await Promise.all([
+    fetchAll(() => supabase.rpc("marketing_order_facts", { _since: since.toISOString(), _source: "bijboom-opt.com.ua" }).order("order_id", { ascending: true })),
+    fetchAll(() => supabase.from("buyers").select("buyer_id, client_type")),
+    fetchAll(() => supabase.from("meta_ad_spend").select("date, ad_id, ad_name, campaign_id, campaign_name, spend_uah, spend, impressions, clicks")).catch(() => []),
+    fetchAll(() => supabase.from("google_spend").select("date, campaign_id, campaign_name, spend_uah, spend, impressions, clicks")).catch(() => []),
+  ]);
+
+  const typeMap = new Map();
+  for (const b of buyerRows) typeMap.set(b.buyer_id, b.client_type || null);
+  function inSegment(buyerId) {
+    const t = buyerId ? typeMap.get(buyerId) : null;
+    if (t === "системні") return false;
+    if (segment === "opt") return t === "опт";
+    if (segment === "retail") return t !== "опт";
+    return true;
+  }
+
+  // Перший активний (не скасований) заказ клієнта — для «нових».
+  const orders = [];
+  const firstActiveAt = new Map();
+  let metaFrom = null, googleFrom = null;
+  for (const r of orderRows) {
+    if (!r.ordered_at) continue;
+    const o = {
+      buyer_id: r.buyer_id || null,
+      ordered_at: r.ordered_at,
+      src: (r.utm_source || "").toLowerCase().trim(),
+      campaign: r.utm_campaign || null,
+      content: r.utm_content || null,
+      revenue: r.revenue != null ? parseFloat(r.revenue) : 0,
+      grp: statusGroup(r.order_status),
+    };
+    orders.push(o);
+    if (o.grp !== "cancelled" && o.buyer_id) {
+      const cur = firstActiveAt.get(o.buyer_id);
+      if (!cur || o.ordered_at < cur) firstActiveAt.set(o.buyer_id, o.ordered_at);
+    }
+    const dk = ymdKey(o.ordered_at);
+    if (o.src === "meta" && dk) { if (!metaFrom || dk < metaFrom) metaFrom = dk; }
+    if (o.src === "google" && /^cid_/.test((o.campaign || "").toLowerCase()) && dk) { if (!googleFrom || dk < googleFrom) googleFrom = dk; }
+  }
+
+  const cObj = () => ({ done: 0, prog: 0, canc: 0, rev: 0, newO: 0 });
+  function applyRev(acc, o, isNew) {
+    if (o.grp === "cancelled") { acc.canc++; return; }
+    if (o.grp === "done") acc.done++; else acc.prog++;
+    acc.rev += o.revenue;
+    if (isNew) acc.newO++;
+  }
+
+  // Виручка по кампаніях/оголошеннях.
+  const metaCamp = new Map(); // normCamp -> {disp, ads:Map(normAd->{disp,...}), ...}
+  const gCamp = new Map();    // cid -> {...}
+  for (const o of orders) {
+    if (hasRange) { const dk = ymdKey(o.ordered_at); if (!dk || dk < from || dk > to) continue; }
+    if (!inSegment(o.buyer_id)) continue;
+    const isNew = !o.buyer_id ? true : (o.ordered_at === firstActiveAt.get(o.buyer_id));
+    if (o.src === "meta") {
+      const ck = _normName(o.campaign) || "(без кампанії)";
+      let c = metaCamp.get(ck);
+      if (!c) { c = Object.assign(cObj(), { disp: _decodeRaw(o.campaign) || "(без кампанії)", ads: new Map() }); metaCamp.set(ck, c); }
+      applyRev(c, o, isNew);
+      const ak = _normName(o.content) || "(без оголошення)";
+      let a = c.ads.get(ak);
+      if (!a) { a = Object.assign(cObj(), { disp: _decodeRaw(o.content) || "(без оголошення)" }); c.ads.set(ak, a); }
+      applyRev(a, o, isNew);
+    } else if (o.src === "google") {
+      const cid = _gCid(o.campaign);
+      if (!cid) continue;
+      let c = gCamp.get(cid);
+      if (!c) { c = Object.assign(cObj(), { disp: null }); gCamp.set(cid, c); }
+      applyRev(c, o, isNew);
+    }
+  }
+
+  // Розхід по кампаніях/оголошеннях (у межах діапазону).
+  const metaCampSpend = new Map();
+  for (const r of (metaAdRows || [])) {
+    if (hasRange && (!r.date || r.date < from || r.date > to)) continue;
+    const ck = _normName(r.campaign_name);
+    let c = metaCampSpend.get(ck);
+    if (!c) { c = { spend: 0, impr: 0, clicks: 0, disp: r.campaign_name || null, ads: new Map() }; metaCampSpend.set(ck, c); }
+    const sp = parseFloat(r.spend_uah != null ? r.spend_uah : (r.spend || 0)) || 0;
+    c.spend += sp; c.impr += parseInt(r.impressions || 0, 10) || 0; c.clicks += parseInt(r.clicks || 0, 10) || 0;
+    if (!c.disp && r.campaign_name) c.disp = r.campaign_name;
+    const ak = _normName(r.ad_name);
+    let a = c.ads.get(ak);
+    if (!a) { a = { spend: 0, impr: 0, clicks: 0, disp: r.ad_name || null }; c.ads.set(ak, a); }
+    a.spend += sp; a.impr += parseInt(r.impressions || 0, 10) || 0; a.clicks += parseInt(r.clicks || 0, 10) || 0;
+    if (!a.disp && r.ad_name) a.disp = r.ad_name;
+  }
+  const gCampSpend = new Map();
+  for (const r of (googleRows || [])) {
+    if (hasRange && (!r.date || r.date < from || r.date > to)) continue;
+    const cid = String(r.campaign_id || "");
+    let c = gCampSpend.get(cid);
+    if (!c) { c = { spend: 0, impr: 0, clicks: 0, disp: r.campaign_name || null }; gCampSpend.set(cid, c); }
+    const sp = parseFloat(r.spend_uah != null ? r.spend_uah : (r.spend || 0)) || 0;
+    c.spend += sp; c.impr += parseInt(r.impressions || 0, 10) || 0; c.clicks += parseInt(r.clicks || 0, 10) || 0;
+    if (!c.disp && r.campaign_name) c.disp = r.campaign_name;
+  }
+
+  const metric = (spend, impr, clicks, active, rev) => ({
+    spend: Math.round(spend), impressions: impr, clicks,
+    cpm: impr > 0 ? +(spend / impr * 1000).toFixed(2) : null,
+    ctr: impr > 0 ? +(clicks / impr * 100).toFixed(2) : null,
+    roas: spend > 0 ? +(rev / spend).toFixed(2) : null,
+    cps: active > 0 ? Math.round(spend / active) : null,
+  });
+
+  const metaCampaigns = [];
+  for (const ck of new Set([...metaCamp.keys(), ...metaCampSpend.keys()])) {
+    const rev = metaCamp.get(ck) || Object.assign(cObj(), { disp: null, ads: new Map() });
+    const sp = metaCampSpend.get(ck) || { spend: 0, impr: 0, clicks: 0, disp: null, ads: new Map() };
+    const active = rev.done + rev.prog;
+    const ads = [];
+    for (const ak of new Set([...rev.ads.keys(), ...sp.ads.keys()])) {
+      const ar = rev.ads.get(ak) || cObj();
+      const asp = sp.ads.get(ak) || { spend: 0, impr: 0, clicks: 0, disp: null };
+      const aActive = ar.done + ar.prog;
+      ads.push(Object.assign({
+        name: asp.disp || ar.disp || "(без оголошення)",
+        done: ar.done, progress: ar.prog, cancelled: ar.canc,
+        orders: aActive, revenue: Math.round(ar.rev), new_orders: ar.newO,
+      }, metric(asp.spend, asp.impr, asp.clicks, aActive, ar.rev)));
+    }
+    ads.sort((a, b) => b.spend - a.spend || b.revenue - a.revenue);
+    metaCampaigns.push(Object.assign({
+      name: sp.disp || rev.disp || "(без кампанії)",
+      done: rev.done, progress: rev.prog, cancelled: rev.canc,
+      orders: active, revenue: Math.round(rev.rev), new_orders: rev.newO, ads,
+    }, metric(sp.spend, sp.impr, sp.clicks, active, rev.rev)));
+  }
+  metaCampaigns.sort((a, b) => b.spend - a.spend || b.revenue - a.revenue);
+
+  const gCampaigns = [];
+  for (const cid of new Set([...gCamp.keys(), ...gCampSpend.keys()])) {
+    const rev = gCamp.get(cid) || cObj();
+    const sp = gCampSpend.get(cid) || { spend: 0, impr: 0, clicks: 0, disp: null };
+    const active = rev.done + rev.prog;
+    gCampaigns.push(Object.assign({
+      name: sp.disp || ("cid_" + cid), campaign_id: cid,
+      done: rev.done, progress: rev.prog, cancelled: rev.canc,
+      orders: active, revenue: Math.round(rev.rev), new_orders: rev.newO, ads: null,
+    }, metric(sp.spend, sp.impr, sp.clicks, active, rev.rev)));
+  }
+  gCampaigns.sort((a, b) => b.spend - a.spend || b.revenue - a.revenue);
+
+  function channelTotals(camps) {
+    let spend = 0, impr = 0, clicks = 0, done = 0, prog = 0, canc = 0, rev = 0, nw = 0;
+    for (const c of camps) { spend += c.spend; impr += c.impressions; clicks += c.clicks; done += c.done; prog += c.progress; canc += c.cancelled; rev += c.revenue; nw += c.new_orders; }
+    const active = done + prog;
+    return Object.assign({ done, progress: prog, cancelled: canc, orders: active, revenue: rev, new_orders: nw }, metric(spend, impr, clicks, active, rev));
+  }
+
+  const channels = [
+    { channel: "Meta Ads", from: metaFrom, has_ads: true, totals: channelTotals(metaCampaigns), campaigns: metaCampaigns },
+    { channel: "Google Ads", from: googleFrom, has_ads: false, totals: channelTotals(gCampaigns), campaigns: gCampaigns },
+  ];
+
+  return res.status(200).json({
+    from: hasRange ? from : null, to: hasRange ? to : null, segment,
+    meta_from: metaFrom, google_from: googleFrom,
+    channels, totals: channelTotals([].concat(metaCampaigns, gCampaigns)),
+  });
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -622,7 +813,8 @@ module.exports = async function handler(req, res) {
     }
     if (type === "trends") return await handleTrends(req, res, supabase);
     if (type === "cohorts") return await handleCohorts(req, res, supabase);
-    return res.status(400).json({ error: "type required: ?type=trends | ?type=cohorts | ?type=marketing" });
+    if (type === "campaigns") return await handleCampaigns(req, res, supabase);
+    return res.status(400).json({ error: "type required: ?type=trends | ?type=cohorts | ?type=marketing | ?type=campaigns" });
   } catch (err) {
     return res.status(500).json({ error: (err && err.message) || String(err) });
   }
