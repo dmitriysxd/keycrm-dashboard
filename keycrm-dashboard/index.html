@@ -49,6 +49,14 @@
   .hd-date{ background:var(--hd-surf); border:1px solid var(--hd-bd); color:var(--hd-t1); border-radius:9px; padding:7px 10px; font-size:13px; font-family:'JetBrains Mono',monospace; color-scheme:dark; cursor:pointer; }
   .hd-date:focus{ outline:none; border-color:var(--hd-accent); }
   .hd-daterow-sep{ width:1px; align-self:stretch; background:var(--hd-bd); margin:0 4px; }
+  .ads-dot{ width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:4px; }
+  .ads-tri{ display:inline-block; width:14px; color:var(--hd-t3); font-size:10px; }
+  .ads-adrow{ background:rgba(255,255,255,0.015); }
+  .ads-adrow td{ color:var(--hd-t2); }
+  .ads-adname{ padding-left:22px !important; font-size:12px; color:var(--hd-t2); }
+  .ads-tot td{ border-top:1px solid var(--hd-bd); font-weight:600; background:rgba(255,255,255,0.025); }
+  .hd-note{ font-size:11.5px; color:var(--hd-t3); line-height:1.7; margin-top:4px; padding:0 2px; }
+  .hd-note b{ color:var(--hd-t2); font-weight:600; }
   .hd-addcost{ display:flex; gap:8px; align-items:center; padding:12px 16px; border-top:1px solid var(--hd-bd2); flex-wrap:wrap; }
   @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
@@ -585,6 +593,9 @@
       <div class="nav-item" onclick="navigate('marketing')">
         <span class="nav-icon">📣</span> Наскрізна аналітика
       </div>
+      <div class="nav-item" onclick="navigate('campaigns')">
+        <span class="nav-icon">🎯</span> Реклама
+      </div>
     </nav>
 
     <div class="sidebar-bottom">
@@ -915,6 +926,7 @@ async function renderCurrentPage() {
   else if (currentPage === 'trends')   { await renderTrendsPage(); }
   else if (currentPage === 'cohorts')  { await renderCohortsPage(); }
   else if (currentPage === 'marketing'){ await renderMarketingPage(); }
+  else if (currentPage === 'campaigns'){ await renderCampaignsPage(); }
 }
 
 function destroyCharts() {
@@ -2133,6 +2145,157 @@ function renderMarketingView() {
         </table>
       </div>
     </div>
+  </div>`;
+}
+
+// ══ Сторінка «Реклама» — кампанії/оголошення (ROAS, CPS) ══
+let ADS_DATA = null, ADS_FROM = null, ADS_TO = null, ADS_SEGMENT = 'all';
+const ADS_EXPANDED = new Set();
+
+function adsPreset(kind) {
+  const today = mktTodayKyiv();
+  const [Y, M] = today.split('-').map(Number);
+  const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
+  if (kind === 'all') { ADS_FROM = null; ADS_TO = null; }
+  else if (kind === 'this_month') { ADS_FROM = iso(Y, M, 1); ADS_TO = today; }
+  else if (kind === 'prev_month') {
+    let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
+    const last = new Date(Date.UTC(py, pm, 0)).getUTCDate();
+    ADS_FROM = iso(py, pm, 1); ADS_TO = iso(py, pm, last);
+  }
+  else if (kind === 'last7') { ADS_FROM = mktAddDays(today, -6); ADS_TO = today; }
+  else if (kind === 'last14') { ADS_FROM = mktAddDays(today, -13); ADS_TO = today; }
+  renderCampaignsPage();
+}
+function adsActivePreset() {
+  const today = mktTodayKyiv();
+  const [Y, M] = today.split('-').map(Number);
+  const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
+  if (!ADS_FROM && !ADS_TO) return 'all';
+  if (ADS_FROM === iso(Y, M, 1) && ADS_TO === today) return 'this_month';
+  if (ADS_FROM === mktAddDays(today, -6) && ADS_TO === today) return 'last7';
+  if (ADS_FROM === mktAddDays(today, -13) && ADS_TO === today) return 'last14';
+  let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
+  const last = new Date(Date.UTC(py, pm, 0)).getUTCDate();
+  if (ADS_FROM === iso(py, pm, 1) && ADS_TO === iso(py, pm, last)) return 'prev_month';
+  return 'custom';
+}
+function adsApplyDates() {
+  const f = document.getElementById('ads-from').value, t = document.getElementById('ads-to').value;
+  if (!f || !t) { alert('Вкажіть обидві дати'); return; }
+  if (f > t) { alert('«Від» не може бути пізніше «До»'); return; }
+  ADS_FROM = f; ADS_TO = t; renderCampaignsPage();
+}
+function setAdsSegment(s) { ADS_SEGMENT = s; renderCampaignsPage(); }
+function toggleAdsCamp(key) { if (ADS_EXPANDED.has(key)) ADS_EXPANDED.delete(key); else ADS_EXPANDED.add(key); renderCampaignsView(); }
+
+async function renderCampaignsPage() {
+  const main = document.getElementById('main-area');
+  if (!ADS_FROM && !ADS_TO) { const t = mktTodayKyiv(); ADS_FROM = t.slice(0, 8) + '01'; ADS_TO = t; } // дефолт — поточний місяць
+  main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Завантажуємо рекламу</div></div>';
+  try {
+    let q = 'type=campaigns&segment=' + encodeURIComponent(ADS_SEGMENT);
+    if (ADS_FROM && ADS_TO) q += '&from=' + ADS_FROM + '&to=' + ADS_TO;
+    const r = await fetch(apiUrl('/api/analytics', q));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    ADS_DATA = j;
+  } catch (err) {
+    main.innerHTML = `<div class="state-wrap"><div class="error-card"><div class="error-title">Помилка завантаження</div><div class="state-sub">${(err && err.message) || err}</div></div></div>`;
+    return;
+  }
+  renderCampaignsView();
+}
+
+function adsRoas(v) { return v == null ? '<span class="hd-dim">—</span>' : `<span class="${v >= 1 ? 'hd-pos' : 'hd-neg'}">${Number(v).toFixed(2)}×</span>`; }
+function adsNum(v) { return v == null ? '<span class="hd-dim">—</span>' : fmt(v); }
+
+function renderCampaignsView() {
+  const d = ADS_DATA; if (!d) return;
+  const t = d.totals || {};
+  const today = mktTodayKyiv();
+  const ap = adsActivePreset();
+  const seg = (v, l) => `<button class="hd-seg-b${ADS_SEGMENT === v ? ' on' : ''}" onclick="setAdsSegment('${v}')">${l}</button>`;
+  const pb = (k, l) => `<button class="hd-seg-b${ap === k ? ' on' : ''}" onclick="adsPreset('${k}')">${l}</button>`;
+
+  const row = (c, isAd, chKey) => {
+    const key = chKey + '|' + c.name;
+    const canExp = !isAd && c.ads && c.ads.length;
+    const tri = canExp ? `<span class="ads-tri">${ADS_EXPANDED.has(key) ? '▾' : '▸'}</span>` : (isAd ? '<span class="ads-tri" style="opacity:0">▸</span>' : '');
+    return `<tr class="${isAd ? 'ads-adrow' : ''}"${canExp ? ` style="cursor:pointer" onclick="toggleAdsCamp('${key.replace(/'/g, "\\'")}')"` : ''}>
+      <td class="hd-l ${isAd ? 'ads-adname' : ''}">${tri}${c.name}</td>
+      <td class="mono">${fmtMoney(c.spend)}</td>
+      <td class="mono hd-dim">${adsNum(c.impressions)}</td>
+      <td class="mono hd-dim">${adsNum(c.clicks)}</td>
+      <td class="mono hd-dim">${c.cpm != null ? fmt(c.cpm) : '—'}</td>
+      <td class="mono hd-dim">${c.ctr != null ? c.ctr + '%' : '—'}</td>
+      <td class="mono">${fmt(c.orders)}</td>
+      <td class="mono">${fmtMoney(c.revenue)}</td>
+      <td class="mono">${adsRoas(c.roas)}</td>
+      <td class="mono">${c.cps != null ? fmtMoney(c.cps) : '<span class="hd-dim">—</span>'}</td>
+    </tr>`;
+  };
+
+  const cards = (d.channels || []).map(ch => {
+    const cmp = ch.campaigns || [];
+    let body = '';
+    for (const c of cmp) {
+      body += row(c, false, ch.channel);
+      const key = ch.channel + '|' + c.name;
+      if (ch.has_ads && ADS_EXPANDED.has(key) && c.ads && c.ads.length) {
+        for (const a of c.ads) body += row(a, true, ch.channel);
+      }
+    }
+    if (!cmp.length) body = `<tr><td colspan="10" class="hd-empty">Немає даних за період</td></tr>`;
+    const tt = ch.totals || {};
+    const totRow = cmp.length ? `<tr class="ads-tot">
+      <td class="hd-l">Разом ${ch.channel}</td>
+      <td class="mono">${fmtMoney(tt.spend)}</td><td class="mono hd-dim">${adsNum(tt.impressions)}</td><td class="mono hd-dim">${adsNum(tt.clicks)}</td>
+      <td class="mono hd-dim">${tt.cpm != null ? fmt(tt.cpm) : '—'}</td><td class="mono hd-dim">${tt.ctr != null ? tt.ctr + '%' : '—'}</td>
+      <td class="mono">${fmt(tt.orders)}</td><td class="mono">${fmtMoney(tt.revenue)}</td><td class="mono">${adsRoas(tt.roas)}</td><td class="mono">${tt.cps != null ? fmtMoney(tt.cps) : '—'}</td>
+    </tr>` : '';
+    const dot = ch.channel === 'Meta Ads' ? 'var(--hd-accent)' : 'var(--hd-warn)';
+    const note = ch.from ? `дані з ${mktDMY(ch.from)}` : 'немає розмічених заказів';
+    const hint = ch.has_ads ? ' · клік по кампанії — оголошення' : ' · матчинг по ID кампанії';
+    return `<div class="hd-card">
+      <div class="hd-card-h"><span class="ads-dot" style="background:${dot}"></span>${ch.channel}
+        <span class="hd-hint">— ${cmp.length} кампаній · ${note}${hint}</span></div>
+      <div class="hd-tw"><table class="hd-table">
+        <thead><tr><th class="hd-l">Кампанія</th><th>Витрати</th><th>Покази</th><th>Кліки</th><th>CPM</th><th>CTR</th><th>Замовл.</th><th>Виручка</th><th>ROAS</th><th>CPS</th></tr></thead>
+        <tbody>${body}${totRow}</tbody>
+      </table></div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('main-area').innerHTML = `
+  <div class="hd">
+    <div class="hd-head">
+      <div>
+        <div class="hd-h1">Реклама — кампанії</div>
+        <div class="hd-sub">Meta Ads + Google Ads · ${(ADS_FROM && ADS_TO) ? (mktDMY(ADS_FROM) + ' – ' + mktDMY(ADS_TO)) : 'Увесь час'} · ROAS/CPS лише по розмічених заказах</div>
+      </div>
+      <div class="hd-filters"><div class="hd-seg">${seg('all', 'Усі')}${seg('opt', 'Опт')}${seg('retail', 'Роздріб')}</div>
+        <button class="hd-btn" onclick="renderCampaignsPage()">↺</button></div>
+    </div>
+    <div class="hd-daterow">
+      <span class="hd-dim" style="font-size:12px">Період:</span>
+      <input type="date" id="ads-from" class="hd-date" value="${ADS_FROM || ''}" max="${today}">
+      <span class="hd-dim">–</span>
+      <input type="date" id="ads-to" class="hd-date" value="${ADS_TO || ''}" max="${today}">
+      <button class="hd-btn hd-btn-p" onclick="adsApplyDates()">Застосувати</button>
+      <span class="hd-daterow-sep"></span>
+      <div class="hd-seg">${pb('this_month', 'Поточний місяць')}${pb('prev_month', 'Попередній місяць')}${pb('last7', '7 днів')}${pb('last14', '14 днів')}${pb('all', 'Весь час')}</div>
+    </div>
+    <div class="hd-kpis">
+      <div class="hd-kpi"><div class="hd-kpi-l">Витрати</div><div class="hd-kpi-v mono">${fmtMoney(t.spend || 0)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Виручка</div><div class="hd-kpi-v mono">${fmtMoney(t.revenue || 0)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">ROAS</div><div class="hd-kpi-v mono">${adsRoas(t.roas)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Замовлення</div><div class="hd-kpi-v mono">${fmt(t.orders || 0)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">CPS · ціна замовл.</div><div class="hd-kpi-v mono">${t.cps != null ? fmtMoney(t.cps) : '—'}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Нові клієнти</div><div class="hd-kpi-v mono hd-pos">${fmt(t.new_orders || 0)}</div></div>
+    </div>
+    ${cards}
+    <div class="hd-note">CPS = Витрати ÷ Замовлення (виконані + в роботі). ROAS = Виручка ÷ Витрати. Виручка/ROAS/CPS — лише по заказах із правильною розміткою (Meta <b>utm_source=meta</b>, Google <b>cid_…</b>), тобто з дати її впровадження. Розхід Meta по оголошеннях підтягується кроком <b>meta_ad_spend</b>.</div>
   </div>`;
 }
 
