@@ -1,0 +1,63 @@
+# Незалежна синхронізація розходу реклами (Meta + Google).
+#
+# ПРОБЛЕМА: кроки розходу (meta_spend / meta_ad_spend / google_spend) стоять у
+# ХВОСТІ важкого авто-циклу (заказы → metrics → reconcile → …). Якщо цикл
+# підвисає на reconcile (а він періодично підвисає), до розходу справа не
+# доходить — і цифри реклами застрягають на вчорашньому ранку.
+#
+# РІШЕННЯ: цей workflow викликає кроки розходу НАПРЯМУ, окремо від циклу.
+# Кожен крок — 1 швидкий виклик (кілька секунд), days=7 перезаписує останні
+# 7 днів (фіналізує вчора). Ідемпотентно (upsert), тож безпечно.
+#
+# CRON_SECRET має бути в GitHub Secrets (той самий, що для backup-cron-ingest).
+
+name: Ad spend sync (Meta + Google)
+
+on:
+  schedule:
+    # 05:00 UTC щодня (07:00 Київ) — пізніше за основний cron, щоб розхід за
+    # вчора встиг фіналізуватись у кабінетах.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Скільки останніх днів перезаписати"
+        required: false
+        default: "7"
+
+jobs:
+  sync-spend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync Meta + Google spend
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          DAYS: ${{ github.event.inputs.days }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET не налаштовано в GitHub Secrets"; exit 1
+          fi
+          D="${DAYS:-7}"
+          BASE="https://keycrm-dashboard.vercel.app/api/cron/ingest"
+          set +e
+          fail=0
+          for STEP in meta_spend meta_ad_spend google_spend; do
+            ok=0
+            for i in 1 2 3; do
+              echo "=== $STEP (спроба $i, days=$D) ==="
+              HTTP=$(curl -s -o /tmp/resp.json -w "%{http_code}" --max-time 90 \
+                "$BASE?step=$STEP&days=$D&secret=$CRON_SECRET")
+              echo "HTTP $HTTP"; cat /tmp/resp.json | head -c 400; echo ""
+              # 200 = ок. 504 = не наш крок (розхід швидкий), тож вважаємо збоєм і ретраїмо.
+              if [ "$HTTP" = "200" ]; then ok=1; break; fi
+              echo "retry через $((i*20))s..."; sleep $((i * 20))
+            done
+            if [ "$ok" != "1" ]; then
+              echo "::warning::$STEP не вдалося синхронізувати"; fail=1
+            fi
+            sleep 3
+          done
+          if [ "$fail" = "1" ]; then
+            echo "::error::Частина кроків розходу не синхронізувалась"; exit 1
+          fi
+          echo "✓ Розхід Meta + Google синхронізовано (останні $D днів)"
