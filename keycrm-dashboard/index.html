@@ -53,10 +53,31 @@
   .ads-tri{ display:inline-block; width:14px; color:var(--hd-t3); font-size:10px; }
   .ads-adrow{ background:rgba(255,255,255,0.015); }
   .ads-adrow td{ color:var(--hd-t2); }
-  .ads-adname{ padding-left:22px !important; font-size:12px; color:var(--hd-t2); }
+  .ads-l2row{ background:rgba(255,255,255,0.03); }
+  .ads-l1{ padding-left:24px !important; font-size:12px; color:var(--hd-t2); }
+  .ads-l2{ padding-left:46px !important; font-size:12px; color:var(--hd-t3); }
   .ads-tot td{ border-top:1px solid var(--hd-bd); font-weight:600; background:rgba(255,255,255,0.025); }
   .hd-note{ font-size:11.5px; color:var(--hd-t3); line-height:1.7; margin-top:4px; padding:0 2px; }
   .hd-note b{ color:var(--hd-t2); font-weight:600; }
+  .hd-datepill{ display:inline-flex; align-items:center; gap:8px; background:var(--hd-surf); border:1px solid var(--hd-bd); color:var(--hd-t1); border-radius:10px; padding:8px 14px; font-size:13px; font-family:'JetBrains Mono',monospace; cursor:pointer; }
+  .hd-datepill:hover{ border-color:var(--hd-accent); }
+  #cal-back{ position:fixed; inset:0; z-index:90; }
+  #cal-pop{ position:absolute; z-index:91; width:312px; background:var(--hd-card); border:1px solid var(--hd-bd); border-radius:16px; padding:16px; box-shadow:0 18px 50px rgba(0,0,0,.6); }
+  .cal-h{ display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  .cal-title{ font-size:15px; font-weight:600; color:var(--hd-t1); }
+  .cal-nav{ width:30px; height:30px; border-radius:8px; background:var(--hd-surf); border:1px solid var(--hd-bd); color:var(--hd-t2); font-size:15px; cursor:pointer; }
+  .cal-nav:hover{ background:rgba(255,255,255,.08); color:var(--hd-t1); }
+  .cal-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:3px; }
+  .cal-wd{ margin-bottom:5px; }
+  .cal-wd div{ text-align:center; font-size:10px; color:var(--hd-t3); text-transform:uppercase; padding:4px 0; }
+  .cal-cell{ height:38px; display:flex; align-items:center; justify-content:center; border-radius:9px; font-size:13px; font-family:'JetBrains Mono',monospace; color:var(--hd-t1); cursor:pointer; }
+  .cal-cell:hover:not(.cal-empty):not(.cal-fut){ background:rgba(255,255,255,.07); }
+  .cal-empty{ cursor:default; }
+  .cal-fut{ color:var(--hd-t3); opacity:.35; cursor:default; }
+  .cal-range{ background:rgba(30,155,255,.14); border-radius:0; }
+  .cal-sel{ background:var(--hd-accent); color:#fff; font-weight:600; }
+  .cal-foot{ display:flex; align-items:center; justify-content:space-between; margin-top:14px; gap:10px; }
+  .cal-lbl{ font-size:12px; color:var(--hd-t2); font-family:'JetBrains Mono',monospace; }
   .hd-addcost{ display:flex; gap:8px; align-items:center; padding:12px 16px; border-top:1px solid var(--hd-bd2); flex-wrap:wrap; }
   @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
@@ -591,7 +612,7 @@
         <span class="nav-icon">👥</span> Когорти
       </div>
       <div class="nav-item" onclick="navigate('marketing')">
-        <span class="nav-icon">📣</span> Наскрізна аналітика
+        <span class="nav-icon">📣</span> Наскрізна (загальний)
       </div>
       <div class="nav-item" onclick="navigate('campaigns')">
         <span class="nav-icon">🎯</span> Реклама
@@ -1947,10 +1968,12 @@ function mktPreset(kind) {
     const lastDay = new Date(Date.UTC(py, pm, 0)).getUTCDate();
     MKT_FROM = iso(py, pm, 1); MKT_TO = iso(py, pm, lastDay);
   }
+  else if (kind === 'yesterday') { const yd = mktAddDays(today, -1); MKT_FROM = yd; MKT_TO = yd; }
   else if (kind === 'last7') { MKT_FROM = mktAddDays(today, -6); MKT_TO = today; }
   else if (kind === 'last14') { MKT_FROM = mktAddDays(today, -13); MKT_TO = today; }
   renderMarketingPage();
 }
+function mktOpenCal() { calOpen('mkt-pill', MKT_FROM, MKT_TO, (f, t) => { MKT_FROM = f; MKT_TO = t; renderMarketingPage(); }); }
 // Яка кнопка пресету зараз активна (для підсвічування).
 function mktActivePreset() {
   const today = mktTodayKyiv();
@@ -1958,6 +1981,7 @@ function mktActivePreset() {
   const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
   if (!MKT_FROM && !MKT_TO) return 'all';
   if (MKT_FROM === iso(Y, M, 1) && MKT_TO === today) return 'this_month';
+  if (MKT_FROM === mktAddDays(today, -1) && MKT_TO === mktAddDays(today, -1)) return 'yesterday';
   if (MKT_FROM === mktAddDays(today, -6) && MKT_TO === today) return 'last7';
   if (MKT_FROM === mktAddDays(today, -13) && MKT_TO === today) return 'last14';
   let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
@@ -1965,12 +1989,52 @@ function mktActivePreset() {
   if (MKT_FROM === iso(py, pm, 1) && MKT_TO === iso(py, pm, lastDay)) return 'prev_month';
   return 'custom';
 }
-function mktApplyDates() {
-  const f = document.getElementById('mkt-from').value;
-  const t = document.getElementById('mkt-to').value;
-  if (!f || !t) { alert('Вкажіть обидві дати'); return; }
-  if (f > t) { alert('«Від» не може бути пізніше «До»'); return; }
-  MKT_FROM = f; MKT_TO = t; renderMarketingPage();
+// ── Спільний календар вибору діапазону дат (попап) ──
+let CAL = null; // { year, month(0-11), from, to, apply, anchor }
+const CAL_MONTHS = ['січень','лютий','березень','квітень','травень','червень','липень','серпень','вересень','жовтень','листопад','грудень'];
+function calOpen(anchorId, from, to, applyFn) {
+  const base = to || from || mktTodayKyiv();
+  const [y, m] = base.split('-').map(Number);
+  CAL = { year: y, month: m - 1, from: from || null, to: to || null, apply: applyFn, anchor: anchorId };
+  calRender();
+}
+function calClose() { CAL = null; const p = document.getElementById('cal-pop'); if (p) p.remove(); const b = document.getElementById('cal-back'); if (b) b.remove(); }
+function calNav(delta) { if (!CAL) return; let m = CAL.month + delta, y = CAL.year; if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; } CAL.month = m; CAL.year = y; calRender(); }
+function calPick(ymd) {
+  if (!CAL) return;
+  if (!CAL.from || (CAL.from && CAL.to)) { CAL.from = ymd; CAL.to = null; }
+  else if (ymd < CAL.from) { CAL.to = CAL.from; CAL.from = ymd; }
+  else { CAL.to = ymd; }
+  calRender();
+}
+function calApply() { if (!CAL) return; const f = CAL.from, t = CAL.to || CAL.from, fn = CAL.apply; calClose(); if (f) fn(f, t); }
+function calRender() {
+  const old = document.getElementById('cal-pop'); if (old) old.remove();
+  if (!CAL) return;
+  const y = CAL.year, m = CAL.month, today = mktTodayKyiv();
+  const off = (new Date(Date.UTC(y, m, 1)).getUTCDay() + 6) % 7; // пн=0
+  const days = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  let cells = '';
+  for (let i = 0; i < off; i++) cells += '<div class="cal-cell cal-empty"></div>';
+  for (let d = 1; d <= days; d++) {
+    const ymd = y + '-' + mktPad(m + 1) + '-' + mktPad(d);
+    const sel = ymd === CAL.from || ymd === CAL.to;
+    const inR = CAL.from && CAL.to && ymd > CAL.from && ymd < CAL.to;
+    const fut = ymd > today;
+    let cls = 'cal-cell'; if (sel) cls += ' cal-sel'; else if (inR) cls += ' cal-range'; if (fut) cls += ' cal-fut';
+    cells += `<div class="${cls}"${fut ? '' : ` onclick="calPick('${ymd}')"`}>${d}</div>`;
+  }
+  let back = document.getElementById('cal-back');
+  if (!back) { back = document.createElement('div'); back.id = 'cal-back'; back.onclick = calClose; document.body.appendChild(back); }
+  const pop = document.createElement('div'); pop.id = 'cal-pop';
+  pop.innerHTML = `
+    <div class="cal-h"><button class="cal-nav" onclick="calNav(-1)">‹</button><div class="cal-title">${CAL_MONTHS[m]} ${y}</div><button class="cal-nav" onclick="calNav(1)">›</button></div>
+    <div class="cal-grid cal-wd"><div>пн</div><div>вт</div><div>ср</div><div>чт</div><div>пт</div><div>сб</div><div>нд</div></div>
+    <div class="cal-grid">${cells}</div>
+    <div class="cal-foot"><span class="cal-lbl">${CAL.from ? mktDMY(CAL.from) : '—'} – ${CAL.to ? mktDMY(CAL.to) : (CAL.from ? '…' : '—')}</span><button class="hd-btn hd-btn-p" onclick="calApply()">Застосувати</button></div>`;
+  document.body.appendChild(pop);
+  const a = document.getElementById(CAL.anchor);
+  if (a) { const r = a.getBoundingClientRect(); let left = window.scrollX + r.left; const maxL = window.scrollX + document.documentElement.clientWidth - 320; if (left > maxL) left = Math.max(window.scrollX + 8, maxL); pop.style.top = (window.scrollY + r.bottom + 6) + 'px'; pop.style.left = left + 'px'; }
 }
 
 async function renderMarketingPage() {
@@ -2048,13 +2112,10 @@ function renderMarketingView() {
   const dateBar = `
     <div class="hd-daterow">
       <span class="hd-dim" style="font-size:12px">Період:</span>
-      <input type="date" id="mkt-from" class="hd-date" value="${MKT_FROM||''}" max="${today}">
-      <span class="hd-dim">–</span>
-      <input type="date" id="mkt-to" class="hd-date" value="${MKT_TO||''}" max="${today}">
-      <button class="hd-btn hd-btn-p" onclick="mktApplyDates()">Застосувати</button>
+      <button class="hd-datepill" id="mkt-pill" onclick="mktOpenCal()">📅 ${mktRangeLabel()}</button>
       <span class="hd-daterow-sep"></span>
       <div class="hd-seg">
-        ${presetBtn('this_month','Поточний місяць')}${presetBtn('prev_month','Попередній місяць')}${presetBtn('last7','7 днів')}${presetBtn('last14','14 днів')}${presetBtn('all','Весь час')}
+        ${presetBtn('this_month','Поточний місяць')}${presetBtn('prev_month','Попередній місяць')}${presetBtn('yesterday','Вчора')}${presetBtn('last7','7 днів')}${presetBtn('last14','14 днів')}${presetBtn('all','Весь час')}
       </div>
     </div>`;
 
@@ -2078,10 +2139,11 @@ function renderMarketingView() {
       <td class="mono">${fmtMoney(c.aov)}</td>
       <td class="mono">${costCell}</td>
       <td class="mono">${roasCell(c.roas)}</td>
+      <td class="mono">${c.cps != null ? fmtMoney(c.cps) : '<span class="hd-dim">—</span>'}</td>
       <td class="mono hd-dim">${c.cpm != null ? fmt(c.cpm) : '—'}</td>
       <td class="mono hd-dim">${c.ctr != null ? c.ctr + '%' : '—'}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="13" class="hd-empty">Немає даних за період</td></tr>`;
+  }).join('') || `<tr><td colspan="14" class="hd-empty">Немає даних за період</td></tr>`;
 
   // First-touch LTV
   const ftCov = d.first_touch_coverage || { matched_buyers: 0, total_buyers: 0 };
@@ -2098,7 +2160,7 @@ function renderMarketingView() {
   <div class="hd">
     <div class="hd-head">
       <div>
-        <div class="hd-h1">Наскрізна аналітика по каналам</div>
+        <div class="hd-h1">Наскрізна аналітика (загальний)</div>
         <div class="hd-sub">лише сайт bijboom-opt.com.ua · ${mktRangeLabel()} · ${fmt((t.done||0)+(t.progress||0))} активних (без скасованих) · last-touch</div>
       </div>
       <div class="hd-filters">
@@ -2116,6 +2178,7 @@ function renderMarketingView() {
       <div class="hd-kpi"><div class="hd-kpi-l">Скасовані (не враховуються)</div><div class="hd-kpi-v mono hd-neg">${fmt(t.cancelled||0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Витрати</div><div class="hd-kpi-v mono">${t.cost ? fmtMoney(t.cost) : '—'}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">ROAS</div><div class="hd-kpi-v mono">${roasCell(t.roas)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">CPS · ціна замовл.</div><div class="hd-kpi-v mono">${t.cps != null ? fmtMoney(t.cps) : '—'}</div></div>
     </div>
 
     <div class="hd-card">
@@ -2123,7 +2186,7 @@ function renderMarketingView() {
       <div class="hd-tw">
         <table class="hd-table">
           <thead><tr>
-            <th class="hd-l">Канал</th><th>Виконані</th><th>В роботі</th><th>Скасов.</th><th>Нові</th><th>Повт.</th><th>Виручка</th><th>Частка</th><th>Серед. чек</th><th>Витрати</th><th>ROAS</th><th>CPM</th><th>CTR</th>
+            <th class="hd-l">Канал</th><th>Виконані</th><th>В роботі</th><th>Скасов.</th><th>Нові</th><th>Повт.</th><th>Виручка</th><th>Частка</th><th>Серед. чек</th><th>Витрати</th><th>ROAS</th><th>CPS</th><th>CPM</th><th>CTR</th>
           </tr></thead>
           <tbody>${chanRows}</tbody>
         </table>
@@ -2163,16 +2226,19 @@ function adsPreset(kind) {
     const last = new Date(Date.UTC(py, pm, 0)).getUTCDate();
     ADS_FROM = iso(py, pm, 1); ADS_TO = iso(py, pm, last);
   }
+  else if (kind === 'yesterday') { const yd = mktAddDays(today, -1); ADS_FROM = yd; ADS_TO = yd; }
   else if (kind === 'last7') { ADS_FROM = mktAddDays(today, -6); ADS_TO = today; }
   else if (kind === 'last14') { ADS_FROM = mktAddDays(today, -13); ADS_TO = today; }
   renderCampaignsPage();
 }
+function adsOpenCal() { calOpen('ads-pill', ADS_FROM, ADS_TO, (f, t) => { ADS_FROM = f; ADS_TO = t; renderCampaignsPage(); }); }
 function adsActivePreset() {
   const today = mktTodayKyiv();
   const [Y, M] = today.split('-').map(Number);
   const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
   if (!ADS_FROM && !ADS_TO) return 'all';
   if (ADS_FROM === iso(Y, M, 1) && ADS_TO === today) return 'this_month';
+  if (ADS_FROM === mktAddDays(today, -1) && ADS_TO === mktAddDays(today, -1)) return 'yesterday';
   if (ADS_FROM === mktAddDays(today, -6) && ADS_TO === today) return 'last7';
   if (ADS_FROM === mktAddDays(today, -13) && ADS_TO === today) return 'last14';
   let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
@@ -2218,12 +2284,12 @@ function renderCampaignsView() {
   const seg = (v, l) => `<button class="hd-seg-b${ADS_SEGMENT === v ? ' on' : ''}" onclick="setAdsSegment('${v}')">${l}</button>`;
   const pb = (k, l) => `<button class="hd-seg-b${ap === k ? ' on' : ''}" onclick="adsPreset('${k}')">${l}</button>`;
 
-  const row = (c, isAd, chKey) => {
-    const key = chKey + '|' + c.name;
-    const canExp = !isAd && c.ads && c.ads.length;
-    const tri = canExp ? `<span class="ads-tri">${ADS_EXPANDED.has(key) ? '▾' : '▸'}</span>` : (isAd ? '<span class="ads-tri" style="opacity:0">▸</span>' : '');
-    return `<tr class="${isAd ? 'ads-adrow' : ''}"${canExp ? ` style="cursor:pointer" onclick="toggleAdsCamp('${key.replace(/'/g, "\\'")}')"` : ''}>
-      <td class="hd-l ${isAd ? 'ads-adname' : ''}">${tri}${c.name}</td>
+  const row = (c, level, key, canExp) => {
+    const tri = canExp ? `<span class="ads-tri">${ADS_EXPANDED.has(key) ? '▾' : '▸'}</span>` : `<span class="ads-tri" style="opacity:0">▸</span>`;
+    const nameCls = level === 1 ? 'ads-l1' : (level === 2 ? 'ads-l2' : '');
+    const rowCls = level === 1 ? 'ads-adrow' : (level === 2 ? 'ads-adrow ads-l2row' : '');
+    return `<tr class="${rowCls}"${canExp ? ` style="cursor:pointer" onclick="toggleAdsCamp('${String(key).replace(/'/g, "\\'")}')"` : ''}>
+      <td class="hd-l ${nameCls}">${tri}${c.name}</td>
       <td class="mono">${fmtMoney(c.spend)}</td>
       <td class="mono hd-dim">${adsNum(c.impressions)}</td>
       <td class="mono hd-dim">${adsNum(c.clicks)}</td>
@@ -2240,10 +2306,18 @@ function renderCampaignsView() {
     const cmp = ch.campaigns || [];
     let body = '';
     for (const c of cmp) {
-      body += row(c, false, ch.channel);
-      const key = ch.channel + '|' + c.name;
-      if (ch.has_ads && ADS_EXPANDED.has(key) && c.ads && c.ads.length) {
-        for (const a of c.ads) body += row(a, true, ch.channel);
+      const campKey = ch.channel + '||' + c.name;
+      const hasAdsets = ch.has_ads && c.adsets && c.adsets.length;
+      body += row(c, 0, campKey, hasAdsets);
+      if (hasAdsets && ADS_EXPANDED.has(campKey)) {
+        for (const as of c.adsets) {
+          const asKey = campKey + '||' + as.name;
+          const hasAds = as.ads && as.ads.length;
+          body += row(as, 1, asKey, hasAds);
+          if (hasAds && ADS_EXPANDED.has(asKey)) {
+            for (const ad of as.ads) body += row(ad, 2, null, false);
+          }
+        }
       }
     }
     if (!cmp.length) body = `<tr><td colspan="10" class="hd-empty">Немає даних за період</td></tr>`;
@@ -2256,12 +2330,12 @@ function renderCampaignsView() {
     </tr>` : '';
     const dot = ch.channel === 'Meta Ads' ? 'var(--hd-accent)' : 'var(--hd-warn)';
     const note = ch.from ? `дані з ${mktDMY(ch.from)}` : 'немає розмічених заказів';
-    const hint = ch.has_ads ? ' · клік по кампанії — оголошення' : ' · матчинг по ID кампанії';
+    const hint = ch.has_ads ? ' · клік: кампанія → група → оголошення' : ' · матчинг по ID кампанії';
     return `<div class="hd-card">
       <div class="hd-card-h"><span class="ads-dot" style="background:${dot}"></span>${ch.channel}
         <span class="hd-hint">— ${cmp.length} кампаній · ${note}${hint}</span></div>
       <div class="hd-tw"><table class="hd-table">
-        <thead><tr><th class="hd-l">Кампанія</th><th>Витрати</th><th>Покази</th><th>Кліки</th><th>CPM</th><th>CTR</th><th>Замовл.</th><th>Виручка</th><th>ROAS</th><th>CPS</th></tr></thead>
+        <thead><tr><th class="hd-l">Кампанія / Група / Оголошення</th><th>Витрати</th><th>Покази</th><th>Кліки</th><th>CPM</th><th>CTR</th><th>Замовл.</th><th>Виручка</th><th>ROAS</th><th>CPS</th></tr></thead>
         <tbody>${body}${totRow}</tbody>
       </table></div>
     </div>`;
@@ -2279,12 +2353,9 @@ function renderCampaignsView() {
     </div>
     <div class="hd-daterow">
       <span class="hd-dim" style="font-size:12px">Період:</span>
-      <input type="date" id="ads-from" class="hd-date" value="${ADS_FROM || ''}" max="${today}">
-      <span class="hd-dim">–</span>
-      <input type="date" id="ads-to" class="hd-date" value="${ADS_TO || ''}" max="${today}">
-      <button class="hd-btn hd-btn-p" onclick="adsApplyDates()">Застосувати</button>
+      <button class="hd-datepill" id="ads-pill" onclick="adsOpenCal()">📅 ${(ADS_FROM && ADS_TO) ? (mktDMY(ADS_FROM) + ' – ' + mktDMY(ADS_TO)) : 'Увесь час'}</button>
       <span class="hd-daterow-sep"></span>
-      <div class="hd-seg">${pb('this_month', 'Поточний місяць')}${pb('prev_month', 'Попередній місяць')}${pb('last7', '7 днів')}${pb('last14', '14 днів')}${pb('all', 'Весь час')}</div>
+      <div class="hd-seg">${pb('this_month', 'Поточний місяць')}${pb('prev_month', 'Попередній місяць')}${pb('yesterday', 'Вчора')}${pb('last7', '7 днів')}${pb('last14', '14 днів')}${pb('all', 'Весь час')}</div>
     </div>
     <div class="hd-kpis">
       <div class="hd-kpi"><div class="hd-kpi-l">Витрати</div><div class="hd-kpi-v mono">${fmtMoney(t.spend || 0)}</div></div>

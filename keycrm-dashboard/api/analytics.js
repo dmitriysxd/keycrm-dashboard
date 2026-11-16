@@ -515,6 +515,7 @@ async function handleMarketing(req, res, supabase) {
       cpm: s.impr > 0 ? +(s.cost / s.impr * 1000).toFixed(2) : null,
       ctr: s.impr > 0 ? +(s.clicks / s.impr * 100).toFixed(2) : null,
       roas: s.cost > 0 ? +(b.revenue / s.cost).toFixed(2) : null,
+      cps: (s.cost > 0 && active > 0) ? Math.round(s.cost / active) : null, // ціна замовлення
     };
   }
 
@@ -573,6 +574,7 @@ async function handleMarketing(req, res, supabase) {
       done: tDone, progress: tProg, cancelled: tCanc,
       revenue: Math.round(tRev), new_orders: tNew, repeat_orders: tRep,
       cost: Math.round(totCost), roas: totCost > 0 ? +(tRev / totCost).toFixed(2) : null,
+      cps: (totCost > 0 && (tDone + tProg) > 0) ? Math.round(totCost / (tDone + tProg)) : null,
     },
     first_touch: firstTouch,
     first_touch_coverage: { matched_buyers: ftMatched, total_buyers: ltvByBuyer.size },
@@ -678,56 +680,69 @@ async function handleCampaigns(req, res, supabase) {
     if (isNew) acc.newO++;
   }
 
-  // Виручка по кампаніях/оголошеннях.
-  const metaCamp = new Map(); // normCamp -> {disp, ads:Map(normAd->{disp,...}), ...}
-  const gCamp = new Map();    // cid -> {...}
-  for (const o of orders) {
-    if (hasRange) { const dk = ymdKey(o.ordered_at); if (!dk || dk < from || dk > to) continue; }
-    if (!inSegment(o.buyer_id)) continue;
-    const isNew = !o.buyer_id ? true : (o.ordered_at === firstActiveAt.get(o.buyer_id));
-    if (o.src === "meta") {
-      const ck = _normName(o.campaign) || "(без кампанії)";
-      let c = metaCamp.get(ck);
-      if (!c) { c = Object.assign(cObj(), { disp: _decodeRaw(o.campaign) || "(без кампанії)", ads: new Map() }); metaCamp.set(ck, c); }
-      applyRev(c, o, isNew);
-      const ak = _normName(o.content) || "(без оголошення)";
-      let a = c.ads.get(ak);
-      if (!a) { a = Object.assign(cObj(), { disp: _decodeRaw(o.content) || "(без оголошення)" }); c.ads.set(ak, a); }
-      applyRev(a, o, isNew);
-    } else if (o.src === "google") {
-      const cid = _gCid(o.campaign);
-      if (!cid) continue;
-      let c = gCamp.get(cid);
-      if (!c) { c = Object.assign(cObj(), { disp: null }); gCamp.set(cid, c); }
-      applyRev(c, o, isNew);
-    }
-  }
-
-  // Розхід по кампаніях/оголошеннях (у межах діапазону).
-  const metaCampSpend = new Map();
+  // Бекбон = реальні кампанії Meta зі spend (meta_ad_spend): дерево
+  // кампанія→група→оголошення з реальними назвами/ID. Виручку з заказів
+  // чіпляємо сюди по іменах; нерозпізнане (напр. нерозкритий {{campaign.name}})
+  // не створює фейкових кампаній — воно просто не знаходить збіг і відкидається.
+  const SEP = "\u0001";
+  const mTree = new Map();       // campId -> campNode
+  const campLookup = new Map();  // normCampName -> campNode
+  const adLookup = new Map();    // normCampName+SEP+normAdName -> adNode
+  const rz = () => ({ rev: 0, done: 0, prog: 0, canc: 0, newO: 0 });
   for (const r of (metaAdRows || [])) {
     if (hasRange && (!r.date || r.date < from || r.date > to)) continue;
-    const ck = _normName(r.campaign_name);
-    let c = metaCampSpend.get(ck);
-    if (!c) { c = { spend: 0, impr: 0, clicks: 0, disp: r.campaign_name || null, ads: new Map() }; metaCampSpend.set(ck, c); }
     const sp = parseFloat(r.spend_uah != null ? r.spend_uah : (r.spend || 0)) || 0;
-    c.spend += sp; c.impr += parseInt(r.impressions || 0, 10) || 0; c.clicks += parseInt(r.clicks || 0, 10) || 0;
-    if (!c.disp && r.campaign_name) c.disp = r.campaign_name;
-    const ak = _normName(r.ad_name);
-    let a = c.ads.get(ak);
-    if (!a) { a = { spend: 0, impr: 0, clicks: 0, disp: r.ad_name || null }; c.ads.set(ak, a); }
-    a.spend += sp; a.impr += parseInt(r.impressions || 0, 10) || 0; a.clicks += parseInt(r.clicks || 0, 10) || 0;
-    if (!a.disp && r.ad_name) a.disp = r.ad_name;
+    const im = parseInt(r.impressions || 0, 10) || 0, cl = parseInt(r.clicks || 0, 10) || 0;
+    const campId = String(r.campaign_id || "unknown");
+    let cn = mTree.get(campId);
+    if (!cn) { cn = Object.assign({ id: campId, name: r.campaign_name || "(кампанія)", spend: 0, impr: 0, clicks: 0, adsets: new Map() }, rz()); mTree.set(campId, cn); }
+    cn.spend += sp; cn.impr += im; cn.clicks += cl;
+    campLookup.set(_normName(r.campaign_name), cn);
+    const asId = String(r.adset_id || "unknown");
+    let an = cn.adsets.get(asId);
+    if (!an) { an = Object.assign({ id: asId, name: r.adset_name || "(група)", spend: 0, impr: 0, clicks: 0, ads: new Map(), _camp: cn }, rz()); cn.adsets.set(asId, an); }
+    an.spend += sp; an.impr += im; an.clicks += cl;
+    const adId = String(r.ad_id || "unknown");
+    let dn = an.ads.get(adId);
+    if (!dn) { dn = Object.assign({ id: adId, name: r.ad_name || "(оголошення)", spend: 0, impr: 0, clicks: 0, _adset: an, _camp: cn }, rz()); an.ads.set(adId, dn); }
+    dn.spend += sp; dn.impr += im; dn.clicks += cl;
+    adLookup.set(_normName(r.campaign_name) + SEP + _normName(r.ad_name), dn);
   }
   const gCampSpend = new Map();
   for (const r of (googleRows || [])) {
     if (hasRange && (!r.date || r.date < from || r.date > to)) continue;
     const cid = String(r.campaign_id || "");
     let c = gCampSpend.get(cid);
-    if (!c) { c = { spend: 0, impr: 0, clicks: 0, disp: r.campaign_name || null }; gCampSpend.set(cid, c); }
+    if (!c) { c = Object.assign({ spend: 0, impr: 0, clicks: 0, disp: r.campaign_name || null }, rz()); gCampSpend.set(cid, c); }
     const sp = parseFloat(r.spend_uah != null ? r.spend_uah : (r.spend || 0)) || 0;
     c.spend += sp; c.impr += parseInt(r.impressions || 0, 10) || 0; c.clicks += parseInt(r.clicks || 0, 10) || 0;
     if (!c.disp && r.campaign_name) c.disp = r.campaign_name;
+  }
+
+  // Виручка з заказів → у дерево по іменах (ad.name, інакше campaign.name).
+  function addRev(node, o, isNew) {
+    if (!node) return;
+    if (o.grp === "cancelled") { node.canc++; return; }
+    if (o.grp === "done") node.done++; else node.prog++;
+    node.rev += o.revenue;
+    if (isNew) node.newO++;
+  }
+  for (const o of orders) {
+    if (hasRange) { const dk = ymdKey(o.ordered_at); if (!dk || dk < from || dk > to) continue; }
+    if (!inSegment(o.buyer_id)) continue;
+    const isNew = !o.buyer_id ? true : (o.ordered_at === firstActiveAt.get(o.buyer_id));
+    if (o.src === "meta") {
+      const ck = _normName(o.campaign);
+      const dn = adLookup.get(ck + SEP + _normName(o.content));
+      if (dn) { addRev(dn, o, isNew); addRev(dn._adset, o, isNew); addRev(dn._camp, o, isNew); }
+      else { addRev(campLookup.get(ck), o, isNew); } // кампанія є, оголошення не зіставилось
+    } else if (o.src === "google") {
+      const cid = _gCid(o.campaign);
+      if (!cid) continue;
+      let c = gCampSpend.get(cid);
+      if (!c) { c = Object.assign({ spend: 0, impr: 0, clicks: 0, disp: null }, rz()); gCampSpend.set(cid, c); }
+      addRev(c, o, isNew);
+    }
   }
 
   const metric = (spend, impr, clicks, active, rev) => ({
@@ -738,43 +753,39 @@ async function handleCampaigns(req, res, supabase) {
     cps: active > 0 ? Math.round(spend / active) : null,
   });
 
+  // Показуємо лише активні (spend>0) або ті, що принесли конверсії (active>0).
+  const keep = (spend, active) => spend > 0 || active > 0;
+  const bySpend = (a, b) => b.spend - a.spend || b.revenue - a.revenue;
+  const node2row = (n, extra) => Object.assign({
+    name: n.name, done: n.done, progress: n.prog, cancelled: n.canc,
+    orders: n.done + n.prog, revenue: Math.round(n.rev), new_orders: n.newO,
+  }, extra || {}, metric(n.spend, n.impr, n.clicks, n.done + n.prog, n.rev));
+
   const metaCampaigns = [];
-  for (const ck of new Set([...metaCamp.keys(), ...metaCampSpend.keys()])) {
-    const rev = metaCamp.get(ck) || Object.assign(cObj(), { disp: null, ads: new Map() });
-    const sp = metaCampSpend.get(ck) || { spend: 0, impr: 0, clicks: 0, disp: null, ads: new Map() };
-    const active = rev.done + rev.prog;
-    const ads = [];
-    for (const ak of new Set([...rev.ads.keys(), ...sp.ads.keys()])) {
-      const ar = rev.ads.get(ak) || cObj();
-      const asp = sp.ads.get(ak) || { spend: 0, impr: 0, clicks: 0, disp: null };
-      const aActive = ar.done + ar.prog;
-      ads.push(Object.assign({
-        name: asp.disp || ar.disp || "(без оголошення)",
-        done: ar.done, progress: ar.prog, cancelled: ar.canc,
-        orders: aActive, revenue: Math.round(ar.rev), new_orders: ar.newO,
-      }, metric(asp.spend, asp.impr, asp.clicks, aActive, ar.rev)));
+  for (const cn of mTree.values()) {
+    if (!keep(cn.spend, cn.done + cn.prog)) continue;
+    const adsets = [];
+    for (const an of cn.adsets.values()) {
+      if (!keep(an.spend, an.done + an.prog)) continue;
+      const ads = [];
+      for (const dn of an.ads.values()) {
+        if (!keep(dn.spend, dn.done + dn.prog)) continue;
+        ads.push(node2row(dn, { ad_id: dn.id }));
+      }
+      ads.sort(bySpend);
+      adsets.push(node2row(an, { adset_id: an.id, ads }));
     }
-    ads.sort((a, b) => b.spend - a.spend || b.revenue - a.revenue);
-    metaCampaigns.push(Object.assign({
-      name: sp.disp || rev.disp || "(без кампанії)",
-      done: rev.done, progress: rev.prog, cancelled: rev.canc,
-      orders: active, revenue: Math.round(rev.rev), new_orders: rev.newO, ads,
-    }, metric(sp.spend, sp.impr, sp.clicks, active, rev.rev)));
+    adsets.sort(bySpend);
+    metaCampaigns.push(node2row(cn, { campaign_id: cn.id, adsets }));
   }
-  metaCampaigns.sort((a, b) => b.spend - a.spend || b.revenue - a.revenue);
+  metaCampaigns.sort(bySpend);
 
   const gCampaigns = [];
-  for (const cid of new Set([...gCamp.keys(), ...gCampSpend.keys()])) {
-    const rev = gCamp.get(cid) || cObj();
-    const sp = gCampSpend.get(cid) || { spend: 0, impr: 0, clicks: 0, disp: null };
-    const active = rev.done + rev.prog;
-    gCampaigns.push(Object.assign({
-      name: sp.disp || ("cid_" + cid), campaign_id: cid,
-      done: rev.done, progress: rev.prog, cancelled: rev.canc,
-      orders: active, revenue: Math.round(rev.rev), new_orders: rev.newO, ads: null,
-    }, metric(sp.spend, sp.impr, sp.clicks, active, rev.rev)));
+  for (const [cid, c] of gCampSpend) {
+    if (!keep(c.spend, c.done + c.prog)) continue;
+    gCampaigns.push(node2row(Object.assign({ name: c.disp || ("cid_" + cid) }, c), { campaign_id: cid, adsets: null }));
   }
-  gCampaigns.sort((a, b) => b.spend - a.spend || b.revenue - a.revenue);
+  gCampaigns.sort(bySpend);
 
   function channelTotals(camps) {
     let spend = 0, impr = 0, clicks = 0, done = 0, prog = 0, canc = 0, rev = 0, nw = 0;
