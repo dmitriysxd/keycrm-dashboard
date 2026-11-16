@@ -1936,6 +1936,7 @@ let TRENDS_BUCKET = 'month';
 // ── Маркетинг ────────────────────────
 let MKT_DATA = null;
 let MKT_FROM = null;   // 'YYYY-MM-DD' або null (увесь час)
+let MKT_INIT = false;  // чи вже застосовано дефолтний період
 let MKT_TO = null;
 let MKT_SEGMENT = 'all';
 const MKT_KNOWN_CHANNELS = ['Meta Ads','Google Ads','Пошук / органіка','Meta (органіка/реферал)','Email-маркетинг','Авто-тригери CMS','Інші тригери CMS','Системні (Технічні)','Месенджери (реферал)','AI (ChatGPT/Gemini)','Прямі'];
@@ -2044,6 +2045,8 @@ function calRender() {
 
 async function renderMarketingPage() {
   const main = document.getElementById('main-area');
+  if (!MKT_INIT && !MKT_FROM && !MKT_TO) { const t = mktTodayKyiv(); MKT_FROM = t.slice(0, 8) + '01'; MKT_TO = t; } // дефолт — поточний місяць (лише перший раз)
+  MKT_INIT = true;
   main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Завантажуємо маркетинг</div></div>';
   try {
     let q = 'type=marketing&segment=' + encodeURIComponent(MKT_SEGMENT);
@@ -2215,7 +2218,7 @@ function renderMarketingView() {
 }
 
 // ══ Сторінка «Реклама» — кампанії/оголошення (ROAS, CPS) ══
-let ADS_DATA = null, ADS_FROM = null, ADS_TO = null, ADS_SEGMENT = 'all';
+let ADS_DATA = null, ADS_FROM = null, ADS_TO = null, ADS_SEGMENT = 'all', ADS_INIT = false;
 const ADS_EXPANDED = new Set();
 
 function adsPreset(kind) {
@@ -2260,7 +2263,8 @@ function toggleAdsCamp(key) { if (ADS_EXPANDED.has(key)) ADS_EXPANDED.delete(key
 
 async function renderCampaignsPage() {
   const main = document.getElementById('main-area');
-  if (!ADS_FROM && !ADS_TO) { const t = mktTodayKyiv(); ADS_FROM = t.slice(0, 8) + '01'; ADS_TO = t; } // дефолт — поточний місяць
+  if (!ADS_INIT && !ADS_FROM && !ADS_TO) { const t = mktTodayKyiv(); ADS_FROM = t.slice(0, 8) + '01'; ADS_TO = t; } // дефолт — поточний місяць (лише перший раз)
+  ADS_INIT = true;
   main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Завантажуємо рекламу</div></div>';
   try {
     let q = 'type=campaigns&segment=' + encodeURIComponent(ADS_SEGMENT);
