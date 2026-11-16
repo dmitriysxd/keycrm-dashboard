@@ -2289,8 +2289,8 @@ function renderCampaignsView() {
 
   const row = (c, level, key, canExp) => {
     const tri = canExp ? `<span class="ads-tri">${ADS_EXPANDED.has(key) ? '▾' : '▸'}</span>` : `<span class="ads-tri" style="opacity:0">▸</span>`;
-    const nameCls = level === 1 ? 'ads-l1' : (level === 2 ? 'ads-l2' : '');
-    const rowCls = level === 1 ? 'ads-adrow' : (level === 2 ? 'ads-adrow ads-l2row' : '');
+    const nameCls = (level === 1 ? 'ads-l1' : (level === 2 ? 'ads-l2' : '')) + (c.is_other ? ' hd-dim' : '');
+    const rowCls = (level === 1 ? 'ads-adrow' : (level === 2 ? 'ads-adrow ads-l2row' : '')) + (c.is_other ? ' ads-other' : '');
     return `<tr class="${rowCls}"${canExp ? ` style="cursor:pointer" onclick="toggleAdsCamp('${String(key).replace(/'/g, "\\'")}')"` : ''}>
       <td class="hd-l ${nameCls}">${tri}${c.name}</td>
       <td class="mono">${fmtMoney(c.spend)}</td>
