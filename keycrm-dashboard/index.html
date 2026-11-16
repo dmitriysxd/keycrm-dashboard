@@ -82,6 +82,11 @@
   @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
   :root {
+    /* --hd-* дублюємо тут, щоб елементи поза контейнером .hd (напр. календар-
+       попап на <body>) бачили ці змінні. Значення = як у .hd. */
+    --hd-accent:#1e9bff; --hd-sky:#60cdff; --hd-pos:#2ecc81; --hd-neg:#ff5c73; --hd-warn:#ffb13d;
+    --hd-card:#0b0b0d; --hd-surf:#161618; --hd-bd:rgba(255,255,255,0.10); --hd-bd2:rgba(255,255,255,0.06);
+    --hd-t1:#fff; --hd-t2:rgba(255,255,255,0.86); --hd-t3:rgba(255,255,255,0.55);
     /* ── Палітра HeadData (синій акцент, тёмна тема) ── */
     --bg:       #000000;
     --s1:       #0b0b0d;
