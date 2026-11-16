@@ -516,6 +516,7 @@ async function handleMarketing(req, res, supabase) {
       ctr: s.impr > 0 ? +(s.clicks / s.impr * 100).toFixed(2) : null,
       roas: s.cost > 0 ? +(b.revenue / s.cost).toFixed(2) : null,
       cps: (s.cost > 0 && active > 0) ? Math.round(s.cost / active) : null, // ціна замовлення
+      cac: (s.cost > 0 && b.newO > 0) ? Math.round(s.cost / b.newO) : null,  // ціна нового клієнта
     };
   }
 
@@ -575,6 +576,7 @@ async function handleMarketing(req, res, supabase) {
       revenue: Math.round(tRev), new_orders: tNew, repeat_orders: tRep,
       cost: Math.round(totCost), roas: totCost > 0 ? +(tRev / totCost).toFixed(2) : null,
       cps: (totCost > 0 && (tDone + tProg) > 0) ? Math.round(totCost / (tDone + tProg)) : null,
+      cac: (totCost > 0 && tNew > 0) ? Math.round(totCost / tNew) : null,
     },
     first_touch: firstTouch,
     first_touch_coverage: { matched_buyers: ftMatched, total_buyers: ltvByBuyer.size },
@@ -755,12 +757,13 @@ async function handleCampaigns(req, res, supabase) {
     }
   }
 
-  const metric = (spend, impr, clicks, active, rev) => ({
+  const metric = (spend, impr, clicks, active, rev, newO) => ({
     spend: Math.round(spend), impressions: impr, clicks,
     cpm: impr > 0 ? +(spend / impr * 1000).toFixed(2) : null,
     ctr: impr > 0 ? +(clicks / impr * 100).toFixed(2) : null,
     roas: spend > 0 ? +(rev / spend).toFixed(2) : null,
-    cps: active > 0 ? Math.round(spend / active) : null,
+    cps: (spend > 0 && active > 0) ? Math.round(spend / active) : null,
+    cac: (spend > 0 && newO > 0) ? Math.round(spend / newO) : null,
   });
 
   // Показуємо лише активні (spend>0) або ті, що принесли конверсії (active>0).
@@ -769,7 +772,7 @@ async function handleCampaigns(req, res, supabase) {
   const node2row = (n, extra) => Object.assign({
     name: n.name, done: n.done, progress: n.prog, cancelled: n.canc,
     orders: n.done + n.prog, revenue: Math.round(n.rev), new_orders: n.newO,
-  }, extra || {}, metric(n.spend, n.impr, n.clicks, n.done + n.prog, n.rev));
+  }, extra || {}, metric(n.spend, n.impr, n.clicks, n.done + n.prog, n.rev, n.newO));
 
   const metaCampaigns = [];
   for (const cn of mTree.values()) {
@@ -809,7 +812,7 @@ async function handleCampaigns(req, res, supabase) {
     let spend = 0, impr = 0, clicks = 0, done = 0, prog = 0, canc = 0, rev = 0, nw = 0;
     for (const c of camps) { spend += c.spend; impr += c.impressions; clicks += c.clicks; done += c.done; prog += c.progress; canc += c.cancelled; rev += c.revenue; nw += c.new_orders; }
     const active = done + prog;
-    return Object.assign({ done, progress: prog, cancelled: canc, orders: active, revenue: rev, new_orders: nw }, metric(spend, impr, clicks, active, rev));
+    return Object.assign({ done, progress: prog, cancelled: canc, orders: active, revenue: rev, new_orders: nw }, metric(spend, impr, clicks, active, rev, nw));
   }
 
   const channels = [
