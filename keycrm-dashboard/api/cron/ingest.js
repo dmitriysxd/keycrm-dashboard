@@ -2111,6 +2111,21 @@ module.exports = async function handler(req, res) {
         const j = await r.json();
         out.perms = (j.data || []).filter((p) => p.status === "granted").map((p) => p.permission).join(",");
       } catch (e) { out.perms_err = String((e && e.message) || e); }
+      // Інтроспекція токена: валідність, тип, scopes, і до яких рекламних
+      // акаунтів прив'язаний ads_read (granular_scopes.target_ids).
+      try {
+        const r = await fetch("https://graph.facebook.com/" + ver + "/debug_token?input_token=" + encodeURIComponent(token) + "&access_token=" + encodeURIComponent(token));
+        const j = await r.json();
+        const dd = (j && j.data) || {};
+        out.token_valid = dd.is_valid;
+        out.token_type = dd.type;
+        out.token_app_id = dd.app_id;
+        out.token_expires_at = dd.expires_at;            // 0 = бессрочний
+        out.token_data_expires_at = dd.data_access_expires_at;
+        out.token_scopes = (dd.scopes || []).join(",");
+        if (dd.granular_scopes) out.token_granular = dd.granular_scopes.map((g) => g.scope + "→" + ((g.target_ids || []).join("|") || "all")).join(" ; ");
+        if (j && j.error) out.debug_err = j.error.message;
+      } catch (e) { out.debug_err = String((e && e.message) || e); }
       return res.status(200).json(out);
     }
     if (step === "google_spend") {
