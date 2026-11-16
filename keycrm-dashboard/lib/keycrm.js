@@ -2,6 +2,12 @@ const BASE = "https://openapi.keycrm.app/v1";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Таймаут на ОДИН запит. Без нього завислий запит до KeyCRM блокує Vercel-
+// функцію до її 60с-ліміту → крок циклу не встигає зберегти стан (writeState)
+// і цикл зависає на цьому кроці. Таймаут гарантує, що get() завжди повертає
+// керування у межах кількох секунд, і крок завершується / просувається далі.
+const REQUEST_TIMEOUT_MS = 12000;
+
 async function get(path, params, apiKey, ctx) {
   const qs = Object.keys(params || {})
     .filter((k) => params[k] !== undefined && params[k] !== null && params[k] !== "")
@@ -9,17 +15,34 @@ async function get(path, params, apiKey, ctx) {
     .join("&");
   const url = BASE + path + (qs ? "?" + qs : "");
 
-  let attempt = 0;
+  let rateRetry = 0;   // 429
+  let errRetry = 0;    // таймаут / мережа
   while (true) {
-    attempt++;
     if (ctx) ctx.apiCalls = (ctx.apiCalls || 0) + 1;
-    const res = await fetch(url, {
-      headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" },
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(url, {
+        headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" },
+        signal: controller.signal,
+      });
+    } catch (e) {
+      clearTimeout(timer);
+      // Таймаут (abort) або мережева помилка — кілька швидких ретраїв, потім
+      // кидаємо. Кидок дозволяє кроку завершитись і цикл не зависає.
+      if (errRetry >= 2) {
+        throw new Error("KEYCRM недоступний (таймаут/мережа) [" + path + "]: " + ((e && e.message) || e));
+      }
+      errRetry++;
+      await sleep(1000 * errRetry);
+      continue;
+    }
+    clearTimeout(timer);
     if (res.status === 429) {
-      if (attempt >= 5) throw new Error("KEYCRM 429: вичерпано retry");
-      const wait = Math.min(2000 * Math.pow(2, attempt - 1), 30000);
-      await sleep(wait);
+      if (rateRetry >= 5) throw new Error("KEYCRM 429: вичерпано retry");
+      rateRetry++;
+      await sleep(Math.min(2000 * Math.pow(2, rateRetry - 1), 30000));
       continue;
     }
     if (res.status === 401) throw new Error("UNAUTHORIZED: невірний KEYCRM_API_KEY");

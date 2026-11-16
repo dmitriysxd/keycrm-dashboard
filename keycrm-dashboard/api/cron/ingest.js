@@ -2,6 +2,18 @@ const { getSupabase } = require("../../lib/supabase");
 const { checkCronAuth, checkDashboardToken } = require("../../lib/auth");
 const { get, sleep } = require("../../lib/keycrm");
 
+// fetch з таймаутом — щоб зовнішні API (NBU, Meta, Google) не зависали і не
+// блокували Vercel-функцію до 60с (інакше крок циклу не встигає зберегти стан).
+async function fetchT(url, opts, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms || 12000);
+  try {
+    return await fetch(url, Object.assign({}, opts || {}, { signal: controller.signal }));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function todayDate() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -1606,7 +1618,7 @@ async function fetchMetaInsights(token, actId, since, until, ctx, level) {
   let guard = 0;
   while (url && guard++ < 60) {
     if (ctx) ctx.apiCalls = (ctx.apiCalls || 0) + 1;
-    const res = await fetch(url);
+    const res = await fetchT(url);
     const j = await res.json();
     if (j && j.error) {
       const e = j.error;
@@ -1649,7 +1661,7 @@ async function ingestMetaSpend(supabase, ctx, opts) {
     try {
       const url = "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange?valcode=" +
         encodeURIComponent(cur) + "&date=" + dateYMD.replace(/-/g, "") + "&json";
-      const res = await fetch(url);
+      const res = await fetchT(url);
       if (ctx) ctx.apiCalls = (ctx.apiCalls || 0) + 1;
       const j = await res.json();
       if (Array.isArray(j) && j[0] && j[0].rate) rate = parseFloat(j[0].rate);
@@ -1750,7 +1762,7 @@ function makeFxConverter(ctx, fallbackRate, vatPercent) {
     try {
       const url = "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange?valcode=" +
         encodeURIComponent(cur) + "&date=" + dateYMD.replace(/-/g, "") + "&json";
-      const res = await fetch(url);
+      const res = await fetchT(url);
       if (ctx) ctx.apiCalls = (ctx.apiCalls || 0) + 1;
       const j = await res.json();
       if (Array.isArray(j) && j[0] && j[0].rate) rate = parseFloat(j[0].rate);
@@ -1768,7 +1780,7 @@ async function googleAccessToken() {
   const refresh = process.env.GOOGLE_ADS_REFRESH_TOKEN;
   if (!id || !secret || !refresh) return null;
   const body = new URLSearchParams({ client_id: id, client_secret: secret, refresh_token: refresh, grant_type: "refresh_token" });
-  const res = await fetch("https://oauth2.googleapis.com/token", {
+  const res = await fetchT("https://oauth2.googleapis.com/token", {
     method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body,
   });
   const j = await res.json();
@@ -1786,7 +1798,7 @@ async function fetchGoogleSpend(accessToken, since, until, ctx) {
     "WHERE segments.date BETWEEN '" + since + "' AND '" + until + "'";
   const headers = { Authorization: "Bearer " + accessToken, "developer-token": devToken || "", "Content-Type": "application/json" };
   if (loginCid) headers["login-customer-id"] = loginCid;
-  const res = await fetch("https://googleads.googleapis.com/" + ver + "/customers/" + cid + "/googleAds:searchStream", {
+  const res = await fetchT("https://googleads.googleapis.com/" + ver + "/customers/" + cid + "/googleAds:searchStream", {
     method: "POST", headers, body: JSON.stringify({ query }),
   });
   if (ctx) ctx.apiCalls = (ctx.apiCalls || 0) + 1;
@@ -2095,7 +2107,7 @@ module.exports = async function handler(req, res) {
       async function tryIns(label, level, fields) {
         try {
           const params = new URLSearchParams({ level, fields, time_increment: "1", time_range: JSON.stringify({ since, until }), limit: "5", access_token: token });
-          const r = await fetch("https://graph.facebook.com/" + ver + "/act_" + actId + "/insights?" + params.toString());
+          const r = await fetchT("https://graph.facebook.com/" + ver + "/act_" + actId + "/insights?" + params.toString());
           out[label + "_status"] = r.status;
           const j = await r.json();
           if (j && j.error) out[label] = "ERR " + j.error.code + "/" + (j.error.error_subcode || "") + " " + (j.error.message || "");
@@ -2107,14 +2119,14 @@ module.exports = async function handler(req, res) {
       await tryIns("ad_min", "ad", "ad_id,spend");
       await tryIns("ad_named", "ad", "ad_id,ad_name,spend");
       try {
-        const r = await fetch("https://graph.facebook.com/" + ver + "/me/permissions?access_token=" + encodeURIComponent(token));
+        const r = await fetchT("https://graph.facebook.com/" + ver + "/me/permissions?access_token=" + encodeURIComponent(token));
         const j = await r.json();
         out.perms = (j.data || []).filter((p) => p.status === "granted").map((p) => p.permission).join(",");
       } catch (e) { out.perms_err = String((e && e.message) || e); }
       // Інтроспекція токена: валідність, тип, scopes, і до яких рекламних
       // акаунтів прив'язаний ads_read (granular_scopes.target_ids).
       try {
-        const r = await fetch("https://graph.facebook.com/" + ver + "/debug_token?input_token=" + encodeURIComponent(token) + "&access_token=" + encodeURIComponent(token));
+        const r = await fetchT("https://graph.facebook.com/" + ver + "/debug_token?input_token=" + encodeURIComponent(token) + "&access_token=" + encodeURIComponent(token));
         const j = await r.json();
         const dd = (j && j.data) || {};
         out.token_valid = dd.is_valid;
@@ -2160,14 +2172,14 @@ module.exports = async function handler(req, res) {
         if (loginCid) headers["login-customer-id"] = loginCid;
         // (a) які акаунти бачить цей OAuth-користувач
         try {
-          const r1 = await fetch("https://googleads.googleapis.com/" + ver + "/customers:listAccessibleCustomers", { headers: baseHdr });
+          const r1 = await fetchT("https://googleads.googleapis.com/" + ver + "/customers:listAccessibleCustomers", { headers: baseHdr });
           out.accessible_status = r1.status;
           out.accessible = (await r1.text()).slice(0, 800);
         } catch (e) { out.accessible_err = String((e && e.message) || e); }
         // (b) чи читається сам акаунт
         try {
           const q = "SELECT customer.id, customer.descriptive_name, customer.currency_code FROM customer";
-          const r2 = await fetch("https://googleads.googleapis.com/" + ver + "/customers/" + cid + "/googleAds:search", { method: "POST", headers, body: JSON.stringify({ query: q }) });
+          const r2 = await fetchT("https://googleads.googleapis.com/" + ver + "/customers/" + cid + "/googleAds:search", { method: "POST", headers, body: JSON.stringify({ query: q }) });
           out.customer_status = r2.status;
           out.customer_body = (await r2.text()).slice(0, 1000);
         } catch (e) { out.customer_err = String((e && e.message) || e); }
@@ -2176,7 +2188,7 @@ module.exports = async function handler(req, res) {
           const until = todayDate();
           const since = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
           const q = "SELECT campaign.id, campaign.name, metrics.cost_micros, segments.date FROM campaign WHERE segments.date BETWEEN '" + since + "' AND '" + until + "'";
-          const r3 = await fetch("https://googleads.googleapis.com/" + ver + "/customers/" + cid + "/googleAds:searchStream", { method: "POST", headers, body: JSON.stringify({ query: q }) });
+          const r3 = await fetchT("https://googleads.googleapis.com/" + ver + "/customers/" + cid + "/googleAds:searchStream", { method: "POST", headers, body: JSON.stringify({ query: q }) });
           out.spend_status = r3.status;
           out.spend_body = (await r3.text()).slice(0, 1500);
         } catch (e) { out.spend_err = String((e && e.message) || e); }
@@ -2361,7 +2373,7 @@ module.exports = async function handler(req, res) {
     }
     if (process.env.ALERT_WEBHOOK_URL) {
       try {
-        await fetch(process.env.ALERT_WEBHOOK_URL, {
+        await fetchT(process.env.ALERT_WEBHOOK_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text: "KEYCRM ingest failed: " + msg }),
