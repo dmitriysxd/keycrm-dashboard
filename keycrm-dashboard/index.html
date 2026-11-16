@@ -1965,31 +1965,34 @@ function mktSingleMonth() {
 // Пресети діапазону.
 function mktPreset(kind) {
   const today = mktTodayKyiv();
+  const yd = mktAddDays(today, -1); // кінець періодів = вчора (сьогодні не враховуємо — нема оновлення)
   const [Y, M] = today.split('-').map(Number);
   const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
   if (kind === 'all') { MKT_FROM = null; MKT_TO = null; }
-  else if (kind === 'this_month') { MKT_FROM = iso(Y, M, 1); MKT_TO = today; }
+  else if (kind === 'this_month') { const f = iso(Y, M, 1); MKT_FROM = f; MKT_TO = yd >= f ? yd : f; }
   else if (kind === 'prev_month') {
     let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
     const lastDay = new Date(Date.UTC(py, pm, 0)).getUTCDate();
     MKT_FROM = iso(py, pm, 1); MKT_TO = iso(py, pm, lastDay);
   }
-  else if (kind === 'yesterday') { const yd = mktAddDays(today, -1); MKT_FROM = yd; MKT_TO = yd; }
-  else if (kind === 'last7') { MKT_FROM = mktAddDays(today, -6); MKT_TO = today; }
-  else if (kind === 'last14') { MKT_FROM = mktAddDays(today, -13); MKT_TO = today; }
+  else if (kind === 'yesterday') { MKT_FROM = yd; MKT_TO = yd; }
+  else if (kind === 'last7') { MKT_FROM = mktAddDays(yd, -6); MKT_TO = yd; }
+  else if (kind === 'last14') { MKT_FROM = mktAddDays(yd, -13); MKT_TO = yd; }
   renderMarketingPage();
 }
 function mktOpenCal() { calOpen('mkt-pill', MKT_FROM, MKT_TO, (f, t) => { MKT_FROM = f; MKT_TO = t; renderMarketingPage(); }); }
 // Яка кнопка пресету зараз активна (для підсвічування).
 function mktActivePreset() {
   const today = mktTodayKyiv();
+  const yd = mktAddDays(today, -1);
   const [Y, M] = today.split('-').map(Number);
   const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
   if (!MKT_FROM && !MKT_TO) return 'all';
-  if (MKT_FROM === iso(Y, M, 1) && MKT_TO === today) return 'this_month';
-  if (MKT_FROM === mktAddDays(today, -1) && MKT_TO === mktAddDays(today, -1)) return 'yesterday';
-  if (MKT_FROM === mktAddDays(today, -6) && MKT_TO === today) return 'last7';
-  if (MKT_FROM === mktAddDays(today, -13) && MKT_TO === today) return 'last14';
+  const f1 = iso(Y, M, 1);
+  if (MKT_FROM === f1 && MKT_TO === (yd >= f1 ? yd : f1)) return 'this_month';
+  if (MKT_FROM === yd && MKT_TO === yd) return 'yesterday';
+  if (MKT_FROM === mktAddDays(yd, -6) && MKT_TO === yd) return 'last7';
+  if (MKT_FROM === mktAddDays(yd, -13) && MKT_TO === yd) return 'last14';
   let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
   const lastDay = new Date(Date.UTC(py, pm, 0)).getUTCDate();
   if (MKT_FROM === iso(py, pm, 1) && MKT_TO === iso(py, pm, lastDay)) return 'prev_month';
@@ -2045,7 +2048,7 @@ function calRender() {
 
 async function renderMarketingPage() {
   const main = document.getElementById('main-area');
-  if (!MKT_INIT && !MKT_FROM && !MKT_TO) { const t = mktTodayKyiv(); MKT_FROM = t.slice(0, 8) + '01'; MKT_TO = t; } // дефолт — поточний місяць (лише перший раз)
+  if (!MKT_INIT && !MKT_FROM && !MKT_TO) { const t = mktTodayKyiv(), yd = mktAddDays(t, -1), f = t.slice(0, 8) + '01'; MKT_FROM = f; MKT_TO = yd >= f ? yd : f; } // дефолт — поточний місяць до вчора
   MKT_INIT = true;
   main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Завантажуємо маркетинг</div></div>';
   try {
@@ -2223,30 +2226,33 @@ const ADS_EXPANDED = new Set();
 
 function adsPreset(kind) {
   const today = mktTodayKyiv();
+  const yd = mktAddDays(today, -1); // кінець = вчора (сьогодні не враховуємо)
   const [Y, M] = today.split('-').map(Number);
   const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
   if (kind === 'all') { ADS_FROM = null; ADS_TO = null; }
-  else if (kind === 'this_month') { ADS_FROM = iso(Y, M, 1); ADS_TO = today; }
+  else if (kind === 'this_month') { const f = iso(Y, M, 1); ADS_FROM = f; ADS_TO = yd >= f ? yd : f; }
   else if (kind === 'prev_month') {
     let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
     const last = new Date(Date.UTC(py, pm, 0)).getUTCDate();
     ADS_FROM = iso(py, pm, 1); ADS_TO = iso(py, pm, last);
   }
-  else if (kind === 'yesterday') { const yd = mktAddDays(today, -1); ADS_FROM = yd; ADS_TO = yd; }
-  else if (kind === 'last7') { ADS_FROM = mktAddDays(today, -6); ADS_TO = today; }
-  else if (kind === 'last14') { ADS_FROM = mktAddDays(today, -13); ADS_TO = today; }
+  else if (kind === 'yesterday') { ADS_FROM = yd; ADS_TO = yd; }
+  else if (kind === 'last7') { ADS_FROM = mktAddDays(yd, -6); ADS_TO = yd; }
+  else if (kind === 'last14') { ADS_FROM = mktAddDays(yd, -13); ADS_TO = yd; }
   renderCampaignsPage();
 }
 function adsOpenCal() { calOpen('ads-pill', ADS_FROM, ADS_TO, (f, t) => { ADS_FROM = f; ADS_TO = t; renderCampaignsPage(); }); }
 function adsActivePreset() {
   const today = mktTodayKyiv();
+  const yd = mktAddDays(today, -1);
   const [Y, M] = today.split('-').map(Number);
   const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
   if (!ADS_FROM && !ADS_TO) return 'all';
-  if (ADS_FROM === iso(Y, M, 1) && ADS_TO === today) return 'this_month';
-  if (ADS_FROM === mktAddDays(today, -1) && ADS_TO === mktAddDays(today, -1)) return 'yesterday';
-  if (ADS_FROM === mktAddDays(today, -6) && ADS_TO === today) return 'last7';
-  if (ADS_FROM === mktAddDays(today, -13) && ADS_TO === today) return 'last14';
+  const f1 = iso(Y, M, 1);
+  if (ADS_FROM === f1 && ADS_TO === (yd >= f1 ? yd : f1)) return 'this_month';
+  if (ADS_FROM === yd && ADS_TO === yd) return 'yesterday';
+  if (ADS_FROM === mktAddDays(yd, -6) && ADS_TO === yd) return 'last7';
+  if (ADS_FROM === mktAddDays(yd, -13) && ADS_TO === yd) return 'last14';
   let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
   const last = new Date(Date.UTC(py, pm, 0)).getUTCDate();
   if (ADS_FROM === iso(py, pm, 1) && ADS_TO === iso(py, pm, last)) return 'prev_month';
@@ -2263,7 +2269,7 @@ function toggleAdsCamp(key) { if (ADS_EXPANDED.has(key)) ADS_EXPANDED.delete(key
 
 async function renderCampaignsPage() {
   const main = document.getElementById('main-area');
-  if (!ADS_INIT && !ADS_FROM && !ADS_TO) { const t = mktTodayKyiv(); ADS_FROM = t.slice(0, 8) + '01'; ADS_TO = t; } // дефолт — поточний місяць (лише перший раз)
+  if (!ADS_INIT && !ADS_FROM && !ADS_TO) { const t = mktTodayKyiv(), yd = mktAddDays(t, -1), f = t.slice(0, 8) + '01'; ADS_FROM = f; ADS_TO = yd >= f ? yd : f; } // дефолт — поточний місяць до вчора
   ADS_INIT = true;
   main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Завантажуємо рекламу</div></div>';
   try {
