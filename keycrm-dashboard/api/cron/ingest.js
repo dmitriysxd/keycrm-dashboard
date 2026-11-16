@@ -1453,9 +1453,11 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
         ]);
       };
 
+      const metricsTs = {};
       try {
         await refreshWith("refresh_sku_metrics", 45000);
         result.metrics_sku = true;
+        metricsTs.sku_metrics_at = new Date().toISOString(); // час реального рефрешу
       } catch (err) {
         result.metrics_sku_error = (err && err.message) || String(err);
       }
@@ -1463,27 +1465,30 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
       try {
         await refreshWith("refresh_buyer_rfm", 15000);
         result.metrics_rfm = true;
+        metricsTs.buyer_rfm_at = new Date().toISOString();
       } catch (err) {
         result.metrics_rfm_error = (err && err.message) || String(err);
       }
 
       // Після метрик — крок reconcile (розпізнавання об'єднань покупців).
-      await writeState(supabase, {
+      await writeState(supabase, Object.assign({
         current_step: "reconcile",
         current_page: 1,
         last_chunk_at: new Date().toISOString(),
-      });
+      }, metricsTs));
       result.advanced = "reconcile";
     } else if (stepName === "reconcile") {
       // Розпізнавання merge'ів. У звичайні дні кандидатів 0 — швидкий no-op.
-      // Тримаємо tight cap, щоб не вибити денний бюджет якщо KeyCRM повільний.
-      // Помилки тут НЕ валять цикл — завжди завершуємо 'done'.
+      // Жорсткий cap 40с (Promise.race) ПОВЕРХ внутрішнього бюджету — гарантує,
+      // що крок завершиться навіть якщо щось всередині зависне. Помилки НЕ
+      // валять цикл — завжди просуваємось до refresh_open.
       try {
-        result.reconcile = await reconcileMergedBuyers(apiKey, supabase, ctx, {
-          timeBudgetMs: 30000,
-          maxBuyers: 10,
-          maxOrderFetches: 60,
-        });
+        result.reconcile = await Promise.race([
+          reconcileMergedBuyers(apiKey, supabase, ctx, {
+            timeBudgetMs: 30000, maxBuyers: 10, maxOrderFetches: 60,
+          }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("reconcile hard-cap 40s")), 40000)),
+        ]);
       } catch (err) {
         result.reconcile_error = (err && err.message) || String(err);
       }
