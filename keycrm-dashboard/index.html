@@ -2140,10 +2140,8 @@ function renderMarketingView() {
       <td class="mono">${costCell}</td>
       <td class="mono">${roasCell(c.roas)}</td>
       <td class="mono">${c.cps != null ? fmtMoney(c.cps) : '<span class="hd-dim">—</span>'}</td>
-      <td class="mono hd-dim">${c.cpm != null ? fmt(c.cpm) : '—'}</td>
-      <td class="mono hd-dim">${c.ctr != null ? c.ctr + '%' : '—'}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="14" class="hd-empty">Немає даних за період</td></tr>`;
+  }).join('') || `<tr><td colspan="12" class="hd-empty">Немає даних за період</td></tr>`;
 
   // First-touch LTV
   const ftCov = d.first_touch_coverage || { matched_buyers: 0, total_buyers: 0 };
@@ -2186,7 +2184,7 @@ function renderMarketingView() {
       <div class="hd-tw">
         <table class="hd-table">
           <thead><tr>
-            <th class="hd-l">Канал</th><th>Виконані</th><th>В роботі</th><th>Скасов.</th><th>Нові</th><th>Повт.</th><th>Виручка</th><th>Частка</th><th>Серед. чек</th><th>Витрати</th><th>ROAS</th><th>CPS</th><th>CPM</th><th>CTR</th>
+            <th class="hd-l">Канал</th><th>Виконані</th><th>В роботі</th><th>Скасов.</th><th>Нові</th><th>Повт.</th><th>Виручка</th><th>Частка</th><th>Серед. чек</th><th>Витрати</th><th>ROAS</th><th>CPS</th>
           </tr></thead>
           <tbody>${chanRows}</tbody>
         </table>
