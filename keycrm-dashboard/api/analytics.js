@@ -296,9 +296,8 @@ function normChannel(utmSource, utmMedium, sourceName, utmCampaign) {
     // 7) Email / CRM-розсилки (решта email-джерел без medium=email).
     if (/sendpulse|esputnik|^email$|e-mail|^mail$|ukr\.net/.test(s)) return "Email-маркетинг";
 
-    // 8) Месенджери.
-    if (/viber/.test(s)) return "Viber";
-    if (/telegram|\btg\b/.test(s)) return "Telegram";
+    // 8) Месенджери (реферал) — переходи по посиланнях з Viber/Telegram.
+    if (/viber|telegram|\btg\b/.test(s)) return "Месенджери (реферал)";
 
     // 9) Решта (рідкісні).
     if (/\bsms\b/.test(s)) return "SMS";
@@ -312,8 +311,7 @@ function normChannel(utmSource, utmMedium, sourceName, utmCampaign) {
   // Без utm — fallback на source_name з KeyCRM.
   const n = (sourceName || "").toLowerCase();
   if (!n) return "Прямі";
-  if (/viber/.test(n)) return "Viber";
-  if (/telegram/.test(n)) return "Telegram";
+  if (/viber|telegram/.test(n)) return "Месенджери (реферал)";
   if (/instagram|facebook|meta/.test(n)) return "Meta (органіка/реферал)";
   if (/bijboom|horoshop|сайт|site|opt\.com/.test(n)) return "Прямі";
   if (/prom/.test(n)) return "Prom.ua";
