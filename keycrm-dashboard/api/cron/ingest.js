@@ -1608,7 +1608,12 @@ async function fetchMetaInsights(token, actId, since, until, ctx, level) {
     if (ctx) ctx.apiCalls = (ctx.apiCalls || 0) + 1;
     const res = await fetch(url);
     const j = await res.json();
-    if (j && j.error) throw new Error("Meta API: " + (j.error.message || JSON.stringify(j.error)));
+    if (j && j.error) {
+      const e = j.error;
+      throw new Error("Meta API: " + (e.message || "") +
+        " [code " + e.code + (e.error_subcode ? "/" + e.error_subcode : "") +
+        ", type " + (e.type || "?") + ", trace " + (e.fbtrace_id || "?") + "]");
+    }
     for (const r of (j.data || [])) rows.push(r);
     url = j && j.paging && j.paging.next ? j.paging.next : null;
   }
