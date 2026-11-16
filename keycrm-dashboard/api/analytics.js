@@ -881,10 +881,15 @@ async function handleFreshness(req, res, supabase) {
     const d = await latest(tbl, "date", true);
     sources[key] = { synced_at: u, last_date: d === "__missing__" ? null : d };
   }
-  // Стан циклу.
+  // Matview (sku_metrics / buyer_rfm) + стан циклу з ingest_state.
   try {
-    const s = await supabase.from("ingest_state").select("cycle_date,status,current_step,last_chunk_at").eq("id", 1).maybeSingle();
-    sources.cycle = s.data || null;
+    const s = await supabase.from("ingest_state")
+      .select("cycle_date,status,current_step,last_chunk_at,sku_metrics_at,buyer_rfm_at")
+      .eq("id", 1).maybeSingle();
+    const st = s.data || {};
+    sources.cycle = { cycle_date: st.cycle_date, status: st.status, current_step: st.current_step, last_chunk_at: st.last_chunk_at };
+    sources.sku_metrics = { synced_at: st.sku_metrics_at || null };
+    sources.buyer_rfm = { synced_at: st.buyer_rfm_at || null };
   } catch (e) { /* no-op */ }
   return res.status(200).json({ now: new Date().toISOString(), sources });
 }

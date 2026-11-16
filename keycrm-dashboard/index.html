@@ -851,6 +851,9 @@ async function updateFreshnessStatus() {
       ['Google-розхід', s.google_spend && s.google_spend.synced_at],
     ];
     if (s.meta_ad_spend && !s.meta_ad_spend.missing) items.push(['Meta-оголошення', s.meta_ad_spend.synced_at]);
+    // Matview — додаємо лише коли час уже фіксується (після міграції 062 + прогону).
+    if (s.sku_metrics && s.sku_metrics.synced_at) items.push(['SKU-метрики', s.sku_metrics.synced_at]);
+    if (s.buyer_rfm && s.buyer_rfm.synced_at) items.push(['RFM клієнтів', s.buyer_rfm.synced_at]);
     let oldest = null; const stale = [];
     for (const [name, ts] of items) {
       if (!ts) { stale.push(name + ' — немає'); continue; }
