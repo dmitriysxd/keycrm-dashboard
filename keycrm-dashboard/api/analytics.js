@@ -249,47 +249,65 @@ function monthDiff(from, to) {
 //  serverless-функцій, тож складено сюди як ще один type.)
 // ══════════════════════════════════════════════════════════
 
-// utm_source → канал. Fallback на «Джерело» (source_name) з KeyCRM.
+// utm_source → канал. Згруповано за реальними мітками з заказів (див. аналіз
+// сирих utm_source/medium). Fallback на «Джерело» (source_name) з KeyCRM.
 function normChannel(utmSource, utmMedium, sourceName) {
   const s = (utmSource || "").toLowerCase().trim();
   const med = (utmMedium || "").toLowerCase().trim();
-  const paidMedium = /cpc|ppc|paid/.test(med); // платний сигнал
+  const paidMedium = /cpc|ppc|paid/.test(med);        // платний сигнал
+  const socialMedium = /^social$|referral/.test(med); // органічний/реферальний
+
   if (s) {
-    // Застосунок (PWA) / прямі
-    if (/homescreen|b2c_app|standalone|\bpwa\b/.test(s)) return "Застосунок / прямі";
-    if (s === "(direct)" || /^direct$|^прям/.test(s)) return "Прямі";
-    // Голий "google": medium=cpc → платний Google Ads; інакше — органіка/реферал.
-    // (Платний контекст тегується як lama, але частина платних кліків втрачає
-    //  тег і прилітає як google — розводимо за medium, а не на око.)
-    if (s === "google") return paidMedium ? "Google Ads" : "Google (органіка/реферал)";
-    // Пошук / органіка / реферали (НЕ реклама) — перевіряємо ДО google-ads,
-    // щоб google-пошук/застосунки не потрапили в платний Google Ads.
-    if (/googlequicksearchbox|accounts\.google|gemini\.google|google\.com|android\.gm|google\.android|bing\.|duckduckgo|yandex/.test(s)) return "Пошук / органіка";
-    if (/^organic$|^seo$/.test(s)) return "Пошук / органіка";
-    // Google Ads (платний тег = lama за вашим тегуванням; + pmax/adwords/…)
+    // 1) Прямі / застосунок (PWA homescreen + direct + порожньо) — разом.
+    if (/homescreen|b2c_app|standalone|\bpwa\b/.test(s)) return "Прямі / застосунок";
+    if (s === "(direct)" || /^direct$|^прям/.test(s)) return "Прямі / застосунок";
+
+    // 2) AI-референси (до google — бо gemini.google.com).
+    if (/chatgpt|openai|perplexity|gemini|copilot|claude\.ai/.test(s)) return "AI (ChatGPT/Gemini)";
+
+    // 3) Meta — органіка/реферал: домени Meta (l.instagram.com, m.facebook.com…)
+    //    або макрос-джерело з medium social/referral (ig/social = органіка).
+    const metaDomain = /facebook\.com|instagram\.com|l\.instagram|l\.facebook|m\.facebook|lm\.facebook|fb\.com/.test(s);
+    const metaMacro = /^fb$|^ig$|^meta$|^th$|^an$|^msg$|fb-sitelink|site_source_name|instarosso|^instagram$|^facebook$/.test(s);
+    if (metaDomain) return "Meta (органіка/реферал)";
+    if (metaMacro && socialMedium) return "Meta (органіка/реферал)";
+
+    // 4) Meta Ads (платна): макрос-джерела з рекламним/плейсмент medium.
+    if (metaMacro) return "Meta Ads";
+
+    // 5) Google Ads (платний тег = lama; + google/cpc, pmax/adwords…).
     if (/lama|adwords|\bgads\b|pmax|gclid|google_/.test(s)) return "Google Ads";
-    // Meta Ads
-    if (/facebook|instagram|instarosso|\bfb\b|\big\b|^meta$|site_source_name/.test(s)) return "Meta Ads";
-    // Email / CRM-розсилки
+    if (s === "google") return paidMedium ? "Google Ads" : "Пошук / органіка";
+
+    // 6) Пошук / органіка (Google organic, сервіси Google, Bing…).
+    if (/googlequicksearchbox|accounts\.google|android\.gm|google\.android|google\.com|bing\.|duckduckgo|yandex/.test(s)) return "Пошук / органіка";
+    if (/^organic$|^seo$/.test(s)) return "Пошук / органіка";
+
+    // 7) Email / CRM-розсилки.
     if (/sendpulse|esputnik|^email$|e-mail|^mail$|ukr\.net/.test(s)) return "Email (розсилка)";
-    if (/\bsms\b/.test(s)) return "SMS";
+
+    // 8) Месенджери.
     if (/viber/.test(s)) return "Viber";
     if (/telegram|\btg\b/.test(s)) return "Telegram";
+
+    // 9) Решта (рідкісні).
+    if (/\bsms\b/.test(s)) return "SMS";
     if (/tiktok/.test(s)) return "TikTok";
     if (/^prom/.test(s)) return "Prom.ua";
     if (/rtbhouse|criteo|\brtb\b/.test(s)) return "Ретаргетинг (RTB/Criteo)";
     if (/kim|affiliate|partner/.test(s)) return "Партнерки / афіліати";
-    if (/chatgpt|openai|perplexity|gemini/.test(s)) return "AI-референси";
+
     return "Інше: " + s;
   }
+  // Без utm — fallback на source_name з KeyCRM.
   const n = (sourceName || "").toLowerCase();
-  if (!n) return "Прямі / не визначено";
+  if (!n) return "Прямі / застосунок";
   if (/viber/.test(n)) return "Viber";
   if (/telegram/.test(n)) return "Telegram";
-  if (/instagram|facebook|meta/.test(n)) return "Meta (Джерело)";
-  if (/bijboom|horoshop|сайт|site|opt\.com/.test(n)) return "Сайт / прямі";
+  if (/instagram|facebook|meta/.test(n)) return "Meta (органіка/реферал)";
+  if (/bijboom|horoshop|сайт|site|opt\.com/.test(n)) return "Прямі / застосунок";
   if (/prom/.test(n)) return "Prom.ua";
-  return sourceName ? ("Джерело: " + sourceName) : "Прямі / не визначено";
+  return sourceName ? ("Джерело: " + sourceName) : "Прямі / застосунок";
 }
 
 // Місяць заказу рахуємо в КИЇВСЬКОМУ часовому поясі (як KeyCRM «Дата
