@@ -26,6 +26,7 @@ LANGUAGE sql
 STABLE
 SECURITY DEFINER
 SET search_path = public, pg_catalog
+SET statement_timeout = '25000'  -- зберігаємо ліміт з міграції 052 (інакше timeout)
 AS $$
   SELECT
     s.order_id,
