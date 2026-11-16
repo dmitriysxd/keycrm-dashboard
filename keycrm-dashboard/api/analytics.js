@@ -853,6 +853,42 @@ async function handleCampaigns(req, res, supabase) {
   });
 }
 
+// Чесна свіжість даних по ВСІХ джерелах: коли кожне востаннє реально
+// синхронізувалось. Дашборд показує найстаріше → «актуально» тільки якщо
+// актуальне ВСЕ (а не лише заказы).
+async function handleFreshness(req, res, supabase) {
+  const sources = {};
+  async function latest(tbl, col, missingOk) {
+    try {
+      const r = await supabase.from(tbl).select(col).order(col, { ascending: false }).limit(1);
+      if (r.error) throw new Error(r.error.message);
+      return r.data && r.data[0] ? r.data[0][col] : null;
+    } catch (e) {
+      return missingOk ? "__missing__" : null;
+    }
+  }
+  // Заказы: останній успішний авто-прогін ingest.
+  try {
+    const r = await supabase.from("ingest_runs").select("finished_at")
+      .eq("kind", "auto").not("finished_at", "is", null)
+      .order("finished_at", { ascending: false }).limit(1);
+    sources.orders = { synced_at: r.data && r.data[0] ? r.data[0].finished_at : null };
+  } catch (e) { sources.orders = { synced_at: null }; }
+  // Рекламний розхід: коли оновлювали (updated_at) і за яку останню дату (date).
+  for (const [key, tbl] of [["meta_spend", "meta_spend"], ["meta_ad_spend", "meta_ad_spend"], ["google_spend", "google_spend"]]) {
+    const u = await latest(tbl, "updated_at", true);
+    if (u === "__missing__") { sources[key] = { missing: true }; continue; }
+    const d = await latest(tbl, "date", true);
+    sources[key] = { synced_at: u, last_date: d === "__missing__" ? null : d };
+  }
+  // Стан циклу.
+  try {
+    const s = await supabase.from("ingest_state").select("cycle_date,status,current_step,last_chunk_at").eq("id", 1).maybeSingle();
+    sources.cycle = s.data || null;
+  } catch (e) { /* no-op */ }
+  return res.status(200).json({ now: new Date().toISOString(), sources });
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -872,7 +908,8 @@ module.exports = async function handler(req, res) {
     if (type === "trends") return await handleTrends(req, res, supabase);
     if (type === "cohorts") return await handleCohorts(req, res, supabase);
     if (type === "campaigns") return await handleCampaigns(req, res, supabase);
-    return res.status(400).json({ error: "type required: ?type=trends | ?type=cohorts | ?type=marketing | ?type=campaigns" });
+    if (type === "freshness") return await handleFreshness(req, res, supabase);
+    return res.status(400).json({ error: "type required: ?type=trends | ?type=cohorts | ?type=marketing | ?type=campaigns | ?type=freshness" });
   } catch (err) {
     return res.status(500).json({ error: (err && err.message) || String(err) });
   }
