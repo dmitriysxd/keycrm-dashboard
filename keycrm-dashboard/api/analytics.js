@@ -710,7 +710,10 @@ async function handleCampaigns(req, res, supabase) {
     let dn = an.ads.get(adId);
     if (!dn) { dn = Object.assign({ id: adId, name: r.ad_name || "(оголошення)", spend: 0, impr: 0, clicks: 0, _adset: an, _camp: cn }, rz()); an.ads.set(adId, dn); }
     dn.spend += sp; dn.impr += im; dn.clicks += cl;
-    adLookup.set(_normName(r.campaign_name) + SEP + _normName(r.ad_name), dn);
+    // Одне ім'я оголошення може бути в кількох групах → зберігаємо СПИСОК вузлів.
+    const akey = _normName(r.campaign_name) + SEP + _normName(r.ad_name);
+    let arr = adLookup.get(akey); if (!arr) { arr = []; adLookup.set(akey, arr); }
+    if (arr.indexOf(dn) === -1) arr.push(dn);
   }
   const gCampSpend = new Map();
   for (const r of (googleRows || [])) {
@@ -741,9 +744,26 @@ async function handleCampaigns(req, res, supabase) {
     const ch = normChannel(o.src, o.medium, o.source_name, o.campaign);
     if (ch === "Meta Ads") {
       const ck = _normName(o.campaign);
-      const dn = adLookup.get(ck + SEP + _normName(o.content));
-      if (dn) { addRev(dn, o, isNew); addRev(dn._adset, o, isNew); addRev(dn._camp, o, isNew); }
-      else {
+      const arr = adLookup.get(ck + SEP + _normName(o.content));
+      if (arr && arr.length) {
+        // Кампанія — повний заказ (один раз). Виручку по групах/оголошеннях
+        // розподіляємо пропорційно розходу (заказ не несе групу); лічильники
+        // замовлень — цілими у групу з найбільшим розходом цього оголошення.
+        addRev(arr[0]._camp, o, isNew);
+        let top = arr[0]; for (const n of arr) if (n.spend > top.spend) top = n;
+        const total = arr.reduce((s, n) => s + n.spend, 0);
+        for (const n of arr) {
+          const share = total > 0 ? n.spend / total : 1 / arr.length;
+          if (o.grp !== "cancelled") { n.rev += o.revenue * share; n._adset.rev += o.revenue * share; }
+          if (n === top) {
+            if (o.grp === "cancelled") { n.canc++; n._adset.canc++; }
+            else {
+              if (o.grp === "done") { n.done++; n._adset.done++; } else { n.prog++; n._adset.prog++; }
+              if (isNew) { n.newO++; n._adset.newO++; }
+            }
+          }
+        }
+      } else {
         const cn = campLookup.get(ck);
         if (cn) addRev(cn, o, isNew); else addRev(mOther, o, isNew); // кампанія не зіставилась
       }
