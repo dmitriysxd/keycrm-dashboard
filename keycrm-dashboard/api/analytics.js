@@ -691,7 +691,8 @@ async function handleCampaigns(req, res, supabase) {
   const SEP = "\u0001";
   const mTree = new Map();       // campId -> campNode
   const campLookup = new Map();  // normCampName -> campNode
-  const adLookup = new Map();    // normCampName+SEP+normAdName -> adNode
+  const adLookup = new Map();    // normCampName+SEP+normAdName -> [adNode] (fallback по імені)
+  const adById = new Map();      // ad_id -> adNode (точний матч, коли utm_content={{ad.id}})
   const rz = () => ({ rev: 0, done: 0, prog: 0, canc: 0, newO: 0 });
   for (const r of (metaAdRows || [])) {
     if (hasRange && (!r.date || r.date < from || r.date > to)) continue;
@@ -710,6 +711,7 @@ async function handleCampaigns(req, res, supabase) {
     let dn = an.ads.get(adId);
     if (!dn) { dn = Object.assign({ id: adId, name: r.ad_name || "(оголошення)", spend: 0, impr: 0, clicks: 0, _adset: an, _camp: cn }, rz()); an.ads.set(adId, dn); }
     dn.spend += sp; dn.impr += im; dn.clicks += cl;
+    adById.set(adId, dn); // точний матч по ad.id
     // Одне ім'я оголошення може бути в кількох групах → зберігаємо СПИСОК вузлів.
     const akey = _normName(r.campaign_name) + SEP + _normName(r.ad_name);
     let arr = adLookup.get(akey); if (!arr) { arr = []; adLookup.set(akey, arr); }
@@ -744,6 +746,10 @@ async function handleCampaigns(req, res, supabase) {
     const ch = normChannel(o.src, o.medium, o.source_name, o.campaign);
     if (ch === "Meta Ads") {
       const ck = _normName(o.campaign);
+      // 1) Точний матч по ad.id (utm_content={{ad.id}}) — однозначна група/оголошення.
+      const byId = o.content ? adById.get(String(o.content).trim()) : null;
+      if (byId) { addRev(byId, o, isNew); addRev(byId._adset, o, isNew); addRev(byId._camp, o, isNew); continue; }
+      // 2) Інакше — старий матч по імені оголошення (може бути в кількох групах).
       const arr = adLookup.get(ck + SEP + _normName(o.content));
       if (arr && arr.length) {
         // Кампанія — повний заказ (один раз). Виручку по групах/оголошеннях
