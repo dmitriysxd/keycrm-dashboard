@@ -789,8 +789,6 @@ async function loadData(days = currentDays) {
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Помилка сервера');
     DATA = json;
-    document.getElementById('updated-at').textContent =
-      (function(d){ return ('0'+d.getDate()).slice(-2)+'.'+('0'+(d.getMonth()+1)).slice(-2)+' '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); })(new Date(json.updatedAt));
     renderCurrentPage();
   } catch(e) {
     showError(e.message);
@@ -825,31 +823,49 @@ async function loadSku(opts) {
   }
 }
 
-// ── Свіжість даних ────────────────────────────────────────
-// Показує в sidebar коли востаннє був snapshot, і якщо дані застарілі
-// (> 1 день) — пропонує кнопку ручного запуску ingest.
-function updateFreshnessStatus() {
+// ── Чесна свіжість даних по ВСІХ джерелах ─────────────────
+// «Актуально» лише якщо актуальне ВСЕ: заказы, розхід Meta, Meta-оголошення,
+// Google. Показуємо найстаріше джерело і називаємо ті, що застаріли.
+function fmtDT(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  const p = n => ('0' + n).slice(-2);
+  return p(d.getDate()) + '.' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+const FRESH_MAX_H = 30; // джерело свіже, якщо оновлене за останні ~30 год
+async function updateFreshnessStatus() {
+  const tsEl = document.getElementById('updated-at');
   const statusEl = document.getElementById('freshness-status');
   const btnEl = document.getElementById('refresh-data-btn');
-  if (!statusEl || !btnEl) return;
-  const lastDate = SKU_META && SKU_META.last_snapshot_date;
-  if (!lastDate) {
-    statusEl.innerHTML = '<span style="color:var(--red)">⚠ Немає snapshots</span>';
-    btnEl.style.display = 'block';
-    return;
-  }
-  const last = new Date(lastDate + 'T00:00:00Z');
-  const today = new Date();
-  const ageDays = Math.floor((today - last) / 86400000);
-  // Кнопка завжди видима — користувач може схотіти "підтягнути зараз" навіть
-  // якщо snapshot свіжий (новий заказ за день, ручне редагування в KeyCRM).
-  btnEl.style.display = 'block';
-  if (ageDays >= 2) {
-    statusEl.innerHTML = `<span style="color:var(--red)">⚠ Snapshot ${ageDays}-денної давнини</span>`;
-  } else if (ageDays === 1) {
-    statusEl.innerHTML = '<span style="color:#f59e0b">↻ Snapshot вчорашній</span>';
-  } else {
-    statusEl.innerHTML = '<span style="color:var(--green)">✓ Свіжий snapshot</span>';
+  if (btnEl) btnEl.style.display = 'block';
+  if (!statusEl) return;
+  try {
+    const r = await fetch(apiUrl('/api/analytics', 'type=freshness'));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    const s = j.sources || {};
+    const now = new Date(j.now || Date.now());
+    const items = [
+      ['Заказы', s.orders && s.orders.synced_at],
+      ['Meta-розхід', s.meta_spend && s.meta_spend.synced_at],
+      ['Google-розхід', s.google_spend && s.google_spend.synced_at],
+    ];
+    if (s.meta_ad_spend && !s.meta_ad_spend.missing) items.push(['Meta-оголошення', s.meta_ad_spend.synced_at]);
+    let oldest = null; const stale = [];
+    for (const [name, ts] of items) {
+      if (!ts) { stale.push(name + ' — немає'); continue; }
+      const t = new Date(ts);
+      if (!oldest || t < oldest) oldest = t;
+      if ((now - t) / 3600000 > FRESH_MAX_H) stale.push(name + ' (' + fmtDT(ts) + ')');
+    }
+    if (tsEl) tsEl.textContent = oldest ? fmtDT(oldest) : '—';
+    if (!stale.length) {
+      statusEl.innerHTML = '<span style="color:var(--green)">✓ все актуальне</span>';
+    } else {
+      statusEl.innerHTML = '<span style="color:#f59e0b">⚠ застаріло: ' + stale.join('; ') + '</span>';
+    }
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">не вдалось перевірити свіжість</span>';
   }
 }
 
@@ -953,6 +969,7 @@ async function renderCurrentPage() {
   else if (currentPage === 'cohorts')  { await renderCohortsPage(); }
   else if (currentPage === 'marketing'){ await renderMarketingPage(); }
   else if (currentPage === 'campaigns'){ await renderCampaignsPage(); }
+  updateFreshnessStatus(); // чесна свіжість по всіх джерелах (fire-and-forget)
 }
 
 function destroyCharts() {
