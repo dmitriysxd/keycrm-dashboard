@@ -625,6 +625,9 @@
       <div class="nav-item" onclick="navigate('campaigns')">
         <span class="nav-icon">🎯</span> Реклама
       </div>
+      <div class="nav-item" onclick="navigate('ga4')">
+        <span class="nav-icon">🧭</span> GA4 · Трафік
+      </div>
     </nav>
 
     <div class="sidebar-bottom">
@@ -975,6 +978,7 @@ async function renderCurrentPage() {
   else if (currentPage === 'cohorts')  { await renderCohortsPage(); }
   else if (currentPage === 'marketing'){ await renderMarketingPage(); }
   else if (currentPage === 'campaigns'){ await renderCampaignsPage(); }
+  else if (currentPage === 'ga4')      { await renderGa4Page(); }
   updateFreshnessStatus(); // чесна свіжість по всіх джерелах (fire-and-forget)
 }
 
@@ -2425,6 +2429,169 @@ function renderCampaignsView() {
     </div>
     ${cards}
     <div class="hd-note">CPS = Витрати ÷ Замовлення (виконані + в роботі). CAC = Витрати ÷ Нові клієнти. ROAS = Виручка ÷ Витрати. Виручка/ROAS/CPS — лише по заказах із правильною розміткою (Meta <b>utm_source=meta</b>, Google <b>cid_…</b>), тобто з дати її впровадження. Розхід Meta по оголошеннях підтягується кроком <b>meta_ad_spend</b>.</div>
+  </div>`;
+}
+
+// ══ Сторінка «GA4 · Трафік» — верх воронки і канали з Google Analytics ══
+// Дані GA4 ПРИБЛИЗНІ (клієнтська аналітика, занижені) — лише для ВІДНОСНОГО
+// порівняння каналів і пошуку провалів воронки. Гроші/заказы — у KeyCRM.
+let GA4_DATA = null, GA4_FROM = null, GA4_TO = null, GA4_INIT = false;
+
+function ga4Preset(kind) {
+  const today = mktTodayKyiv();
+  const yd = mktAddDays(today, -1);
+  const [Y, M] = today.split('-').map(Number);
+  const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
+  if (kind === 'this_month') { const f = iso(Y, M, 1); GA4_FROM = f; GA4_TO = yd >= f ? yd : f; }
+  else if (kind === 'prev_month') {
+    let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
+    const last = new Date(Date.UTC(py, pm, 0)).getUTCDate();
+    GA4_FROM = iso(py, pm, 1); GA4_TO = iso(py, pm, last);
+  }
+  else if (kind === 'yesterday') { GA4_FROM = yd; GA4_TO = yd; }
+  else if (kind === 'last7') { GA4_FROM = mktAddDays(yd, -6); GA4_TO = yd; }
+  else if (kind === 'last14') { GA4_FROM = mktAddDays(yd, -13); GA4_TO = yd; }
+  else if (kind === 'last28') { GA4_FROM = mktAddDays(yd, -27); GA4_TO = yd; }
+  renderGa4Page();
+}
+function ga4OpenCal() { calOpen('ga4-pill', GA4_FROM, GA4_TO, (f, t) => { GA4_FROM = f; GA4_TO = t; renderGa4Page(); }); }
+function ga4ActivePreset() {
+  const today = mktTodayKyiv();
+  const yd = mktAddDays(today, -1);
+  const [Y, M] = today.split('-').map(Number);
+  const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
+  const f1 = iso(Y, M, 1);
+  if (GA4_FROM === f1 && GA4_TO === (yd >= f1 ? yd : f1)) return 'this_month';
+  if (GA4_FROM === yd && GA4_TO === yd) return 'yesterday';
+  if (GA4_FROM === mktAddDays(yd, -6) && GA4_TO === yd) return 'last7';
+  if (GA4_FROM === mktAddDays(yd, -13) && GA4_TO === yd) return 'last14';
+  if (GA4_FROM === mktAddDays(yd, -27) && GA4_TO === yd) return 'last28';
+  let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
+  const last = new Date(Date.UTC(py, pm, 0)).getUTCDate();
+  if (GA4_FROM === iso(py, pm, 1) && GA4_TO === iso(py, pm, last)) return 'prev_month';
+  return 'custom';
+}
+
+async function renderGa4Page() {
+  const main = document.getElementById('main-area');
+  if (!GA4_INIT && !GA4_FROM && !GA4_TO) { const t = mktTodayKyiv(), yd = mktAddDays(t, -1), f = t.slice(0, 8) + '01'; GA4_FROM = f; GA4_TO = yd >= f ? yd : f; }
+  GA4_INIT = true;
+  main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Завантажуємо GA4</div></div>';
+  try {
+    let q = 'type=ga4';
+    if (GA4_FROM && GA4_TO) q += '&from=' + GA4_FROM + '&to=' + GA4_TO;
+    const r = await fetch(apiUrl('/api/analytics', q));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    GA4_DATA = j;
+  } catch (err) {
+    main.innerHTML = `<div class="state-wrap"><div class="error-card"><div class="error-title">Помилка завантаження</div><div class="state-sub">${(err && err.message) || err}</div></div></div>`;
+    return;
+  }
+  renderGa4View();
+}
+
+function ga4PctCell(count, pct) {
+  return `<td class="mono">${fmt(count || 0)} <span class="hd-dim" style="font-size:11px">· ${pct != null ? pct : 0}%</span></td>`;
+}
+
+function renderGa4View() {
+  const d = GA4_DATA; if (!d) return;
+  const main = document.getElementById('main-area');
+
+  // Не налаштовано / помилка доступу — показуємо дружню інструкцію.
+  if (d.configured === false || d.ok === false) {
+    const reason = d.reason || d.error || 'невідома причина';
+    main.innerHTML = `
+    <div class="hd"><div class="hd-head"><div>
+      <div class="hd-h1">GA4 · Трафік</div>
+      <div class="hd-sub">Джерело верху воронки з Google Analytics</div>
+    </div></div>
+    <div class="hd-card"><div class="hd-card-h">⚙️ GA4 ще не підключено</div>
+      <div style="padding:14px 16px;font-size:13px;line-height:1.7">
+        <div class="hd-neg" style="margin-bottom:10px">Причина: ${reason}</div>
+        Потрібно разово налаштувати доступ до GA4 Data API:
+        <ol style="margin:10px 0 0 18px">
+          <li>У Google Cloud увімкнути <b>Google Analytics Data API</b> (той самий проєкт, що й Google Ads).</li>
+          <li>Отримати refresh-токен зі скоупом <code>analytics.readonly</code> (OAuth Playground, той самий client).</li>
+          <li>У Vercel додати змінні: <code>GA4_PROPERTY_ID=433651793</code> і <code>GA4_REFRESH_TOKEN=…</code> → Redeploy.</li>
+        </ol>
+      </div>
+    </div></div>`;
+    return;
+  }
+
+  const t = d.totals || {};
+  const ap = ga4ActivePreset();
+  const pb = (k, l) => `<button class="hd-seg-b${ap === k ? ' on' : ''}" onclick="ga4Preset('${k}')">${l}</button>`;
+  const newPct = t.users > 0 ? Math.round(100 * t.newUsers / t.users) : 0;
+
+  const rows = (d.channels || []).map(c => {
+    const np = c.users > 0 ? Math.round(100 * c.newUsers / c.users) : 0;
+    return `<tr>
+      <td class="hd-l">${c.label}</td>
+      <td class="mono">${fmt(c.sessions || 0)}</td>
+      <td class="mono hd-dim">${fmt(c.users || 0)} · ${np}% нов.</td>
+      ${ga4PctCell(c.carts, c.cr_cart)}
+      ${ga4PctCell(c.checkouts, c.cr_checkout)}
+      ${ga4PctCell(c.purchases, c.cr_purchase)}
+    </tr>`;
+  }).join('');
+
+  const totRow = (d.channels && d.channels.length) ? `<tr class="ads-tot">
+    <td class="hd-l">Разом</td>
+    <td class="mono">${fmt(t.sessions || 0)}</td>
+    <td class="mono hd-dim">${fmt(t.users || 0)} · ${newPct}% нов.</td>
+    ${ga4PctCell(t.carts, t.cr_cart)}
+    ${ga4PctCell(t.checkouts, t.cr_checkout)}
+    ${ga4PctCell(t.purchases, t.cr_purchase)}
+  </tr>` : '';
+
+  const body = (d.channels && d.channels.length) ? rows : `<tr><td colspan="6" class="hd-empty">Немає даних за період</td></tr>`;
+
+  main.innerHTML = `
+  <div class="hd">
+    <div class="hd-head">
+      <div>
+        <div class="hd-h1">GA4 · Трафік і воронка</div>
+        <div class="hd-sub">Google Analytics · ${(GA4_FROM && GA4_TO) ? (mktDMY(GA4_FROM) + ' – ' + mktDMY(GA4_TO)) : '—'} · по каналах (session default channel group)</div>
+      </div>
+      <div class="hd-filters"><button class="hd-btn" onclick="renderGa4Page()">↺</button></div>
+    </div>
+
+    <div class="hd-card" style="border-color:var(--hd-warn)">
+      <div style="padding:12px 16px;font-size:12.5px;line-height:1.6">
+        ⚠️ <b>Дані GA4 приблизні.</b> Це клієнтська аналітика (блокувальники реклами, згода на cookie, cross-device) — абсолютні числа <b>занижені</b> й <b>НЕ зводяться з KeyCRM</b>. Використовуй для <b>порівняння каналів між собою</b> і пошуку <b>провалів воронки</b> (де губимо людей). Гроші, заказы, ROAS/CAC — лишаються у KeyCRM.
+      </div>
+    </div>
+
+    <div class="hd-daterow">
+      <span class="hd-dim" style="font-size:12px">Період:</span>
+      <button class="hd-datepill" id="ga4-pill" onclick="ga4OpenCal()">📅 ${(GA4_FROM && GA4_TO) ? (mktDMY(GA4_FROM) + ' – ' + mktDMY(GA4_TO)) : '—'}</button>
+      <span class="hd-daterow-sep"></span>
+      <div class="hd-seg">${pb('this_month', 'Поточний місяць')}${pb('prev_month', 'Попередній місяць')}${pb('yesterday', 'Вчора')}${pb('last7', '7 днів')}${pb('last14', '14 днів')}${pb('last28', '28 днів')}</div>
+    </div>
+
+    <div class="hd-kpis">
+      <div class="hd-kpi"><div class="hd-kpi-l">Сеанси</div><div class="hd-kpi-v mono">${fmt(t.sessions || 0)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Користувачі</div><div class="hd-kpi-v mono">${fmt(t.users || 0)} <span class="hd-dim" style="font-size:12px">· ${newPct}% нов.</span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">В кошик</div><div class="hd-kpi-v mono">${fmt(t.carts || 0)} <span class="hd-dim" style="font-size:12px">· ${t.cr_cart || 0}%</span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Почали оформлення</div><div class="hd-kpi-v mono">${fmt(t.checkouts || 0)} <span class="hd-dim" style="font-size:12px">· ${t.cr_checkout || 0}%</span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Покупки <span class="hd-dim">GA4</span></div><div class="hd-kpi-v mono">${fmt(t.purchases || 0)} <span class="hd-dim" style="font-size:12px">· ${t.cr_purchase || 0}%</span></div></div>
+    </div>
+
+    <div class="hd-card">
+      <div class="hd-card-h">🧭 Воронка по каналах <span class="hd-hint">— % рахується від сеансів каналу</span></div>
+      <div class="hd-tw"><table class="hd-table">
+        <thead><tr>
+          <th class="hd-l">Канал</th><th>Сеанси</th><th>Користувачі</th>
+          <th>В кошик</th><th>Оформлення</th><th>Покупки GA4</th>
+        </tr></thead>
+        <tbody>${body}${totRow}</tbody>
+      </table></div>
+    </div>
+
+    <div class="hd-note">Воронка: <b>Сеанс → В кошик → Почав оформлення → Покупка</b>. Відсоток у клітинці — частка від сеансів цього каналу (конверсія кроку). Канали — за стандартним групуванням GA4 (session default channel group): <b>Paid Social</b> ≈ Meta, <b>Paid Search</b> ≈ Google Ads, <b>Organic Search</b> — пошукова органіка, <b>Direct</b> — прямі заходи, тощо. Абсолютні числа занижені — порівнюй канали <b>між собою</b>, а не з KeyCRM.</div>
   </div>`;
 }
 
