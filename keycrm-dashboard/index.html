@@ -2538,7 +2538,7 @@ function renderGa4View() {
     </tr>`;
 
   const rows = (d.channels || []).map(c => ga4Row(c, '')).join('');
-  const totRow = (d.channels && d.channels.length && t) ? ga4Row(Object.assign({ label: 'Разом' }, t), 'ads-tot') : '';
+  const totRow = (d.channels && d.channels.length && t) ? ga4Row(Object.assign({}, t, { label: 'Разом' }), 'ads-tot') : '';
   const body = (d.channels && d.channels.length) ? rows : `<tr><td colspan="7" class="hd-empty">Немає даних за період</td></tr>`;
 
   main.innerHTML = `
