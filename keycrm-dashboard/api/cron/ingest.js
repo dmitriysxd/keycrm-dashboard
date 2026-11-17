@@ -1940,13 +1940,15 @@ module.exports = async function handler(req, res) {
         totalSalesUpserted += lastResult.sales_upserted || 0;
         const stateAfter = await readState(supabase);
         if (!stateAfter || stateAfter.status !== "running") break;
-        // reconcile може робити fan-out /buyer запитів (до 30с) — не стекуємо
-        // його поверх уже витрачених секунд, даємо чистий виклик.
-        // metrics — НЕ перериваємо: refresh обох matview займає ~10с (виміряно),
-        // спокійно влазить після sales у тому ж виклику. Раніше розрив ТУТ +
-        // 2-годинний keepalive + 1-годинний stale-скид спричиняли нескінченний
-        // ресет циклу ДО metrics → sku_metrics висів 75 год без освіження.
-        if (stateAfter.current_step === "reconcile") break;
+        // ВАЖКІ кроки отримують ЧИСТИЙ виклик (повні 60с), а не стекуються
+        // поверх уже витрачених секунд поточного виклику — інакше вони
+        // перевищують ліміт Vercel і гинуть ДО writeState, застрягаючи:
+        //  • metrics — рефреш matview (до ~45с); якщо почати після sales, що
+        //    з'їв бюджет, виклик вилітає за 60с → цикл зависав на metrics.
+        //  • reconcile — fan-out /buyer запитів (до ~40с).
+        // Self-chain (fireSelf) одразу запускає наступну ланку, тож розриву в
+        // часі немає (старий 75-год баг був БЕЗ self-chain, лише на keepalive).
+        if (stateAfter.current_step === "metrics" || stateAfter.current_step === "reconcile") break;
       }
 
       const finalState = await readState(supabase);
