@@ -1021,10 +1021,10 @@ async function handleGa4(req, res) {
       label: GA4_CH_LABEL[channelRaw] || channelRaw || "(не визначено)",
       sessions, users: mv.totalUsers, newUsers: mv.newUsers,
       carts, checkouts, purchases, revenue: mv.purchaseRevenue,
-      cr_cart: pct(carts, sessions),         // сеанс → в кошик
+      cr_cart: pct(carts, sessions),         // сеанс → в кошик (увага: addToCarts — ПОДІЇ, може бути >100%)
       cr_checkout: pct(checkouts, sessions), // сеанс → почав оформлення
-      cr_purchase: pct(purchases, sessions), // сеанс → покупка
-      drop_cart_checkout: pct(carts - checkouts, carts), // % відвалу з кошика до оформлення
+      cr_purchase: pct(purchases, sessions), // сеанс → покупка (головна конверсія)
+      cr_checkout_purchase: pct(purchases, checkouts), // оформлення → оплата (доводять до кінця)
     };
   };
 
