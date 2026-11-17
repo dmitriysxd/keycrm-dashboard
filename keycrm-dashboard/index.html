@@ -2526,28 +2526,20 @@ function renderGa4View() {
   const pb = (k, l) => `<button class="hd-seg-b${ap === k ? ' on' : ''}" onclick="ga4Preset('${k}')">${l}</button>`;
   const newPct = t.users > 0 ? Math.round(100 * t.newUsers / t.users) : 0;
 
-  const rows = (d.channels || []).map(c => {
-    const np = c.users > 0 ? Math.round(100 * c.newUsers / c.users) : 0;
-    return `<tr>
-      <td class="hd-l">${c.label}</td>
+  const cpCell = (v) => `<td class="mono"><span class="${v >= 25 ? 'hd-pos' : (v > 0 ? '' : 'hd-dim')}">${v != null ? v : 0}%</span></td>`;
+  const ga4Row = (c, cls) => `<tr${cls ? ` class="${cls}"` : ''}>
+      <td class="hd-l">${c.label || 'Разом'}</td>
       <td class="mono">${fmt(c.sessions || 0)}</td>
-      <td class="mono hd-dim">${fmt(c.users || 0)} · ${np}% нов.</td>
-      ${ga4PctCell(c.carts, c.cr_cart)}
+      <td class="mono hd-dim">${fmt(c.users || 0)} · ${c.users > 0 ? Math.round(100 * c.newUsers / c.users) : 0}% нов.</td>
+      <td class="mono hd-dim">${fmt(c.carts || 0)}</td>
       ${ga4PctCell(c.checkouts, c.cr_checkout)}
       ${ga4PctCell(c.purchases, c.cr_purchase)}
+      ${cpCell(c.cr_checkout_purchase)}
     </tr>`;
-  }).join('');
 
-  const totRow = (d.channels && d.channels.length) ? `<tr class="ads-tot">
-    <td class="hd-l">Разом</td>
-    <td class="mono">${fmt(t.sessions || 0)}</td>
-    <td class="mono hd-dim">${fmt(t.users || 0)} · ${newPct}% нов.</td>
-    ${ga4PctCell(t.carts, t.cr_cart)}
-    ${ga4PctCell(t.checkouts, t.cr_checkout)}
-    ${ga4PctCell(t.purchases, t.cr_purchase)}
-  </tr>` : '';
-
-  const body = (d.channels && d.channels.length) ? rows : `<tr><td colspan="6" class="hd-empty">Немає даних за період</td></tr>`;
+  const rows = (d.channels || []).map(c => ga4Row(c, '')).join('');
+  const totRow = (d.channels && d.channels.length && t) ? ga4Row(Object.assign({ label: 'Разом' }, t), 'ads-tot') : '';
+  const body = (d.channels && d.channels.length) ? rows : `<tr><td colspan="7" class="hd-empty">Немає даних за період</td></tr>`;
 
   main.innerHTML = `
   <div class="hd">
@@ -2575,23 +2567,23 @@ function renderGa4View() {
     <div class="hd-kpis">
       <div class="hd-kpi"><div class="hd-kpi-l">Сеанси</div><div class="hd-kpi-v mono">${fmt(t.sessions || 0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Користувачі</div><div class="hd-kpi-v mono">${fmt(t.users || 0)} <span class="hd-dim" style="font-size:12px">· ${newPct}% нов.</span></div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">В кошик</div><div class="hd-kpi-v mono">${fmt(t.carts || 0)} <span class="hd-dim" style="font-size:12px">· ${t.cr_cart || 0}%</span></div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Почали оформлення</div><div class="hd-kpi-v mono">${fmt(t.checkouts || 0)} <span class="hd-dim" style="font-size:12px">· ${t.cr_checkout || 0}%</span></div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">Покупки <span class="hd-dim">GA4</span></div><div class="hd-kpi-v mono">${fmt(t.purchases || 0)} <span class="hd-dim" style="font-size:12px">· ${t.cr_purchase || 0}%</span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Конверсія в покупку <span class="hd-dim">GA4</span></div><div class="hd-kpi-v mono hd-pos">${t.cr_purchase || 0}%</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Оформлення → оплата</div><div class="hd-kpi-v mono">${t.cr_checkout_purchase || 0}%</div></div>
     </div>
 
     <div class="hd-card">
-      <div class="hd-card-h">🧭 Воронка по каналах <span class="hd-hint">— % рахується від сеансів каналу</span></div>
+      <div class="hd-card-h">🧭 Воронка по каналах <span class="hd-hint">— % від сеансів каналу; «Оформл.→оплата» — від тих, хто почав оформлення</span></div>
       <div class="hd-tw"><table class="hd-table">
         <thead><tr>
           <th class="hd-l">Канал</th><th>Сеанси</th><th>Користувачі</th>
-          <th>В кошик</th><th>Оформлення</th><th>Покупки GA4</th>
+          <th>У кошик <span class="hd-dim">події</span></th><th>Оформлення</th><th>Покупки GA4</th><th>Оформл.→оплата</th>
         </tr></thead>
         <tbody>${body}${totRow}</tbody>
       </table></div>
     </div>
 
-    <div class="hd-note">Воронка: <b>Сеанс → В кошик → Почав оформлення → Покупка</b>. Відсоток у клітинці — частка від сеансів цього каналу (конверсія кроку). Канали — за стандартним групуванням GA4 (session default channel group): <b>Paid Social</b> ≈ Meta, <b>Paid Search</b> ≈ Google Ads, <b>Organic Search</b> — пошукова органіка, <b>Direct</b> — прямі заходи, тощо. Абсолютні числа занижені — порівнюй канали <b>між собою</b>, а не з KeyCRM.</div>
+    <div class="hd-note">Чесна воронка: <b>Сеанс → Почав оформлення → Покупка</b>. «<b>У кошик</b>» — це кількість <b>подій</b> add_to_cart (один сеанс додає кілька разів), тому показуємо лише як лічильник, без % (інакше виходить >100%). «<b>Оформл.→оплата</b>» = скільки з тих, хто почав оформлення, реально оплатили — ключова метрика «де губимо на останньому кроці». Канали — стандартне групування GA4: <b>Paid Social</b> ≈ Meta, <b>Paid Search</b> ≈ Google Ads, <b>Organic Search</b> — органіка пошуку, <b>Direct</b> — прямі. Абсолютні числа занижені — порівнюй канали <b>між собою</b>, не з KeyCRM.</div>
   </div>`;
 }
 
