@@ -1033,7 +1033,47 @@ async function handleGa4(req, res) {
   );
   const totalsRow = j.totals && j.totals[0] ? mapRow(j.totals[0].metricValues, "__total__") : null;
 
-  return res.status(200).json({ configured: true, ok: true, from, to, totals: totalsRow, channels });
+  // ── Другий звіт: середня сума кошика на кроках «оформлення» vs «покупка».
+  // Перевірка гіпотези про мінімалку 500 грн: якщо середній кошик на
+  // ПОЧАТКУ оформлення помітно менший за середній чек ПОКУПКИ (і близько до
+  // 500) — поріг відсікає дрібні кошики на останньому кроці. eventValue =
+  // сума параметра value події (begin_checkout/purchase несуть суму кошика).
+  let values = null;
+  try {
+    const vb = {
+      dateRanges: [{ startDate: from, endDate: to }],
+      dimensions: [{ name: "sessionDefaultChannelGroup" }, { name: "eventName" }],
+      metrics: [{ name: "eventCount" }, { name: "eventValue" }],
+      dimensionFilter: { filter: { fieldName: "eventName", inListFilter: { values: ["begin_checkout", "purchase"] } } },
+      limit: 500,
+    };
+    const jv = await ga4RunReport(propertyId, token, vb);
+    const byCh = {};
+    let tBC = { c: 0, v: 0 }, tP = { c: 0, v: 0 };
+    for (const row of (jv.rows || [])) {
+      const chRaw = row.dimensionValues[0] && row.dimensionValues[0].value;
+      const ev = row.dimensionValues[1] && row.dimensionValues[1].value;
+      const cnt = num(row.metricValues[0] && row.metricValues[0].value);
+      const val = num(row.metricValues[1] && row.metricValues[1].value);
+      const label = GA4_CH_LABEL[chRaw] || chRaw || "(не визначено)";
+      if (!byCh[label]) byCh[label] = { label, bcCount: 0, bcVal: 0, pCount: 0, pVal: 0 };
+      if (ev === "begin_checkout") { byCh[label].bcCount += cnt; byCh[label].bcVal += val; tBC.c += cnt; tBC.v += val; }
+      else if (ev === "purchase") { byCh[label].pCount += cnt; byCh[label].pVal += val; tP.c += cnt; tP.v += val; }
+    }
+    const avg = (v, c) => (c > 0 ? Math.round(v / c) : null);
+    const list = Object.values(byCh)
+      .map((x) => ({ label: x.label, checkoutAvg: avg(x.bcVal, x.bcCount), purchaseAvg: avg(x.pVal, x.pCount), checkouts: x.bcCount, purchases: x.pCount }))
+      .filter((x) => x.checkouts > 0 || x.purchases > 0)
+      .sort((a, b) => (b.checkouts || 0) - (a.checkouts || 0));
+    values = {
+      total: { checkoutAvg: avg(tBC.v, tBC.c), purchaseAvg: avg(tP.v, tP.c), checkouts: tBC.c, purchases: tP.c },
+      byChannel: list,
+    };
+  } catch (e) {
+    values = { error: (e && e.message) || String(e) };
+  }
+
+  return res.status(200).json({ configured: true, ok: true, from, to, totals: totalsRow, channels, values });
 }
 
 module.exports = async function handler(req, res) {

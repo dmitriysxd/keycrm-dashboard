@@ -2541,6 +2541,45 @@ function renderGa4View() {
   const totRow = (d.channels && d.channels.length && t) ? ga4Row(Object.assign({}, t, { label: 'Разом' }), 'ads-tot') : '';
   const body = (d.channels && d.channels.length) ? rows : `<tr><td colspan="7" class="hd-empty">Немає даних за період</td></tr>`;
 
+  // ── Карта: середній кошик на «оформленні» vs «покупці» (гіпотеза мінімалки 500) ──
+  let valuesCard = '';
+  const V = d.values;
+  const MIN_ORDER = 500;
+  if (V && !V.error && V.total) {
+    const co = V.total.checkoutAvg, po = V.total.purchaseAvg;
+    let verdict = '';
+    if (co == null) {
+      verdict = `<span class="hd-warn">GA4 не передає суму кошика на кроці «оформлення» — схоже, у Хорошопі в події <code>begin_checkout</code> не налаштоване поле <code>value</code>. Тоді перевіримо інакше (середній чек покупки нижче є).</span>`;
+    } else if (po != null) {
+      const gap = po - co;
+      if (co <= MIN_ORDER * 1.1 && gap > co * 0.12) {
+        verdict = `<span class="hd-pos">Схоже, гіпотеза підтверджується.</span> Ті, хто <b>починає оформлення</b>, у середньому мають кошик <b>${fmtMoney(co)}</b> — близько до мінімалки ${fmtMoney(MIN_ORDER)}, а ті, хто <b>оплачує</b> — вже <b>${fmtMoney(po)}</b>. Тобто дрібні кошики (біля/нижче порога) частіше відвалюються на останньому кроці.`;
+      } else if (Math.abs(gap) <= co * 0.1) {
+        verdict = `<span class="hd-warn">Гіпотеза НЕ підтверджується.</span> Середній кошик на оформленні (<b>${fmtMoney(co)}</b>) і на оплаті (<b>${fmtMoney(po)}</b>) майже рівні — мінімалка не головна причина відвалу. Шукати тертя: вартість доставки, способи оплати, довжина форми.`;
+      } else {
+        verdict = `Середній кошик на оформленні — <b>${fmtMoney(co)}</b>, на оплаті — <b>${fmtMoney(po)}</b>. Різниця є, але не критична; дивись розподіл по каналах нижче.`;
+      }
+    }
+    const vrows = (V.byChannel || []).slice(0, 12).map(x => `<tr>
+      <td class="hd-l">${x.label}</td>
+      <td class="mono">${x.checkoutAvg != null ? fmtMoney(x.checkoutAvg) : '<span class="hd-dim">—</span>'}</td>
+      <td class="mono">${x.purchaseAvg != null ? fmtMoney(x.purchaseAvg) : '<span class="hd-dim">—</span>'}</td>
+      <td class="mono hd-dim">${fmt(x.checkouts || 0)}</td>
+    </tr>`).join('');
+    valuesCard = `
+    <div class="hd-card">
+      <div class="hd-card-h">💰 Середній кошик: оформлення vs оплата <span class="hd-hint">— перевірка гіпотези про мінімалку ${fmtMoney(MIN_ORDER)}</span></div>
+      <div style="padding:12px 16px 4px;font-size:13px;line-height:1.6">${verdict}</div>
+      <div class="hd-tw"><table class="hd-table">
+        <thead><tr><th class="hd-l">Канал</th><th>Сер. кошик (оформлення)</th><th>Сер. чек (оплата)</th><th>К-сть оформлень</th></tr></thead>
+        <tbody>${vrows || `<tr><td colspan="4" class="hd-empty">Немає даних</td></tr>`}</tbody>
+      </table></div>
+      <div class="hd-note" style="margin-top:0">Суми — у валюті GA4 (має бути грн). «Сер. кошик (оформлення)» = сума поля <code>value</code> події <code>begin_checkout</code> ÷ к-сть оформлень. Якщо ця колонка порожня — у Хорошопі не передається сума на цьому кроці, скажи, обговоримо альтернативу.</div>
+    </div>`;
+  } else if (V && V.error) {
+    valuesCard = `<div class="hd-card"><div style="padding:12px 16px;font-size:12.5px" class="hd-dim">Звіт по сумах кошика недоступний: ${V.error}</div></div>`;
+  }
+
   main.innerHTML = `
   <div class="hd">
     <div class="hd-head">
@@ -2582,6 +2621,8 @@ function renderGa4View() {
         <tbody>${body}${totRow}</tbody>
       </table></div>
     </div>
+
+    ${valuesCard}
 
     <div class="hd-note">Чесна воронка: <b>Сеанс → Почав оформлення → Покупка</b>. «<b>У кошик</b>» — це кількість <b>подій</b> add_to_cart (один сеанс додає кілька разів), тому показуємо лише як лічильник, без % (інакше виходить >100%). «<b>Оформл.→оплата</b>» = скільки з тих, хто почав оформлення, реально оплатили — ключова метрика «де губимо на останньому кроці». Канали — стандартне групування GA4: <b>Paid Social</b> ≈ Meta, <b>Paid Search</b> ≈ Google Ads, <b>Organic Search</b> — органіка пошуку, <b>Direct</b> — прямі. Абсолютні числа занижені — порівнюй канали <b>між собою</b>, не з KeyCRM.</div>
   </div>`;
