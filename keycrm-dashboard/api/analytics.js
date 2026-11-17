@@ -894,6 +894,148 @@ async function handleFreshness(req, res, supabase) {
   return res.status(200).json({ now: new Date().toISOString(), sources });
 }
 
+// ── GA4: верх воронки і трафік ПО КАНАЛАХ ───────────────────────────────
+// Дані GA4 — клієнтська аналітика, НЕПОВНІ (блокувальники, згода на cookie,
+// cross-device) → абсолютні числа занижені й НЕ зводяться з KeyCRM. Беремо
+// лише для ВІДНОСНОГО порівняння каналів і пошуку провалів воронки.
+//
+// GET /api/analytics?type=ga4&from=YYYY-MM-DD&to=YYYY-MM-DD
+//
+// Доступ: Google OAuth (той самий client, що й Google Ads) зі скоупом
+//   analytics.readonly. ENV: GA4_PROPERTY_ID + GA4_REFRESH_TOKEN
+//   (фолбек GOOGLE_ADS_REFRESH_TOKEN — якщо той токен переавторизували з
+//   додатковим скоупом analytics.readonly).
+
+async function fetchGa4(url, opts, ms) {
+  ms = ms || 15000;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, Object.assign({}, opts, { signal: ctrl.signal }));
+  } finally { clearTimeout(t); }
+}
+
+async function ga4AccessToken() {
+  const id = process.env.GOOGLE_ADS_CLIENT_ID;
+  const secret = process.env.GOOGLE_ADS_CLIENT_SECRET;
+  const refresh = process.env.GA4_REFRESH_TOKEN || process.env.GOOGLE_ADS_REFRESH_TOKEN;
+  if (!id || !secret || !refresh) return null;
+  const body = new URLSearchParams({ client_id: id, client_secret: secret, refresh_token: refresh, grant_type: "refresh_token" });
+  const r = await fetchGa4("https://oauth2.googleapis.com/token", {
+    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body,
+  });
+  const j = await r.json();
+  if (j && j.error) throw new Error("Google OAuth: " + (j.error_description || j.error));
+  return j.access_token || null;
+}
+
+async function ga4RunReport(propertyId, token, reqBody) {
+  const r = await fetchGa4(
+    "https://analyticsdata.googleapis.com/v1beta/properties/" + propertyId + ":runReport",
+    { method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" }, body: JSON.stringify(reqBody) }
+  );
+  const j = await r.json();
+  if (j && j.error) {
+    const m = j.error.message || JSON.stringify(j.error);
+    throw new Error("GA4 Data API: " + String(m).slice(0, 300));
+  }
+  return j;
+}
+
+// Людські назви каналів GA4 (default channel grouping).
+const GA4_CH_LABEL = {
+  "Direct": "Прямі",
+  "Organic Search": "Пошук (органіка)",
+  "Paid Search": "Google Ads (пошук)",
+  "Paid Social": "Соцмережі (реклама)",
+  "Organic Social": "Соцмережі (органіка)",
+  "Paid Shopping": "Google Shopping",
+  "Organic Shopping": "Shopping (органіка)",
+  "Display": "Display (банери)",
+  "Email": "Email",
+  "Referral": "Реферали",
+  "Affiliates": "Партнери",
+  "Audio": "Аудіо",
+  "Video": "Відео",
+  "Paid Video": "Відео (реклама)",
+  "Organic Video": "Відео (органіка)",
+  "SMS": "SMS",
+  "Mobile Push Notifications": "Push",
+  "Unassigned": "Не визначено",
+};
+
+function ga4YMD(d) { return d.toISOString().slice(0, 10); }
+
+async function handleGa4(req, res) {
+  const propertyId = String(process.env.GA4_PROPERTY_ID || "").replace(/\D/g, "");
+  if (!propertyId) {
+    return res.status(200).json({ configured: false, reason: "GA4_PROPERTY_ID не налаштовано" });
+  }
+  let token;
+  try {
+    token = await ga4AccessToken();
+  } catch (e) {
+    return res.status(200).json({ configured: false, reason: (e && e.message) || String(e) });
+  }
+  if (!token) {
+    return res.status(200).json({ configured: false, reason: "Google OAuth не налаштовано (CLIENT_ID/SECRET/GA4_REFRESH_TOKEN)" });
+  }
+
+  // Діапазон дат: from/to або останні 28 днів до вчора.
+  const reDate = /^\d{4}-\d{2}-\d{2}$/;
+  let from = (req.query && req.query.from) || null;
+  let to = (req.query && req.query.to) || null;
+  if (!reDate.test(String(from))) from = null;
+  if (!reDate.test(String(to))) to = null;
+  if (!from || !to) {
+    const y = new Date(Date.now() - 24 * 3600 * 1000);      // вчора
+    const s = new Date(Date.now() - 28 * 24 * 3600 * 1000); // -28 днів
+    from = ga4YMD(s); to = ga4YMD(y);
+  }
+
+  const metrics = ["sessions", "totalUsers", "newUsers", "addToCarts", "checkouts", "ecommercePurchases", "purchaseRevenue"];
+  const body = {
+    dateRanges: [{ startDate: from, endDate: to }],
+    dimensions: [{ name: "sessionDefaultChannelGroup" }],
+    metrics: metrics.map((m) => ({ name: m })),
+    metricAggregations: ["TOTAL"],
+    orderBys: [{ desc: true, metric: { metricName: "sessions" } }],
+    limit: 250,
+  };
+
+  let j;
+  try {
+    j = await ga4RunReport(propertyId, token, body);
+  } catch (e) {
+    return res.status(200).json({ configured: true, ok: false, error: (e && e.message) || String(e), from, to });
+  }
+
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const mapRow = (metricValues, channelRaw) => {
+    const mv = {};
+    metrics.forEach((m, i) => { mv[m] = num(metricValues && metricValues[i] && metricValues[i].value); });
+    const sessions = mv.sessions, carts = mv.addToCarts, checkouts = mv.checkouts, purchases = mv.ecommercePurchases;
+    const pct = (a, b) => (b > 0 ? +(100 * a / b).toFixed(2) : 0);
+    return {
+      channel: channelRaw,
+      label: GA4_CH_LABEL[channelRaw] || channelRaw || "(не визначено)",
+      sessions, users: mv.totalUsers, newUsers: mv.newUsers,
+      carts, checkouts, purchases, revenue: mv.purchaseRevenue,
+      cr_cart: pct(carts, sessions),         // сеанс → в кошик
+      cr_checkout: pct(checkouts, sessions), // сеанс → почав оформлення
+      cr_purchase: pct(purchases, sessions), // сеанс → покупка
+      drop_cart_checkout: pct(carts - checkouts, carts), // % відвалу з кошика до оформлення
+    };
+  };
+
+  const channels = (j.rows || []).map((row) =>
+    mapRow(row.metricValues, row.dimensionValues && row.dimensionValues[0] && row.dimensionValues[0].value)
+  );
+  const totalsRow = j.totals && j.totals[0] ? mapRow(j.totals[0].metricValues, "__total__") : null;
+
+  return res.status(200).json({ configured: true, ok: true, from, to, totals: totalsRow, channels });
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -914,7 +1056,8 @@ module.exports = async function handler(req, res) {
     if (type === "cohorts") return await handleCohorts(req, res, supabase);
     if (type === "campaigns") return await handleCampaigns(req, res, supabase);
     if (type === "freshness") return await handleFreshness(req, res, supabase);
-    return res.status(400).json({ error: "type required: ?type=trends | ?type=cohorts | ?type=marketing | ?type=campaigns | ?type=freshness" });
+    if (type === "ga4") return await handleGa4(req, res);
+    return res.status(400).json({ error: "type required: ?type=trends | ?type=cohorts | ?type=marketing | ?type=campaigns | ?type=freshness | ?type=ga4" });
   } catch (err) {
     return res.status(500).json({ error: (err && err.message) || String(err) });
   }
