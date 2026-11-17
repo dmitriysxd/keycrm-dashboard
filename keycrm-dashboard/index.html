@@ -45,6 +45,9 @@
   .hd-pos{ color:var(--hd-pos); } .hd-neg{ color:var(--hd-neg); } .hd-dim{ color:var(--hd-t3); }
   .hd-empty{ text-align:center; color:var(--hd-t3); padding:26px; }
   .hd-cost{ width:92px; background:var(--hd-surf); border:1px solid var(--hd-bd); color:var(--hd-t1); border-radius:7px; padding:5px 7px; text-align:right; font-size:12px; font-family:'JetBrains Mono',monospace; }
+  .hd-cost-wrap{ display:inline-flex; align-items:center; gap:4px; }
+  .hd-cost-clear{ width:20px; height:24px; border:1px solid var(--hd-bd); background:var(--hd-surf); color:var(--hd-t3); border-radius:6px; font-size:11px; cursor:pointer; line-height:1; padding:0; }
+  .hd-cost-clear:hover{ color:var(--hd-neg); border-color:var(--hd-neg); }
   .hd-daterow{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:-6px 0 18px; padding:12px 14px; background:var(--hd-card); border:1px solid var(--hd-bd); border-radius:12px; }
   .hd-date{ background:var(--hd-surf); border:1px solid var(--hd-bd); color:var(--hd-t1); border-radius:9px; padding:7px 10px; font-size:13px; font-family:'JetBrains Mono',monospace; color-scheme:dark; cursor:pointer; }
   .hd-date:focus{ outline:none; border-color:var(--hd-accent); }
@@ -2108,6 +2111,23 @@ async function saveMktCost(el) {
   }
 }
 
+async function clearMktCost(channel) {
+  const mPeriod = mktSingleMonth();
+  if (!mPeriod) { alert('Очистити можна лише коли діапазон у межах одного місяця'); return; }
+  if (!confirm('Очистити витрату каналу «' + channel + '» за ' + mktMonthLabel(mPeriod) + '?')) return;
+  try {
+    const r = await fetch(apiUrl('/api/analytics', 'type=marketing'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'delete_cost', channel, period: mPeriod }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Помилка');
+    await renderMarketingPage();
+  } catch (e) {
+    alert('Не вдалося очистити витрату: ' + ((e && e.message) || e));
+  }
+}
+
 async function addMktCost() {
   const chSel = document.getElementById('mkt-add-channel');
   const amtEl = document.getElementById('mkt-add-amount');
@@ -2153,10 +2173,11 @@ function renderMarketingView() {
   // Головна таблиця каналів (last-touch)
   const chanRows = (d.channels || []).map(c => {
     const share = totRev > 0 ? Math.round(c.revenue / totRev * 100) : 0;
+    const chAttr = String(c.channel).replace(/"/g, '&quot;').replace(/'/g, "\\'");
     const costCell = c.auto_cost
       ? `<span class="mono" title="авто з Meta Ads">${fmtMoney(c.cost)} <span class="hd-dim" style="font-size:9px">авто</span></span>`
       : (editable
-          ? `<input class="hd-cost" type="number" min="0" step="1" value="${c.cost || ''}" data-channel="${String(c.channel).replace(/"/g,'&quot;')}" data-orig="${c.cost || ''}" onchange="saveMktCost(this)" />`
+          ? `<span class="hd-cost-wrap"><input class="hd-cost" type="number" min="0" step="1" value="${c.cost || ''}" data-channel="${String(c.channel).replace(/"/g,'&quot;')}" data-orig="${c.cost || ''}" onchange="saveMktCost(this)" />${c.cost ? `<button class="hd-cost-clear" title="Очистити витрату" onclick="clearMktCost('${chAttr}')">✕</button>` : ''}</span>`
           : (c.cost ? `<span class="mono">${fmtMoney(c.cost)}</span>` : '<span class="hd-dim">—</span>'));
     return `<tr>
       <td class="hd-l">${c.channel}</td>
