@@ -1513,18 +1513,29 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
       });
       result.advanced = "meta_spend";
     } else if (stepName === "meta_spend") {
-      // Авто-розхід Meta (пропускається без токена). Помилки НЕ валять цикл.
-      try {
-        result.meta_spend = await ingestMetaSpend(supabase, ctx, { days: 7 });
-      } catch (err) {
-        result.meta_spend_error = (err && err.message) || String(err);
-      }
+      // Увесь рекламний розхід (Meta + Meta-оголошення + Google) — ОДНИМ кроком,
+      // ПАРАЛЕЛЬНО (~20-30с, у GH-воркфлоу всі три йдуть за 24с → у 60с Vercel
+      // вкладається з запасом). Раніше це були ТРИ окремі ланки з крихкими
+      // HTTP-стиками fireSelf: якщо стик після meta_ad_spend губився (cold-start
+      // / обрив), google_spend не стартував, цикл зависав у 'running' і не
+      // доходив до 'done' (Google не оновлювався ночами, matview не рефрешився).
+      // Один крок = один стик = надійно. Помилка будь-якого джерела НЕ валить цикл.
+      const [rMs, rMas, rGs] = await Promise.allSettled([
+        ingestMetaSpend(supabase, ctx, { days: 7 }),
+        ingestMetaAdSpend(supabase, ctx, { days: 7 }),
+        ingestGoogleSpend(supabase, ctx, { days: 7 }),
+      ]);
+      const errMsg = (x) => String((x && x.message) || x).slice(0, 300);
+      if (rMs.status === "fulfilled") result.meta_spend = rMs.value; else result.meta_spend_error = errMsg(rMs.reason);
+      if (rMas.status === "fulfilled") result.meta_ad_spend = rMas.value; else result.meta_ad_spend_error = errMsg(rMas.reason);
+      if (rGs.status === "fulfilled") result.google_spend = rGs.value; else result.google_spend_error = errMsg(rGs.reason);
       await writeState(supabase, {
-        current_step: "meta_ad_spend",
+        current_step: "done",
         current_page: 1,
+        status: "done",
         last_chunk_at: new Date().toISOString(),
       });
-      result.advanced = "meta_ad_spend";
+      result.advanced = "done";
     } else if (stepName === "meta_ad_spend") {
       // Авто-розхід Meta по оголошеннях (для звіту «Реклама»). Не валить цикл.
       try {
