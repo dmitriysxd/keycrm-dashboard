@@ -1905,6 +1905,19 @@ module.exports = async function handler(req, res) {
     if (ins.error) throw new Error("ingest_runs insert: " + ins.error.message);
     runId = ins.data.id;
 
+    // Закриває запис прогону (status=ok). Потрібно для РУЧНИХ кроків із раннім
+    // return (meta_spend/meta_ad_spend/google_spend/refresh_open/діагностика) —
+    // інакше вони лишаються 'running' назавжди (косметичне сміття в логах).
+    // Авто-гілка і наскрізні ручні кроки закривають запис власним UPDATE нижче.
+    const closeRun = async (patch) => {
+      if (!runId) return;
+      try {
+        await supabase.from("ingest_runs")
+          .update(Object.assign({ finished_at: new Date().toISOString(), status: "ok", api_calls: ctx.apiCalls }, patch || {}))
+          .eq("id", runId);
+      } catch (_) { /* не критично */ }
+    };
+
     if (step === "auto") {
       // SELF-CHAINING: одна добова Vercel-крон-подія сама доводить цикл до
       // кінця. Кожен виклик робить батч чанків (~40с), і якщо цикл ще не
@@ -2083,6 +2096,7 @@ module.exports = async function handler(req, res) {
       // ?from=N — offset для продовження; викликай доки done=true.
       const fromOffset = (req.query && (req.query.from || req.query.offset)) || 0;
       const r = await refreshOpenOrders(apiKey, supabase, ctx, { timeBudgetMs: 50000, limit: 1000, offset: fromOffset });
+      await closeRun();
       return res.status(200).json({ ok: true, step: "refresh_open", ...r, api_calls: ctx.apiCalls });
     }
     if (step === "meta_spend") {
@@ -2096,6 +2110,7 @@ module.exports = async function handler(req, res) {
         mopts = { days: Math.max(1, Math.min(180, parseInt((req.query && req.query.days) || "14"))) };
       }
       const r = await ingestMetaSpend(supabase, ctx, mopts);
+      await closeRun();
       return res.status(200).json({ ok: true, step: "meta_spend", ...r, api_calls: ctx.apiCalls });
     }
     if (step === "meta_ad_spend") {
@@ -2109,6 +2124,7 @@ module.exports = async function handler(req, res) {
         aopts = { days: Math.max(1, Math.min(180, parseInt((req.query && req.query.days) || "14"))) };
       }
       const r = await ingestMetaAdSpend(supabase, ctx, aopts);
+      await closeRun();
       return res.status(200).json({ ok: true, step: "meta_ad_spend", ...r, api_calls: ctx.apiCalls });
     }
     if (step === "meta_diag") {
@@ -2156,6 +2172,7 @@ module.exports = async function handler(req, res) {
         if (dd.granular_scopes) out.token_granular = dd.granular_scopes.map((g) => g.scope + "→" + ((g.target_ids || []).join("|") || "all")).join(" ; ");
         if (j && j.error) out.debug_err = j.error.message;
       } catch (e) { out.debug_err = String((e && e.message) || e); }
+      await closeRun();
       return res.status(200).json(out);
     }
     if (step === "google_spend") {
@@ -2169,6 +2186,7 @@ module.exports = async function handler(req, res) {
         gopts = { days: Math.max(1, Math.min(180, parseInt((req.query && req.query.days) || "14"))) };
       }
       const r = await ingestGoogleSpend(supabase, ctx, gopts);
+      await closeRun();
       return res.status(200).json({ ok: true, step: "google_spend", ...r, api_calls: ctx.apiCalls });
     }
     if (step === "google_diag") {
@@ -2211,6 +2229,7 @@ module.exports = async function handler(req, res) {
           out.spend_body = (await r3.text()).slice(0, 1500);
         } catch (e) { out.spend_err = String((e && e.message) || e); }
       } catch (e) { out.error = String((e && e.message) || e); }
+      await closeRun();
       return res.status(200).json(out);
     }
     let enumAliveResult = null;
