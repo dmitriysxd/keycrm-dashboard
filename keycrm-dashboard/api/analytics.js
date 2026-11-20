@@ -635,7 +635,7 @@ async function handleCampaigns(req, res, supabase) {
   const [orderRows, buyerRows, metaAdRows, googleRows] = await Promise.all([
     fetchAll(() => supabase.rpc("marketing_order_facts", { _since: since.toISOString(), _source: "bijboom-opt.com.ua" }).order("order_id", { ascending: true })),
     fetchAll(() => supabase.from("buyers").select("buyer_id, client_type")),
-    fetchAll(() => supabase.from("meta_ad_spend").select("date, ad_id, ad_name, campaign_id, campaign_name, spend_uah, spend, impressions, clicks")).catch(() => []),
+    fetchAll(() => supabase.from("meta_ad_spend").select("date, ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name, spend_uah, spend, impressions, clicks")).catch(() => []),
     fetchAll(() => supabase.from("google_spend").select("date, campaign_id, campaign_name, spend_uah, spend, impressions, clicks")).catch(() => []),
   ]);
 
