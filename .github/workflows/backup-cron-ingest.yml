@@ -96,16 +96,36 @@ jobs:
         run: |
           # Дай Vercel-функції секунд 10 на завершення async роботи.
           sleep 10
-          curl -s --max-time 30 \
-            "https://keycrm-dashboard.vercel.app/api/cron/inspect?target=health&secret=$CRON_SECRET" \
-            | python3 -c "
-          import json, sys
-          d = json.load(sys.stdin)
+          # Health-перевірка ІНФОРМАТИВНА — вона НЕ має валити воркфлоу (ingest
+          # вже відпрацював вище). Тягнемо health із ретраями у файл; якщо
+          # порожньо або не JSON (повільний cold-start, транзиентний збій) —
+          # це ::warning::, а не падіння. Раніше порожня відповідь роняла
+          # json.load → весь backup-воркфлоу позначався failure (хибна тривога).
+          OUT=/tmp/health.json
+          : > "$OUT"
+          for i in 1 2 3; do
+            curl -s --max-time 60 \
+              "https://keycrm-dashboard.vercel.app/api/cron/inspect?target=health&secret=$CRON_SECRET" \
+              -o "$OUT" || true
+            if [ -s "$OUT" ]; then break; fi
+            echo "health attempt $i: порожня відповідь, повтор..."
+            sleep $((i * 10))
+          done
+          if [ ! -s "$OUT" ]; then
+            echo "::warning::health endpoint повернув порожню відповідь — пропускаємо верифікацію (кроки ingest уже пройшли OK)"
+            exit 0
+          fi
+          python3 -c "
+          import json, sys, datetime
+          try:
+              d = json.loads(open('$OUT').read())
+          except Exception as e:
+              print(f'::warning::health-відповідь не JSON ({e}) — пропускаємо верифікацію')
+              sys.exit(0)
           state = d.get('ingest_state') or {}
           last_auto = d.get('last_auto_ingest') or {}
           ws = d.get('wholesale_status') or {}
-          import datetime
-          today = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+          today = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
           cycle_date = state.get('cycle_date')
           status = state.get('status')
           print(f'cycle_date={cycle_date} status={status}')
