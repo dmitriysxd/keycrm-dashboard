@@ -26,6 +26,10 @@ on:
         description: 'Макс кількість ітерацій (= виклики до 50s кожен)'
         required: false
         default: '30'
+      with_cost:
+        description: 'Заливати line_cost (собівартість) теж? true для бекфілу 2025'
+        required: false
+        default: 'false'
 
 jobs:
   backfill:
@@ -36,11 +40,14 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           START_PAGE: ${{ github.event.inputs.start_page }}
           MAX_ITER: ${{ github.event.inputs.max_iterations }}
+          WITH_COST: ${{ github.event.inputs.with_cost }}
         run: |
           if [ -z "$CRON_SECRET" ]; then
             echo "::error::CRON_SECRET не налаштовано"; exit 1
           fi
           set +e
+          COST_PARAM=""
+          if [ "$WITH_COST" = "true" ]; then COST_PARAM="&with_cost=1"; echo "line_cost backfill УВІМКНЕНО"; fi
           PAGE=$START_PAGE
           TOTAL_UPDATED=0
           TOTAL_SEEN=0
@@ -48,7 +55,7 @@ jobs:
             echo "=== iteration $i/$MAX_ITER · from_page=$PAGE ==="
             HTTP=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
               --max-time 90 \
-              "https://keycrm-dashboard.vercel.app/api/cron/ingest?step=backfill_source&from=$PAGE&secret=$CRON_SECRET")
+              "https://keycrm-dashboard.vercel.app/api/cron/ingest?step=backfill_source&from=$PAGE${COST_PARAM}&secret=$CRON_SECRET")
             echo "HTTP $HTTP"
             cat /tmp/resp.json | head -c 600
             echo ""
