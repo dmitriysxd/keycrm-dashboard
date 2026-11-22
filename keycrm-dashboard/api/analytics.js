@@ -95,7 +95,7 @@ async function handleTrends(req, res, supabase) {
   const rows = await fetchAll(() =>
     supabase
       .from("sales")
-      .select("order_id, ordered_at, revenue, buyer_id, order_status, order_grand_total")
+      .select("order_id, ordered_at, revenue, buyer_id, order_status, order_grand_total, source_name")
       .gte("ordered_at", since.toISOString())
       .eq("source_name", "bijboom-opt.com.ua") // не рахуємо другий магазин gamijok.com.ua
   );
@@ -104,6 +104,9 @@ async function handleTrends(req, res, supabase) {
   const seenOrders = new Map();
   for (const r of rows) {
     if (isExcluded(r.order_status)) continue;
+    // Виключаємо другий магазин gamijok.com.ua. NULL source (стара історія до
+    // бекфілу джерела) лишаємо — це переважно bijboom.
+    if (r.source_name === "gamijok.com.ua") continue;
     if (!r.ordered_at) continue;
     // Фільтр по опт-клієнтах. Замовлення без buyer_id (анонімні / тільки що
     // створені) виключаємо — статистика опт-бізнесу.
@@ -169,7 +172,7 @@ async function handleCohorts(req, res, supabase) {
   const sales = await fetchAll(() =>
     supabase
       .from("sales")
-      .select("buyer_id, ordered_at, order_status, order_id")
+      .select("buyer_id, ordered_at, order_status, order_id, source_name")
       .gte("ordered_at", since.toISOString())
       .not("buyer_id", "is", null)
       .eq("source_name", "bijboom-opt.com.ua") // не рахуємо другий магазин gamijok.com.ua
@@ -181,6 +184,8 @@ async function handleCohorts(req, res, supabase) {
 
   for (const r of sales) {
     if (isExcluded(r.order_status)) continue;
+    // Виключаємо другий магазин gamijok.com.ua; NULL source (стара історія) лишаємо.
+    if (r.source_name === "gamijok.com.ua") continue;
     if (!wholesaleSet.has(r.buyer_id)) continue;
     const m = (r.ordered_at || "").slice(0, 7); // YYYY-MM
     if (!m) continue;
