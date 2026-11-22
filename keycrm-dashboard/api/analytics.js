@@ -97,6 +97,7 @@ async function handleTrends(req, res, supabase) {
       .from("sales")
       .select("order_id, ordered_at, revenue, buyer_id, order_status, order_grand_total")
       .gte("ordered_at", since.toISOString())
+      .eq("source_name", "bijboom-opt.com.ua") // не рахуємо другий магазин gamijok.com.ua
   );
 
   // Дедуплікуємо по order_id, бо grand_total — на замовлення.
@@ -171,6 +172,7 @@ async function handleCohorts(req, res, supabase) {
       .select("buyer_id, ordered_at, order_status, order_id")
       .gte("ordered_at", since.toISOString())
       .not("buyer_id", "is", null)
+      .eq("source_name", "bijboom-opt.com.ua") // не рахуємо другий магазин gamijok.com.ua
   );
 
   // Дедуплікуємо: один рядок на buyer × month активності.
