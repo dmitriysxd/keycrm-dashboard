@@ -724,7 +724,7 @@ async function handleCampaigns(req, res, supabase) {
   const campLookup = new Map();  // normCampName -> campNode
   const adLookup = new Map();    // normCampName+SEP+normAdName -> [adNode] (fallback по імені)
   const adById = new Map();      // ad_id -> adNode (точний матч, коли utm_content={{ad.id}})
-  const rz = () => ({ rev: 0, done: 0, prog: 0, canc: 0, newO: 0, rev_opt: 0, rev_retail: 0 });
+  const rz = () => ({ rev: 0, done: 0, prog: 0, canc: 0, newO: 0, rev_opt: 0, rev_retail: 0, act_opt: 0, act_retail: 0 });
   for (const r of (metaAdRows || [])) {
     if (hasRange && (!r.date || r.date < from || r.date > to)) continue;
     const sp = parseFloat(r.spend_uah != null ? r.spend_uah : (r.spend || 0)) || 0;
@@ -767,7 +767,8 @@ async function handleCampaigns(req, res, supabase) {
     if (o.grp === "done") node.done++; else node.prog++;
     node.rev += o.revenue;
     if (isNew) node.newO++;
-    if (isOptOrder(o)) node.rev_opt += o.revenue; else node.rev_retail += o.revenue;
+    if (isOptOrder(o)) { node.rev_opt += o.revenue; node.act_opt++; }
+    else { node.rev_retail += o.revenue; node.act_retail++; }
   }
   // Хвіст: виручка каналу, яку не прив'язати до кампанії (стара розмітка lama,
   // google без cid, старі fb/ig). Щоб сума по каналу сходилась із «загальним».
@@ -805,6 +806,7 @@ async function handleCampaigns(req, res, supabase) {
             else {
               if (o.grp === "done") { n.done++; n._adset.done++; } else { n.prog++; n._adset.prog++; }
               if (isNew) { n.newO++; n._adset.newO++; }
+              if (oOpt) { n.act_opt++; n._adset.act_opt++; } else { n.act_retail++; n._adset.act_retail++; }
             }
           }
         }
@@ -840,6 +842,7 @@ async function handleCampaigns(req, res, supabase) {
       name: n.name, done: n.done, progress: n.prog, cancelled: n.canc,
       orders: n.done + n.prog, revenue: Math.round(n.rev), new_orders: n.newO,
       revenue_opt: ro, revenue_retail: rr,
+      orders_opt: n.act_opt || 0, orders_retail: n.act_retail || 0,
       opt_share: (ro + rr) > 0 ? Math.round(100 * ro / (ro + rr)) : null,
     }, extra || {}, metric(n.spend, n.impr, n.clicks, n.done + n.prog, n.rev, n.newO));
   };
@@ -879,12 +882,13 @@ async function handleCampaigns(req, res, supabase) {
   const go = otherRow(gOther, null); if (go) gCampaigns.push(go);
 
   function channelTotals(camps) {
-    let spend = 0, impr = 0, clicks = 0, done = 0, prog = 0, canc = 0, rev = 0, nw = 0, rOpt = 0, rRet = 0;
-    for (const c of camps) { spend += c.spend; impr += c.impressions; clicks += c.clicks; done += c.done; prog += c.progress; canc += c.cancelled; rev += c.revenue; nw += c.new_orders; rOpt += c.revenue_opt || 0; rRet += c.revenue_retail || 0; }
+    let spend = 0, impr = 0, clicks = 0, done = 0, prog = 0, canc = 0, rev = 0, nw = 0, rOpt = 0, rRet = 0, oOpt = 0, oRet = 0;
+    for (const c of camps) { spend += c.spend; impr += c.impressions; clicks += c.clicks; done += c.done; prog += c.progress; canc += c.cancelled; rev += c.revenue; nw += c.new_orders; rOpt += c.revenue_opt || 0; rRet += c.revenue_retail || 0; oOpt += c.orders_opt || 0; oRet += c.orders_retail || 0; }
     const active = done + prog;
     return Object.assign({
       done, progress: prog, cancelled: canc, orders: active, revenue: rev, new_orders: nw,
-      revenue_opt: rOpt, revenue_retail: rRet, opt_share: (rOpt + rRet) > 0 ? Math.round(100 * rOpt / (rOpt + rRet)) : null,
+      revenue_opt: rOpt, revenue_retail: rRet, orders_opt: oOpt, orders_retail: oRet,
+      opt_share: (rOpt + rRet) > 0 ? Math.round(100 * rOpt / (rOpt + rRet)) : null,
     }, metric(spend, impr, clicks, active, rev, nw));
   }
 

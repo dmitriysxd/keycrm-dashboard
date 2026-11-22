@@ -2191,8 +2191,8 @@ function renderMarketingView() {
       <td class="mono hd-pos">${fmt(c.new_orders)}</td>
       <td class="mono" style="color:var(--hd-sky)">${fmt(c.repeat_orders)}</td>
       <td class="mono">${fmtMoney(c.revenue)}</td>
-      <td class="mono hd-pos">${fmtMoney(c.revenue_opt||0)} <span class="hd-dim" style="font-size:11px">· ${c.opt_share!=null?c.opt_share:0}%</span></td>
-      <td class="mono hd-dim">${fmtMoney(c.revenue_retail||0)}</td>
+      <td class="mono hd-pos">${fmtMoney(c.revenue_opt||0)} <span class="hd-dim" style="font-size:11px">· ${fmt(c.orders_opt||0)} зам · ${c.opt_share!=null?c.opt_share:0}%</span></td>
+      <td class="mono hd-dim">${fmtMoney(c.revenue_retail||0)} <span style="font-size:11px">· ${fmt(c.orders_retail||0)} зам</span></td>
       <td class="mono hd-dim">${share}%</td>
       <td class="mono">${fmtMoney(c.aov)}</td>
       <td class="mono">${costCell}</td>
@@ -2229,8 +2229,8 @@ function renderMarketingView() {
 
     <div class="hd-kpis">
       <div class="hd-kpi"><div class="hd-kpi-l">Виручка</div><div class="hd-kpi-v mono">${fmtMoney(totRev)}</div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">З них опт <span class="hd-dim">· ${t.opt_share!=null?t.opt_share:0}%</span></div><div class="hd-kpi-v mono hd-pos">${fmtMoney(t.revenue_opt||0)}</div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">Розниця</div><div class="hd-kpi-v mono">${fmtMoney(t.revenue_retail||0)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">З них опт <span class="hd-dim">· ${t.opt_share!=null?t.opt_share:0}%</span></div><div class="hd-kpi-v mono hd-pos">${fmtMoney(t.revenue_opt||0)} <span class="hd-dim" style="font-size:12px">· ${fmt(t.orders_opt||0)} зам</span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Розниця</div><div class="hd-kpi-v mono">${fmtMoney(t.revenue_retail||0)} <span class="hd-dim" style="font-size:12px">· ${fmt(t.orders_retail||0)} зам</span></div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Замовлення · Нові / Повт.</div><div class="hd-kpi-v mono">${fmt((t.done||0)+(t.progress||0))} <span class="hd-kpi-x"><span class="hd-pos">${fmt(t.new_orders||0)}</span> / <span style="color:var(--hd-sky)">${fmt(t.repeat_orders||0)}</span></span></div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Виконані</div><div class="hd-kpi-v mono">${fmt(t.done||0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">В роботі</div><div class="hd-kpi-v mono" style="color:var(--hd-warn)">${fmt(t.progress||0)}</div></div>
@@ -2246,7 +2246,7 @@ function renderMarketingView() {
       <div class="hd-tw">
         <table class="hd-table">
           <thead><tr>
-            <th class="hd-l">Канал</th><th>Виконані</th><th>В роботі</th><th>Скасов.</th><th>Нові</th><th>Повт.</th><th>Виручка</th><th>Опт ₴·%</th><th>Розниця ₴</th><th>Частка</th><th>Серед. чек</th><th>Витрати</th><th>ROAS</th><th>CPS</th><th>CAC</th>
+            <th class="hd-l">Канал</th><th>Виконані</th><th>В роботі</th><th>Скасов.</th><th>Нові</th><th>Повт.</th><th>Виручка</th><th>Опт ₴·зам·%</th><th>Розниця ₴·зам</th><th>Частка</th><th>Серед. чек</th><th>Витрати</th><th>ROAS</th><th>CPS</th><th>CAC</th>
           </tr></thead>
           <tbody>${chanRows}</tbody>
         </table>
@@ -2361,8 +2361,8 @@ function renderCampaignsView() {
       <td class="mono hd-dim">${c.ctr != null ? c.ctr + '%' : '—'}</td>
       <td class="mono">${fmt(c.orders)}</td>
       <td class="mono">${fmtMoney(c.revenue)}</td>
-      <td class="mono hd-pos">${c.revenue_opt ? fmtMoney(c.revenue_opt) : '<span class="hd-dim">—</span>'}${c.opt_share != null ? ` <span class="hd-dim" style="font-size:11px">· ${c.opt_share}%</span>` : ''}</td>
-      <td class="mono hd-dim">${c.revenue_retail ? fmtMoney(c.revenue_retail) : '—'}</td>
+      <td class="mono hd-pos">${c.revenue_opt ? fmtMoney(c.revenue_opt) : '<span class="hd-dim">—</span>'}<span class="hd-dim" style="font-size:11px">${c.orders_opt ? ` · ${fmt(c.orders_opt)} зам` : ''}${c.opt_share != null ? ` · ${c.opt_share}%` : ''}</span></td>
+      <td class="mono hd-dim">${c.revenue_retail ? fmtMoney(c.revenue_retail) : '—'}${c.orders_retail ? ` <span style="font-size:11px">· ${fmt(c.orders_retail)} зам</span>` : ''}</td>
       <td class="mono">${adsRoas(c.roas)}</td>
       <td class="mono">${c.cps != null ? fmtMoney(c.cps) : '<span class="hd-dim">—</span>'}</td>
       <td class="mono">${c.cac != null ? fmtMoney(c.cac) : '<span class="hd-dim">—</span>'}</td>
@@ -2394,7 +2394,7 @@ function renderCampaignsView() {
       <td class="mono">${fmtMoney(tt.spend)}</td><td class="mono hd-dim">${adsNum(tt.impressions)}</td><td class="mono hd-dim">${adsNum(tt.clicks)}</td>
       <td class="mono hd-dim">${tt.cpm != null ? fmt(tt.cpm) : '—'}</td><td class="mono hd-dim">${tt.ctr != null ? tt.ctr + '%' : '—'}</td>
       <td class="mono">${fmt(tt.orders)}</td><td class="mono">${fmtMoney(tt.revenue)}</td>
-      <td class="mono hd-pos">${tt.revenue_opt ? fmtMoney(tt.revenue_opt) : '—'}${tt.opt_share != null ? ` · ${tt.opt_share}%` : ''}</td><td class="mono hd-dim">${tt.revenue_retail ? fmtMoney(tt.revenue_retail) : '—'}</td>
+      <td class="mono hd-pos">${tt.revenue_opt ? fmtMoney(tt.revenue_opt) : '—'}${tt.orders_opt ? ` · ${fmt(tt.orders_opt)} зам` : ''}${tt.opt_share != null ? ` · ${tt.opt_share}%` : ''}</td><td class="mono hd-dim">${tt.revenue_retail ? fmtMoney(tt.revenue_retail) : '—'}${tt.orders_retail ? ` · ${fmt(tt.orders_retail)} зам` : ''}</td>
       <td class="mono">${adsRoas(tt.roas)}</td><td class="mono">${tt.cps != null ? fmtMoney(tt.cps) : '—'}</td><td class="mono">${tt.cac != null ? fmtMoney(tt.cac) : '—'}</td>
     </tr>` : '';
     const dot = ch.channel === 'Meta Ads' ? 'var(--hd-accent)' : 'var(--hd-warn)';
@@ -2404,7 +2404,7 @@ function renderCampaignsView() {
       <div class="hd-card-h"><span class="ads-dot" style="background:${dot}"></span>${ch.channel}
         <span class="hd-hint">— ${cmp.length} кампаній · ${note}${hint}</span></div>
       <div class="hd-tw"><table class="hd-table">
-        <thead><tr><th class="hd-l">Кампанія / Група / Оголошення</th><th>Витрати</th><th>Покази</th><th>Кліки</th><th>CPM</th><th>CTR</th><th>Замовл.</th><th>Виручка</th><th>Опт ₴·%</th><th>Розниця ₴</th><th>ROAS</th><th>CPS</th><th>CAC</th></tr></thead>
+        <thead><tr><th class="hd-l">Кампанія / Група / Оголошення</th><th>Витрати</th><th>Покази</th><th>Кліки</th><th>CPM</th><th>CTR</th><th>Замовл.</th><th>Виручка</th><th>Опт ₴·зам·%</th><th>Розниця ₴·зам</th><th>ROAS</th><th>CPS</th><th>CAC</th></tr></thead>
         <tbody>${body}${totRow}</tbody>
       </table></div>
     </div>`;
@@ -2429,8 +2429,8 @@ function renderCampaignsView() {
     <div class="hd-kpis">
       <div class="hd-kpi"><div class="hd-kpi-l">Витрати</div><div class="hd-kpi-v mono">${fmtMoney(t.spend || 0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Виручка</div><div class="hd-kpi-v mono">${fmtMoney(t.revenue || 0)}</div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">З них опт <span class="hd-dim">· ${t.opt_share != null ? t.opt_share : 0}%</span></div><div class="hd-kpi-v mono hd-pos">${fmtMoney(t.revenue_opt || 0)}</div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">Розниця</div><div class="hd-kpi-v mono">${fmtMoney(t.revenue_retail || 0)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">З них опт <span class="hd-dim">· ${t.opt_share != null ? t.opt_share : 0}%</span></div><div class="hd-kpi-v mono hd-pos">${fmtMoney(t.revenue_opt || 0)} <span class="hd-dim" style="font-size:12px">· ${fmt(t.orders_opt||0)} зам</span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Розниця</div><div class="hd-kpi-v mono">${fmtMoney(t.revenue_retail || 0)} <span class="hd-dim" style="font-size:12px">· ${fmt(t.orders_retail||0)} зам</span></div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">ROAS</div><div class="hd-kpi-v mono">${adsRoas(t.roas)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Замовлення</div><div class="hd-kpi-v mono">${fmt(t.orders || 0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">CPS · ціна замовл.</div><div class="hd-kpi-v mono">${t.cps != null ? fmtMoney(t.cps) : '—'}</div></div>
