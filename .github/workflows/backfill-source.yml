@@ -25,7 +25,7 @@ on:
       max_iterations:
         description: 'Макс кількість ітерацій (= виклики до 50s кожен)'
         required: false
-        default: '30'
+        default: '200'
       with_cost:
         description: 'Заливати line_cost (собівартість) теж? true для бекфілу 2025'
         required: false
