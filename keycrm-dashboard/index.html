@@ -2208,12 +2208,14 @@ function renderMarketingView() {
 
   // First-touch LTV
   const ftCov = d.first_touch_coverage || { matched_buyers: 0, total_buyers: 0 };
+  const ltvCacCell = (v) => { if (v == null) return '<span class="hd-dim">—</span>'; if (v >= 3) return `<span class="hd-pos">${v}×</span>`; if (v >= 1) return `<span style="color:var(--hd-warn)">${v}×</span>`; return `<span class="hd-neg">${v}×</span>`; };
   const ftRows = (d.first_touch || []).map(f => `<tr>
       <td class="hd-l">${f.channel}</td>
-      <td class="mono">${fmt(f.buyers)}</td>
-      <td class="mono">${fmtMoney(f.ltv_total)}</td>
-      <td class="mono">${fmtMoney(f.ltv_avg)}</td>
-    </tr>`).join('') || `<tr><td colspan="4" class="hd-empty">Немає даних</td></tr>`;
+      <td class="mono">${fmt(f.buyers)} <span class="hd-dim" style="font-size:11px">· опт ${fmt(f.buyers_opt||0)} / розн ${fmt(f.buyers_retail||0)}</span></td>
+      <td class="mono">${fmtMoney(f.ltv_avg)} <span class="hd-dim" style="font-size:11px">· опт ${fmtMoney(f.ltv_avg_opt||0)} / розн ${fmtMoney(f.ltv_avg_retail||0)}</span></td>
+      <td class="mono">${f.cac != null ? fmtMoney(f.cac) : '<span class="hd-dim">—</span>'}</td>
+      <td class="mono">${ltvCacCell(f.ltv_cac)}</td>
+    </tr>`).join('') || `<tr><td colspan="5" class="hd-empty">Немає даних</td></tr>`;
 
   const addChannelOpts = MKT_KNOWN_CHANNELS.map(c => `<option value="${c}">${c}</option>`).join('');
 
@@ -2264,13 +2266,14 @@ function renderMarketingView() {
     </div>
 
     <div class="hd-card">
-      <div class="hd-card-h">Привлечення · LTV по каналах першого дотику <span class="hd-hint">— хто реально привів клієнта · покриття ${fmt(ftCov.matched_buyers)}/${fmt(ftCov.total_buyers)}</span></div>
+      <div class="hd-card-h">Привлечення · LTV у прибутку по каналах першого дотику <span class="hd-hint">— хто реально привів клієнта · LTV = валовий прибуток за ВСЮ історію ÷ клієнтів · CAC = розхід за період ÷ нові · покриття first-touch ${fmt(ftCov.matched_buyers)}/${fmt(ftCov.total_buyers)}</span></div>
       <div class="hd-tw">
         <table class="hd-table">
-          <thead><tr><th class="hd-l">Канал привлечення</th><th>Клієнтів</th><th>LTV сума</th><th>LTV середній</th></tr></thead>
+          <thead><tr><th class="hd-l">Канал привлечення</th><th>Клієнтів (опт/розн)</th><th>LTV прибуток/клієнт (опт·розн)</th><th>CAC</th><th>LTV:CAC</th></tr></thead>
           <tbody>${ftRows}</tbody>
         </table>
       </div>
+      <div class="hd-note"><b>LTV</b> — валовий прибуток (виручка − собівартість), що клієнт приніс за ВСЮ історію, у середньому на клієнта. <b>LTV:CAC</b> — у скільки разів клієнт окупає вартість свого залучення: 🟢 ≥3 (чудово, можна масштабувати залучення), 🟡 1–3 (працює, але впритул), 🔴 &lt;1 (залучення в збиток). Опт купує повторно → LTV вищий; розниця часто разова. Увага: LTV рахується за ВСЮ історію клієнта, а CAC — за вибраний період, тож співвідношення орієнтовне (для зрілих каналів — показове). Покриття first-touch ще неповне (скрипт встановлено недавно) — для «холодних» каналів цифри занижені.</div>
     </div>
   </div>`;
 }
