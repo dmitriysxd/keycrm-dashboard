@@ -445,12 +445,18 @@ async function handleMarketing(req, res, supabase) {
   const chan = new Map();
   function bucket(ch) {
     let b = chan.get(ch);
-    if (!b) { b = { channel: ch, done: 0, prog: 0, canc: 0, revenue: 0, newO: 0, repO: 0, buyers: new Set() }; chan.set(ch, b); }
+    if (!b) {
+      b = { channel: ch, done: 0, prog: 0, canc: 0, revenue: 0, newO: 0, repO: 0, buyers: new Set(),
+            // розріз опт/розниця (виручка й активні заказы) — розхід ОДИН на обидва
+            rev_opt: 0, rev_retail: 0, act_opt: 0, act_retail: 0, new_opt: 0, new_retail: 0 };
+      chan.set(ch, b);
+    }
     return b;
   }
 
   const monthsSet = new Set();
   let tDone = 0, tProg = 0, tCanc = 0, tRev = 0, tNew = 0, tRep = 0;
+  let tRevOpt = 0, tRevRetail = 0, tActOpt = 0, tActRetail = 0, tNewOpt = 0, tNewRetail = 0;
   for (const o of orderList) {
     const m = ymKey(o.ordered_at);
     if (m) monthsSet.add(m);
@@ -468,6 +474,15 @@ async function handleMarketing(req, res, supabase) {
     if (o.buyer_id) b.buyers.add(o.buyer_id);
     const isNew = !o.buyer_id ? true : (o.ordered_at === firstActiveAt.get(o.buyer_id));
     if (isNew) { b.newO++; tNew++; } else { b.repO++; tRep++; }
+    // Розріз опт/розниця (системні вже відсіяні inSegment). Опт = client_type "опт".
+    const isOpt = o.buyer_id && typeMap.get(o.buyer_id) === "опт";
+    if (isOpt) {
+      b.rev_opt += o.revenue; b.act_opt++; tRevOpt += o.revenue; tActOpt++;
+      if (isNew) { b.new_opt++; tNewOpt++; }
+    } else {
+      b.rev_retail += o.revenue; b.act_retail++; tRevRetail += o.revenue; tActRetail++;
+      if (isNew) { b.new_retail++; tNewRetail++; }
+    }
   }
 
   const costMap = new Map();
@@ -504,12 +519,19 @@ async function handleMarketing(req, res, supabase) {
   }
   function buildChannel(b, s) {
     const active = b.done + b.prog;
+    const revSeg = b.rev_opt + b.rev_retail;
     return {
       channel: b.channel,
       done: b.done, progress: b.prog, cancelled: b.canc,
       new_orders: b.newO, repeat_orders: b.repO,
       revenue: Math.round(b.revenue), buyers: b.buyers.size,
       aov: active ? Math.round(b.revenue / active) : 0,
+      // Розріз опт/розниця: виручка й активні заказы (розхід ОДИН на обидва).
+      revenue_opt: Math.round(b.rev_opt), revenue_retail: Math.round(b.rev_retail),
+      orders_opt: b.act_opt, orders_retail: b.act_retail,
+      opt_share: revSeg > 0 ? Math.round(100 * b.rev_opt / revSeg) : null,
+      roas_opt: s.cost > 0 ? +(b.rev_opt / s.cost).toFixed(2) : null,
+      roas_retail: s.cost > 0 ? +(b.rev_retail / s.cost).toFixed(2) : null,
       cost: Math.round(s.cost), auto_cost: s.auto,
       impressions: s.impr, clicks: s.clicks,
       cpm: s.impr > 0 ? +(s.cost / s.impr * 1000).toFixed(2) : null,
@@ -537,7 +559,10 @@ async function handleMarketing(req, res, supabase) {
     if (s.cost <= 0) continue;
     channels.push({
       channel: ch, done: 0, progress: 0, cancelled: 0, new_orders: 0, repeat_orders: 0,
-      revenue: 0, buyers: 0, aov: 0, cost: Math.round(s.cost), auto_cost: s.auto,
+      revenue: 0, buyers: 0, aov: 0,
+      revenue_opt: 0, revenue_retail: 0, orders_opt: 0, orders_retail: 0, opt_share: null,
+      roas_opt: null, roas_retail: null,
+      cost: Math.round(s.cost), auto_cost: s.auto,
       impressions: s.impr, clicks: s.clicks,
       cpm: s.impr > 0 ? +(s.cost / s.impr * 1000).toFixed(2) : null,
       ctr: s.impr > 0 ? +(s.clicks / s.impr * 100).toFixed(2) : null,
@@ -574,7 +599,13 @@ async function handleMarketing(req, res, supabase) {
     totals: {
       done: tDone, progress: tProg, cancelled: tCanc,
       revenue: Math.round(tRev), new_orders: tNew, repeat_orders: tRep,
+      revenue_opt: Math.round(tRevOpt), revenue_retail: Math.round(tRevRetail),
+      orders_opt: tActOpt, orders_retail: tActRetail,
+      opt_share: (tRevOpt + tRevRetail) > 0 ? Math.round(100 * tRevOpt / (tRevOpt + tRevRetail)) : null,
+      new_opt: tNewOpt, new_retail: tNewRetail,
       cost: Math.round(totCost), roas: totCost > 0 ? +(tRev / totCost).toFixed(2) : null,
+      roas_opt: totCost > 0 ? +(tRevOpt / totCost).toFixed(2) : null,
+      roas_retail: totCost > 0 ? +(tRevRetail / totCost).toFixed(2) : null,
       cps: (totCost > 0 && (tDone + tProg) > 0) ? Math.round(totCost / (tDone + tProg)) : null,
       cac: (totCost > 0 && tNew > 0) ? Math.round(totCost / tNew) : null,
     },
@@ -693,7 +724,7 @@ async function handleCampaigns(req, res, supabase) {
   const campLookup = new Map();  // normCampName -> campNode
   const adLookup = new Map();    // normCampName+SEP+normAdName -> [adNode] (fallback по імені)
   const adById = new Map();      // ad_id -> adNode (точний матч, коли utm_content={{ad.id}})
-  const rz = () => ({ rev: 0, done: 0, prog: 0, canc: 0, newO: 0 });
+  const rz = () => ({ rev: 0, done: 0, prog: 0, canc: 0, newO: 0, rev_opt: 0, rev_retail: 0 });
   for (const r of (metaAdRows || [])) {
     if (hasRange && (!r.date || r.date < from || r.date > to)) continue;
     const sp = parseFloat(r.spend_uah != null ? r.spend_uah : (r.spend || 0)) || 0;
@@ -729,12 +760,14 @@ async function handleCampaigns(req, res, supabase) {
   }
 
   // Виручка з заказів → у дерево по іменах (ad.name, інакше campaign.name).
+  const isOptOrder = (o) => !!(o.buyer_id && typeMap.get(o.buyer_id) === "опт");
   function addRev(node, o, isNew) {
     if (!node) return;
     if (o.grp === "cancelled") { node.canc++; return; }
     if (o.grp === "done") node.done++; else node.prog++;
     node.rev += o.revenue;
     if (isNew) node.newO++;
+    if (isOptOrder(o)) node.rev_opt += o.revenue; else node.rev_retail += o.revenue;
   }
   // Хвіст: виручка каналу, яку не прив'язати до кампанії (стара розмітка lama,
   // google без cid, старі fb/ig). Щоб сума по каналу сходилась із «загальним».
@@ -758,9 +791,15 @@ async function handleCampaigns(req, res, supabase) {
         addRev(arr[0]._camp, o, isNew);
         let top = arr[0]; for (const n of arr) if (n.spend > top.spend) top = n;
         const total = arr.reduce((s, n) => s + n.spend, 0);
+        const oOpt = isOptOrder(o);
         for (const n of arr) {
           const share = total > 0 ? n.spend / total : 1 / arr.length;
-          if (o.grp !== "cancelled") { n.rev += o.revenue * share; n._adset.rev += o.revenue * share; }
+          if (o.grp !== "cancelled") {
+            const rPart = o.revenue * share;
+            n.rev += rPart; n._adset.rev += rPart;
+            if (oOpt) { n.rev_opt += rPart; n._adset.rev_opt += rPart; }
+            else { n.rev_retail += rPart; n._adset.rev_retail += rPart; }
+          }
           if (n === top) {
             if (o.grp === "cancelled") { n.canc++; n._adset.canc++; }
             else {
@@ -795,10 +834,15 @@ async function handleCampaigns(req, res, supabase) {
   // Показуємо лише активні (spend>0) або ті, що принесли конверсії (active>0).
   const keep = (spend, active) => spend > 0 || active > 0;
   const bySpend = (a, b) => b.spend - a.spend || b.revenue - a.revenue;
-  const node2row = (n, extra) => Object.assign({
-    name: n.name, done: n.done, progress: n.prog, cancelled: n.canc,
-    orders: n.done + n.prog, revenue: Math.round(n.rev), new_orders: n.newO,
-  }, extra || {}, metric(n.spend, n.impr, n.clicks, n.done + n.prog, n.rev, n.newO));
+  const node2row = (n, extra) => {
+    const ro = Math.round(n.rev_opt || 0), rr = Math.round(n.rev_retail || 0);
+    return Object.assign({
+      name: n.name, done: n.done, progress: n.prog, cancelled: n.canc,
+      orders: n.done + n.prog, revenue: Math.round(n.rev), new_orders: n.newO,
+      revenue_opt: ro, revenue_retail: rr,
+      opt_share: (ro + rr) > 0 ? Math.round(100 * ro / (ro + rr)) : null,
+    }, extra || {}, metric(n.spend, n.impr, n.clicks, n.done + n.prog, n.rev, n.newO));
+  };
 
   const metaCampaigns = [];
   for (const cn of mTree.values()) {
@@ -835,10 +879,13 @@ async function handleCampaigns(req, res, supabase) {
   const go = otherRow(gOther, null); if (go) gCampaigns.push(go);
 
   function channelTotals(camps) {
-    let spend = 0, impr = 0, clicks = 0, done = 0, prog = 0, canc = 0, rev = 0, nw = 0;
-    for (const c of camps) { spend += c.spend; impr += c.impressions; clicks += c.clicks; done += c.done; prog += c.progress; canc += c.cancelled; rev += c.revenue; nw += c.new_orders; }
+    let spend = 0, impr = 0, clicks = 0, done = 0, prog = 0, canc = 0, rev = 0, nw = 0, rOpt = 0, rRet = 0;
+    for (const c of camps) { spend += c.spend; impr += c.impressions; clicks += c.clicks; done += c.done; prog += c.progress; canc += c.cancelled; rev += c.revenue; nw += c.new_orders; rOpt += c.revenue_opt || 0; rRet += c.revenue_retail || 0; }
     const active = done + prog;
-    return Object.assign({ done, progress: prog, cancelled: canc, orders: active, revenue: rev, new_orders: nw }, metric(spend, impr, clicks, active, rev, nw));
+    return Object.assign({
+      done, progress: prog, cancelled: canc, orders: active, revenue: rev, new_orders: nw,
+      revenue_opt: rOpt, revenue_retail: rRet, opt_share: (rOpt + rRet) > 0 ? Math.round(100 * rOpt / (rOpt + rRet)) : null,
+    }, metric(spend, impr, clicks, active, rev, nw));
   }
 
   const channels = [
