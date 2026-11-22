@@ -2225,7 +2225,6 @@ function renderMarketingView() {
         <div class="hd-sub">лише сайт bijboom-opt.com.ua · ${mktRangeLabel()} · ${fmt((t.done||0)+(t.progress||0))} активних (без скасованих) · last-touch</div>
       </div>
       <div class="hd-filters">
-        <div class="hd-seg">${seg('all','Усі')}${seg('opt','Опт')}${seg('retail','Роздріб')}</div>
         <button class="hd-btn" onclick="renderMarketingPage()">↺</button>
       </div>
     </div>
@@ -2438,7 +2437,7 @@ function renderCampaignsView() {
         <div class="hd-h1">Реклама — кампанії</div>
         <div class="hd-sub">Meta Ads + Google Ads · ${(ADS_FROM && ADS_TO) ? (mktDMY(ADS_FROM) + ' – ' + mktDMY(ADS_TO)) : 'Увесь час'} · ROAS/CPS лише по розмічених заказах</div>
       </div>
-      <div class="hd-filters"><div class="hd-seg">${seg('all', 'Усі')}${seg('opt', 'Опт')}${seg('retail', 'Роздріб')}</div>
+      <div class="hd-filters">
         <button class="hd-btn" onclick="renderCampaignsPage()">↺</button></div>
     </div>
     <div class="hd-daterow">
