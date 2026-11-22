@@ -80,74 +80,23 @@ async function handleTrends(req, res, supabase) {
     return res.status(400).json({ error: "bucket must be week|month|year" });
   }
 
-  // Виключаємо роздрібних клієнтів — сторінка про опт-бізнес.
-  const wholesaleBuyers = await fetchAll(() =>
-    supabase.from("buyers").select("buyer_id").eq("is_wholesale", true)
-  );
-  const wholesaleSet = new Set(wholesaleBuyers.map(b => b.buyer_id));
+  // Агрегація в БД (RPC trends_series) — швидко й стійко під навантаженням.
+  // Логіка та фільтри (опт-клієнти, виключені статуси, gamijok) — у міграції 069.
+  const { data, error } = await supabase.rpc("trends_series", { _bucket: bucket });
+  if (error) return res.status(500).json({ error: error.message });
 
-  // Беремо grand_total з sales (як в /api/clients) — це сума замовлення з
-  // урахуванням знижок. Group by order_id робимо вже у Node, бо sales —
-  // рядки замовлень.
-  const since = new Date();
-  since.setUTCFullYear(since.getUTCFullYear() - 2); // 2 роки історії — достатньо
+  const series = (data || [])
+    .map(r => ({
+      bucket: r.bucket,
+      orders: Number(r.orders) || 0,
+      buyers: Number(r.buyers) || 0,
+      revenue: Math.round(Number(r.revenue) || 0),
+      aov: Number(r.aov) || 0,
+    }))
+    .sort((a, b) => (a.bucket < b.bucket ? -1 : 1));
 
-  const rows = await fetchAll(() =>
-    supabase
-      .from("sales")
-      .select("order_id, ordered_at, revenue, buyer_id, order_status, order_grand_total, source_name")
-      .gte("ordered_at", since.toISOString())
-      .eq("source_name", "bijboom-opt.com.ua") // не рахуємо другий магазин gamijok.com.ua
-  );
-
-  // Дедуплікуємо по order_id, бо grand_total — на замовлення.
-  const seenOrders = new Map();
-  for (const r of rows) {
-    if (isExcluded(r.order_status)) continue;
-    // Виключаємо другий магазин gamijok.com.ua. NULL source (стара історія до
-    // бекфілу джерела) лишаємо — це переважно bijboom.
-    if (r.source_name === "gamijok.com.ua") continue;
-    if (!r.ordered_at) continue;
-    // Фільтр по опт-клієнтах. Замовлення без buyer_id (анонімні / тільки що
-    // створені) виключаємо — статистика опт-бізнесу.
-    if (!r.buyer_id || !wholesaleSet.has(r.buyer_id)) continue;
-    if (!seenOrders.has(r.order_id)) {
-      seenOrders.set(r.order_id, {
-        ordered_at: r.ordered_at,
-        revenue: r.order_grand_total != null ? parseFloat(r.order_grand_total) : 0,
-        buyer_id: r.buyer_id,
-        has_grand_total: r.order_grand_total != null,
-        line_revenue: 0,
-      });
-    }
-    // Fallback: якщо grand_total NULL — сумуємо line-revenue.
-    if (r.order_grand_total == null) {
-      const o = seenOrders.get(r.order_id);
-      o.line_revenue += r.revenue != null ? parseFloat(r.revenue) : 0;
-    }
-  }
-
-  const buckets = new Map(); // key → { orders: Set, buyers: Set, revenue: number }
-  for (const [orderId, o] of seenOrders) {
-    const key = bucketKey(o.ordered_at, bucket);
-    if (!buckets.has(key)) buckets.set(key, { orders: 0, buyers: new Set(), revenue: 0 });
-    const b = buckets.get(key);
-    b.orders += 1;
-    if (o.buyer_id) b.buyers.add(o.buyer_id);
-    b.revenue += o.has_grand_total ? o.revenue : o.line_revenue;
-  }
-
-  const series = Array.from(buckets.entries())
-    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-    .map(([key, b]) => ({
-      bucket: key,
-      orders: b.orders,
-      buyers: b.buyers.size,
-      revenue: Math.round(b.revenue),
-      aov: b.orders > 0 ? Math.round(b.revenue / b.orders) : 0,
-    }));
-
-  return res.status(200).json({ bucket, series, total_orders: seenOrders.size });
+  const total_orders = series.reduce((sum, b) => sum + b.orders, 0);
+  return res.status(200).json({ bucket, series, total_orders });
 }
 
 async function handleCohorts(req, res, supabase) {
@@ -155,77 +104,35 @@ async function handleCohorts(req, res, supabase) {
   const periodParam = (req.query && req.query.months) || "24";
   const periodMonths = periodParam === "all" ? null : parseInt(periodParam);
 
-  // Тільки опт-клієнти (як на сторінці клієнтів).
-  const buyers = await fetchAll(() =>
-    supabase.from("buyers").select("buyer_id").eq("is_wholesale", true)
-  );
-  const wholesaleSet = new Set(buyers.map(b => b.buyer_id));
+  // Агрегація в БД (RPC cohort_retention) — повертає «довгий» формат
+  // (cohort, month_after, size, active). Заповнення нулів і обрізання до
+  // останніх N когорт лишаємо у Node (легко, рядків мало).
+  const { data, error } = await supabase.rpc("cohort_retention", { _months: periodMonths });
+  if (error) return res.status(500).json({ error: error.message });
 
-  // Завантажуємо продажі з buyer_id. Якщо обрано period — обмежуємо вікно.
-  const since = new Date();
-  if (periodMonths) {
-    // +12 міс запасу щоб поміряти retention для самих ранніх когорт
-    since.setUTCMonth(since.getUTCMonth() - periodMonths - 12);
-  } else {
-    since.setUTCFullYear(since.getUTCFullYear() - 5);
-  }
-  const sales = await fetchAll(() =>
-    supabase
-      .from("sales")
-      .select("buyer_id, ordered_at, order_status, order_id, source_name")
-      .gte("ordered_at", since.toISOString())
-      .not("buyer_id", "is", null)
-      .eq("source_name", "bijboom-opt.com.ua") // не рахуємо другий магазин gamijok.com.ua
-  );
-
-  // Дедуплікуємо: один рядок на buyer × month активності.
-  const buyerFirst = new Map(); // buyer_id → first month
-  const activity = new Map();   // buyer_id → Set<month>
-
-  for (const r of sales) {
-    if (isExcluded(r.order_status)) continue;
-    // Виключаємо другий магазин gamijok.com.ua; NULL source (стара історія) лишаємо.
-    if (r.source_name === "gamijok.com.ua") continue;
-    if (!wholesaleSet.has(r.buyer_id)) continue;
-    const m = (r.ordered_at || "").slice(0, 7); // YYYY-MM
-    if (!m) continue;
-    if (!activity.has(r.buyer_id)) activity.set(r.buyer_id, new Set());
-    activity.get(r.buyer_id).add(m);
-    const prev = buyerFirst.get(r.buyer_id);
-    if (!prev || m < prev) buyerFirst.set(r.buyer_id, m);
+  const byCohort = new Map(); // cohort → { size, active: Map<month_after, active> }
+  for (const r of (data || [])) {
+    const c = r.cohort;
+    if (!byCohort.has(c)) byCohort.set(c, { size: Number(r.size) || 0, active: new Map() });
+    byCohort.get(c).active.set(Number(r.month_after), Number(r.active) || 0);
   }
 
-  // Будуємо когорти.
-  // cohort_size[YYYY-MM] = скільки buyer'ів першого разу купили у цьому місяці.
-  // matrix[cohort][monthsAfter] = скільки з тих buyer'ів активні через X місяців.
-  const cohortSize = new Map();
-  const matrix = new Map();
+  const nowMonth = new Date().toISOString().slice(0, 7);
+  const cohortKeys = Array.from(byCohort.keys()).sort();
+  const maxMonths = cohortKeys.length ? monthDiff(cohortKeys[0], nowMonth) : 0;
+  let total_buyers = 0;
+  for (const c of cohortKeys) total_buyers += byCohort.get(c).size;
 
-  for (const [buyerId, firstMonth] of buyerFirst) {
-    cohortSize.set(firstMonth, (cohortSize.get(firstMonth) || 0) + 1);
-    const acts = activity.get(buyerId);
-    if (!acts) continue;
-    for (const m of acts) {
-      const monthsAfter = monthDiff(firstMonth, m);
-      if (monthsAfter < 0) continue;
-      const key = firstMonth + "|" + monthsAfter;
-      matrix.set(key, (matrix.get(key) || 0) + 1);
-    }
-  }
-
-  // Формат для UI: масив когорт, кожна — { cohort: 'YYYY-MM', size, retention: [{month_after, active, pct}, ...] }
-  const cohortKeys = Array.from(cohortSize.keys()).sort();
-  const maxMonths = monthDiff(cohortKeys[0] || "2000-01", new Date().toISOString().slice(0, 7));
   const out = cohortKeys.map(cohort => {
-    const size = cohortSize.get(cohort);
-    const maxMonthsForThis = monthDiff(cohort, new Date().toISOString().slice(0, 7));
+    const { size, active } = byCohort.get(cohort);
+    const maxMonthsForThis = monthDiff(cohort, nowMonth);
     const retention = [];
     for (let i = 0; i <= maxMonthsForThis; i++) {
-      const active = matrix.get(cohort + "|" + i) || 0;
+      const a = active.get(i) || 0;
       retention.push({
         month_after: i,
-        active,
-        pct: size > 0 ? Math.round((active / size) * 1000) / 10 : 0, // 1 decimal
+        active: a,
+        pct: size > 0 ? Math.round((a / size) * 1000) / 10 : 0, // 1 decimal
       });
     }
     return { cohort, size, retention };
@@ -236,7 +143,7 @@ async function handleCohorts(req, res, supabase) {
 
   return res.status(200).json({
     cohorts: trimmed,
-    total_buyers: buyerFirst.size,
+    total_buyers,
     max_months_window: maxMonths,
     period_months: periodMonths,
   });
