@@ -2158,9 +2158,10 @@ function renderMarketingView() {
   const editable = mktSingleMonth() !== null;
   const totRev = t.revenue || 0;
   const seg = (val, label) => `<button class="hd-seg-b${MKT_SEGMENT===val?' on':''}" onclick="setMktSegment('${val}')">${label}</button>`;
-  const roasCell = (v) => v == null ? '<span class="hd-dim">—</span>' : `<span class="${v>=1?'hd-pos':'hd-neg'}">${Number(v).toFixed(2)}×</span>`;
-  const roasMini = (v) => v == null ? '<span class="hd-dim">—</span>' : `<span class="${v>=1?'hd-pos':'hd-neg'}">${Number(v).toFixed(1)}×</span>`;
-  const roas3 = (tot, opt, ret) => `${roasCell(tot)} <span class="hd-dim" style="font-size:10px">заг</span><br><span style="font-size:10px">${roasMini(opt)} <span class="hd-dim">опт</span> · ${roasMini(ret)} <span class="hd-dim">розн</span></span>`;
+  const roasCell = (v, be) => v == null ? '<span class="hd-dim">—</span>' : `<span class="${(be!=null?v>=be:v>=1)?'hd-pos':'hd-neg'}">${Number(v).toFixed(2)}×</span>`;
+  const roasMini = (v, be) => v == null ? '<span class="hd-dim">—</span>' : `<span class="${(be!=null?v>=be:v>=1)?'hd-pos':'hd-neg'}">${Number(v).toFixed(1)}×</span>`;
+  const roas3 = (tot, opt, ret, beT, beO, beR) => `${roasCell(tot, beT)} <span class="hd-dim" style="font-size:10px">заг</span><br><span style="font-size:10px">${roasMini(opt, beO)} <span class="hd-dim">опт</span> · ${roasMini(ret, beR)} <span class="hd-dim">розн</span></span>`;
+  const profitCell = (c) => { const net = c.net_profit; const cls = net == null ? 'hd-dim' : (net > 0 ? 'hd-pos' : (net < 0 ? 'hd-neg' : '')); return `<div class="${cls}" style="font-weight:600">${net != null ? fmtMoney(net) : '—'}</div><div class="hd-dim" style="font-size:10px">${c.margin != null ? `маржа ${c.margin}%` : 'немає собів.'}${c.breakeven_roas != null ? ` · 0 при ${c.breakeven_roas}×` : ''}</div>${(c.gross_profit_opt != null || c.gross_profit_retail != null) ? `<div style="font-size:10px"><span class="hd-pos">${c.gross_profit_opt != null ? 'опт +' + fmtMoney(c.gross_profit_opt) : ''}</span> <span class="hd-dim">${c.gross_profit_retail != null ? 'розн +' + fmtMoney(c.gross_profit_retail) : ''}</span></div>` : ''}`; };
 
   // Верхня панель вибору дат: від/до по календарю + пресети.
   const today = mktTodayKyiv();
@@ -2198,11 +2199,12 @@ function renderMarketingView() {
       <td class="mono hd-dim">${share}%</td>
       <td class="mono">${fmtMoney(c.aov)}</td>
       <td class="mono">${costCell}</td>
-      <td class="mono">${roas3(c.roas, c.roas_opt, c.roas_retail)}</td>
+      <td class="mono">${roas3(c.roas, c.roas_opt, c.roas_retail, c.breakeven_roas, c.breakeven_roas_opt, c.breakeven_roas_retail)}</td>
       <td class="mono">${c.cps != null ? fmtMoney(c.cps) : '<span class="hd-dim">—</span>'}</td>
       <td class="mono">${c.cac != null ? fmtMoney(c.cac) : '<span class="hd-dim">—</span>'}</td>
+      <td class="mono">${profitCell(c)}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="15" class="hd-empty">Немає даних за період</td></tr>`;
+  }).join('') || `<tr><td colspan="16" class="hd-empty">Немає даних за період</td></tr>`;
 
   // First-touch LTV
   const ftCov = d.first_touch_coverage || { matched_buyers: 0, total_buyers: 0 };
@@ -2238,7 +2240,8 @@ function renderMarketingView() {
       <div class="hd-kpi"><div class="hd-kpi-l">В роботі</div><div class="hd-kpi-v mono" style="color:var(--hd-warn)">${fmt(t.progress||0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Скасовані (не враховуються)</div><div class="hd-kpi-v mono hd-neg">${fmt(t.cancelled||0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Витрати</div><div class="hd-kpi-v mono">${t.cost ? fmtMoney(t.cost) : '—'}</div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">ROAS <span class="hd-dim">заг / опт / розн</span></div><div class="hd-kpi-v mono" style="font-size:15px">${roas3(t.roas, t.roas_opt, t.roas_retail)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">ROAS <span class="hd-dim">заг / опт / розн</span></div><div class="hd-kpi-v mono" style="font-size:15px">${roas3(t.roas, t.roas_opt, t.roas_retail, t.breakeven_roas, t.breakeven_roas_opt, t.breakeven_roas_retail)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Прибуток <span class="hd-dim">${t.margin != null ? '· маржа ' + t.margin + '% · 0 при ' + (t.breakeven_roas != null ? t.breakeven_roas + '×' : '—') : ''}</span></div><div class="hd-kpi-v mono ${t.net_profit == null ? 'hd-dim' : (t.net_profit > 0 ? 'hd-pos' : 'hd-neg')}">${t.net_profit != null ? fmtMoney(t.net_profit) : '—'}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">CPS · ціна замовл.</div><div class="hd-kpi-v mono">${t.cps != null ? fmtMoney(t.cps) : '—'}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">CAC · ціна нов. клієнта</div><div class="hd-kpi-v mono">${t.cac != null ? fmtMoney(t.cac) : '—'}</div></div>
     </div>
@@ -2248,7 +2251,7 @@ function renderMarketingView() {
       <div class="hd-tw">
         <table class="hd-table">
           <thead><tr>
-            <th class="hd-l">Канал</th><th>Виконані</th><th>В роботі</th><th>Скасов.</th><th>Нові</th><th>Повт.</th><th>Виручка</th><th>Опт ₴·зам·%</th><th>Розниця ₴·зам</th><th>Частка</th><th>Серед. чек</th><th>Витрати</th><th>ROAS</th><th>CPS</th><th>CAC</th>
+            <th class="hd-l">Канал</th><th>Виконані</th><th>В роботі</th><th>Скасов.</th><th>Нові</th><th>Повт.</th><th>Виручка</th><th>Опт ₴·зам·%</th><th>Розниця ₴·зам</th><th>Частка</th><th>Серед. чек</th><th>Витрати</th><th>ROAS</th><th>CPS</th><th>CAC</th><th>Прибуток</th>
           </tr></thead>
           <tbody>${chanRows}</tbody>
         </table>
@@ -2339,9 +2342,10 @@ async function renderCampaignsPage() {
   renderCampaignsView();
 }
 
-function adsRoas(v) { return v == null ? '<span class="hd-dim">—</span>' : `<span class="${v >= 1 ? 'hd-pos' : 'hd-neg'}">${Number(v).toFixed(2)}×</span>`; }
-function adsRoasMini(v) { return v == null ? '<span class="hd-dim">—</span>' : `<span class="${v >= 1 ? 'hd-pos' : 'hd-neg'}">${Number(v).toFixed(1)}×</span>`; }
-function adsRoas3(tot, opt, ret) { return `${adsRoas(tot)} <span class="hd-dim" style="font-size:10px">заг</span><br><span style="font-size:10px">${adsRoasMini(opt)} <span class="hd-dim">опт</span> · ${adsRoasMini(ret)} <span class="hd-dim">розн</span></span>`; }
+function adsRoas(v, be) { return v == null ? '<span class="hd-dim">—</span>' : `<span class="${(be != null ? v >= be : v >= 1) ? 'hd-pos' : 'hd-neg'}">${Number(v).toFixed(2)}×</span>`; }
+function adsRoasMini(v, be) { return v == null ? '<span class="hd-dim">—</span>' : `<span class="${(be != null ? v >= be : v >= 1) ? 'hd-pos' : 'hd-neg'}">${Number(v).toFixed(1)}×</span>`; }
+function adsRoas3(tot, opt, ret, beT, beO, beR) { return `${adsRoas(tot, beT)} <span class="hd-dim" style="font-size:10px">заг</span><br><span style="font-size:10px">${adsRoasMini(opt, beO)} <span class="hd-dim">опт</span> · ${adsRoasMini(ret, beR)} <span class="hd-dim">розн</span></span>`; }
+function adsProfit(c) { const net = c.net_profit; const cls = net == null ? 'hd-dim' : (net > 0 ? 'hd-pos' : (net < 0 ? 'hd-neg' : '')); return `<div class="${cls}" style="font-weight:600">${net != null ? fmtMoney(net) : '<span class="hd-dim">—</span>'}</div><div class="hd-dim" style="font-size:10px">${c.margin != null ? `маржа ${c.margin}%` : 'немає собів.'}${c.breakeven_roas != null ? ` · 0 при ${c.breakeven_roas}×` : ''}</div>`; }
 function adsNum(v) { return v == null ? '<span class="hd-dim">—</span>' : fmt(v); }
 
 function renderCampaignsView() {
@@ -2367,9 +2371,10 @@ function renderCampaignsView() {
       <td class="mono">${fmtMoney(c.revenue)}</td>
       <td class="mono hd-pos">${c.revenue_opt ? fmtMoney(c.revenue_opt) : '<span class="hd-dim">—</span>'}<span class="hd-dim" style="font-size:11px">${c.orders_opt ? ` · ${fmt(c.orders_opt)} зам` : ''}${c.opt_share != null ? ` · ${c.opt_share}%` : ''}</span></td>
       <td class="mono hd-dim">${c.revenue_retail ? fmtMoney(c.revenue_retail) : '—'}${c.orders_retail ? ` <span style="font-size:11px">· ${fmt(c.orders_retail)} зам</span>` : ''}</td>
-      <td class="mono">${adsRoas3(c.roas, c.roas_opt, c.roas_retail)}</td>
+      <td class="mono">${adsRoas3(c.roas, c.roas_opt, c.roas_retail, c.breakeven_roas, c.breakeven_roas_opt, c.breakeven_roas_retail)}</td>
       <td class="mono">${c.cps != null ? fmtMoney(c.cps) : '<span class="hd-dim">—</span>'}</td>
       <td class="mono">${c.cac != null ? fmtMoney(c.cac) : '<span class="hd-dim">—</span>'}</td>
+      <td class="mono">${adsProfit(c)}</td>
     </tr>`;
   };
 
@@ -2391,7 +2396,7 @@ function renderCampaignsView() {
         }
       }
     }
-    if (!cmp.length) body = `<tr><td colspan="13" class="hd-empty">Немає даних за період</td></tr>`;
+    if (!cmp.length) body = `<tr><td colspan="14" class="hd-empty">Немає даних за період</td></tr>`;
     const tt = ch.totals || {};
     const totRow = cmp.length ? `<tr class="ads-tot">
       <td class="hd-l">Разом ${ch.channel}</td>
@@ -2399,7 +2404,7 @@ function renderCampaignsView() {
       <td class="mono hd-dim">${tt.cpm != null ? fmt(tt.cpm) : '—'}</td><td class="mono hd-dim">${tt.ctr != null ? tt.ctr + '%' : '—'}</td>
       <td class="mono">${fmt(tt.orders)}</td><td class="mono">${fmtMoney(tt.revenue)}</td>
       <td class="mono hd-pos">${tt.revenue_opt ? fmtMoney(tt.revenue_opt) : '—'}${tt.orders_opt ? ` · ${fmt(tt.orders_opt)} зам` : ''}${tt.opt_share != null ? ` · ${tt.opt_share}%` : ''}</td><td class="mono hd-dim">${tt.revenue_retail ? fmtMoney(tt.revenue_retail) : '—'}${tt.orders_retail ? ` · ${fmt(tt.orders_retail)} зам` : ''}</td>
-      <td class="mono">${adsRoas3(tt.roas, tt.roas_opt, tt.roas_retail)}</td><td class="mono">${tt.cps != null ? fmtMoney(tt.cps) : '—'}</td><td class="mono">${tt.cac != null ? fmtMoney(tt.cac) : '—'}</td>
+      <td class="mono">${adsRoas3(tt.roas, tt.roas_opt, tt.roas_retail, tt.breakeven_roas, tt.breakeven_roas_opt, tt.breakeven_roas_retail)}</td><td class="mono">${tt.cps != null ? fmtMoney(tt.cps) : '—'}</td><td class="mono">${tt.cac != null ? fmtMoney(tt.cac) : '—'}</td><td class="mono">${adsProfit(tt)}</td>
     </tr>` : '';
     const dot = ch.channel === 'Meta Ads' ? 'var(--hd-accent)' : 'var(--hd-warn)';
     const note = ch.from ? `дані з ${mktDMY(ch.from)}` : 'немає розмічених заказів';
@@ -2408,7 +2413,7 @@ function renderCampaignsView() {
       <div class="hd-card-h"><span class="ads-dot" style="background:${dot}"></span>${ch.channel}
         <span class="hd-hint">— ${cmp.length} кампаній · ${note}${hint}</span></div>
       <div class="hd-tw"><table class="hd-table">
-        <thead><tr><th class="hd-l">Кампанія / Група / Оголошення</th><th>Витрати</th><th>Покази</th><th>Кліки</th><th>CPM</th><th>CTR</th><th>Замовл.</th><th>Виручка</th><th>Опт ₴·зам·%</th><th>Розниця ₴·зам</th><th>ROAS</th><th>CPS</th><th>CAC</th></tr></thead>
+        <thead><tr><th class="hd-l">Кампанія / Група / Оголошення</th><th>Витрати</th><th>Покази</th><th>Кліки</th><th>CPM</th><th>CTR</th><th>Замовл.</th><th>Виручка</th><th>Опт ₴·зам·%</th><th>Розниця ₴·зам</th><th>ROAS</th><th>CPS</th><th>CAC</th><th>Прибуток</th></tr></thead>
         <tbody>${body}${totRow}</tbody>
       </table></div>
     </div>`;
@@ -2435,14 +2440,15 @@ function renderCampaignsView() {
       <div class="hd-kpi"><div class="hd-kpi-l">Виручка</div><div class="hd-kpi-v mono">${fmtMoney(t.revenue || 0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">З них опт <span class="hd-dim">· ${t.opt_share != null ? t.opt_share : 0}%</span></div><div class="hd-kpi-v mono hd-pos">${fmtMoney(t.revenue_opt || 0)} <span class="hd-dim" style="font-size:12px">· ${fmt(t.orders_opt||0)} зам</span></div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Розниця</div><div class="hd-kpi-v mono">${fmtMoney(t.revenue_retail || 0)} <span class="hd-dim" style="font-size:12px">· ${fmt(t.orders_retail||0)} зам</span></div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">ROAS <span class="hd-dim">заг / опт / розн</span></div><div class="hd-kpi-v mono" style="font-size:15px">${adsRoas3(t.roas, t.roas_opt, t.roas_retail)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">ROAS <span class="hd-dim">заг / опт / розн</span></div><div class="hd-kpi-v mono" style="font-size:15px">${adsRoas3(t.roas, t.roas_opt, t.roas_retail, t.breakeven_roas, t.breakeven_roas_opt, t.breakeven_roas_retail)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Прибуток <span class="hd-dim">${t.margin != null ? '· маржа ' + t.margin + '% · 0 при ' + (t.breakeven_roas != null ? t.breakeven_roas + '×' : '—') : ''}</span></div><div class="hd-kpi-v mono ${t.net_profit == null ? 'hd-dim' : (t.net_profit > 0 ? 'hd-pos' : 'hd-neg')}">${t.net_profit != null ? fmtMoney(t.net_profit) : '—'}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Замовлення</div><div class="hd-kpi-v mono">${fmt(t.orders || 0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">CPS · ціна замовл.</div><div class="hd-kpi-v mono">${t.cps != null ? fmtMoney(t.cps) : '—'}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">CAC · ціна нов. клієнта</div><div class="hd-kpi-v mono">${t.cac != null ? fmtMoney(t.cac) : '—'}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Нові клієнти</div><div class="hd-kpi-v mono hd-pos">${fmt(t.new_orders || 0)}</div></div>
     </div>
     ${cards}
-    <div class="hd-note">CPS = Витрати ÷ Замовлення (виконані + в роботі). CAC = Витрати ÷ Нові клієнти. ROAS = Виручка ÷ Витрати. Виручка/ROAS/CPS — лише по заказах із правильною розміткою (Meta <b>utm_source=meta</b>, Google <b>cid_…</b>), тобто з дати її впровадження. Розхід Meta по оголошеннях підтягується кроком <b>meta_ad_spend</b>.</div>
+    <div class="hd-note">CPS = Витрати ÷ Замовлення (виконані + в роботі). CAC = Витрати ÷ Нові клієнти. ROAS = Виручка ÷ Витрати. <b>ROAS фарбується за точкою беззбитковості</b> (ROAS в ноль = 1 ÷ маржа): 🟢 вище — прибуток, 🔴 нижче — збиток (а не за старим порогом 1.0, бо при ROAS 1.0 ти ще в мінусі на собівартість). <b>Прибуток</b> = (Виручка − Собівартість) − Витрати; маржа фактична, лише по заказах з відомою закупкою (<code>line_cost</code>). Беззбитковий ROAS окремо для опту й розниці (у опта маржа тонша → поріг вищий). Виручка/ROAS/прибуток — лише по заказах із правильною розміткою (Meta <b>utm_source=meta</b>, Google <b>cid_…</b>). Розхід Meta по оголошеннях — крок <b>meta_ad_spend</b>.</div>
   </div>`;
 }
 
