@@ -624,40 +624,51 @@ async function handleMarketing(req, res, supabase) {
     const gp = o.revenue - (o.cogs != null ? o.cogs : 0);
     profitByBuyer.set(o.buyer_id, (profitByBuyer.get(o.buyer_id) || 0) + gp);
   }
-  // Нові клієнти за ПЕРІОД по каналу першого дотику — для CAC (розхід ÷ нові).
-  const newBuyersByCh = new Map();
+  // ── Когортний LTV:CAC по МІСЯЦЮ ПРИВЛЕЧЕННЯ (blended, зі 100% даних) ──
+  // Правильний спосіб (методички): LTV і CAC — по ОДНІЙ когорті й одному місяці.
+  //   CAC(M)  = ВЕСЬ рекламний розхід місяця M ÷ нові клієнти місяця M
+  //             (blended — не залежить від атрибуції first-touch).
+  //   LTV(M)  = накопичений валовий прибуток на клієнта когорти M (на сьогодні).
+  // Свіжі когорти «молоді» (прибутку ще мало, повторних покупок не було) — це
+  // нормально; дивись, як LTV росте зі «віком» когорти (старіші рядки).
+
+  // Розхід реклами по календарних місяцях (Meta + Google + ручні витрати).
+  const spendByMonth = new Map();
+  const addSpendM = (ym, v) => { if (ym) spendByMonth.set(ym, (spendByMonth.get(ym) || 0) + v); };
+  for (const r of (metaRows || [])) addSpendM((r.date || "").slice(0, 7), parseFloat(r.spend_uah != null ? r.spend_uah : (r.spend || 0)) || 0);
+  for (const r of (googleRows || [])) addSpendM((r.date || "").slice(0, 7), parseFloat(r.spend_uah != null ? r.spend_uah : (r.spend || 0)) || 0);
+  for (const c of costRows) addSpendM(c.period, parseFloat(c.amount) || 0);
+
+  // Когорти: місяць ПЕРШОГО активного заказу клієнта.
+  const coh = new Map();
   for (const [buyerId, firstAt] of firstActiveAt.entries()) {
     if (!inSegment(buyerId)) continue;
-    if (hasRange) { const dk = ymdKey(firstAt); if (!dk || dk < from || dk > to) continue; }
-    const ch = ftChannel(ftMap.get(buyerId)) || "— немає first-touch —";
-    newBuyersByCh.set(ch, (newBuyersByCh.get(ch) || 0) + 1);
-  }
-  const ftAgg = new Map();
-  let ftMatched = 0;
-  for (const [buyerId, profit] of profitByBuyer.entries()) {
-    const ch0 = ftChannel(ftMap.get(buyerId));
-    const ch = ch0 || "— немає first-touch —";
-    if (ch0) ftMatched++;
+    const m = ymKey(firstAt);
+    if (!m) continue;
+    const profit = profitByBuyer.get(buyerId) || 0;
     const isOpt = typeMap.get(buyerId) === "опт";
-    let a = ftAgg.get(ch);
-    if (!a) { a = { channel: ch, buyers: 0, profit: 0, buyers_opt: 0, buyers_retail: 0, profit_opt: 0, profit_retail: 0 }; ftAgg.set(ch, a); }
-    a.buyers++; a.profit += profit;
-    if (isOpt) { a.buyers_opt++; a.profit_opt += profit; } else { a.buyers_retail++; a.profit_retail += profit; }
+    let a = coh.get(m);
+    if (!a) { a = { month: m, n: 0, n_opt: 0, n_retail: 0, profit: 0, profit_opt: 0, profit_retail: 0 }; coh.set(m, a); }
+    a.n++; a.profit += profit;
+    if (isOpt) { a.n_opt++; a.profit_opt += profit; } else { a.n_retail++; a.profit_retail += profit; }
   }
-  const firstTouch = Array.from(ftAgg.values()).map((a) => {
-    const spend = channelSpend(a.channel).cost;      // розхід каналу за період
-    const newB = newBuyersByCh.get(a.channel) || 0;  // нові клієнти за період
-    const cac = (spend > 0 && newB > 0) ? Math.round(spend / newB) : null;
-    const ltvAvg = a.buyers ? Math.round(a.profit / a.buyers) : 0;
+  const nowYM = ymKey(new Date().toISOString());
+  const ymAge = (m) => { const [y1, m1] = m.split("-").map(Number); const [y2, m2] = nowYM.split("-").map(Number); return (y2 * 12 + m2) - (y1 * 12 + m1); };
+  const cohorts = Array.from(coh.values()).sort((a, b) => b.month.localeCompare(a.month)).slice(0, 18).map((a) => {
+    const spend = spendByMonth.get(a.month) || 0;
+    const cac = (spend > 0 && a.n > 0) ? Math.round(spend / a.n) : null;
+    const ltv = a.n ? Math.round(a.profit / a.n) : 0;
+    const age = ymAge(a.month);
+    const monthlyProfit = age > 0 ? (a.profit / a.n) / age : null; // груба оцінка прибутку/міс на клієнта
     return {
-      channel: a.channel, buyers: a.buyers, buyers_opt: a.buyers_opt, buyers_retail: a.buyers_retail,
-      ltv_total: Math.round(a.profit), ltv_avg: ltvAvg,
-      ltv_avg_opt: a.buyers_opt ? Math.round(a.profit_opt / a.buyers_opt) : 0,
-      ltv_avg_retail: a.buyers_retail ? Math.round(a.profit_retail / a.buyers_retail) : 0,
-      cac, new_buyers: newB,
-      ltv_cac: (cac && cac > 0) ? +(ltvAvg / cac).toFixed(1) : null,
+      month: a.month, age_months: age,
+      new_customers: a.n, new_opt: a.n_opt, new_retail: a.n_retail,
+      spend: Math.round(spend), cac,
+      ltv, ltv_opt: a.n_opt ? Math.round(a.profit_opt / a.n_opt) : 0, ltv_retail: a.n_retail ? Math.round(a.profit_retail / a.n_retail) : 0,
+      ltv_cac: (cac && cac > 0) ? +(ltv / cac).toFixed(1) : null,
+      payback_months: (cac && monthlyProfit && monthlyProfit > 0) ? +(cac / monthlyProfit).toFixed(1) : null,
     };
-  }).sort((a, b) => b.ltv_total - a.ltv_total);
+  });
 
   const months = Array.from(monthsSet).sort().reverse();
   return res.status(200).json({
@@ -678,8 +689,7 @@ async function handleMarketing(req, res, supabase) {
         cps: (totCost > 0 && (tDone + tProg) > 0) ? Math.round(totCost / (tDone + tProg)) : null,
         cac: (totCost > 0 && tNew > 0) ? Math.round(totCost / tNew) : null,
       }),
-    first_touch: firstTouch,
-    first_touch_coverage: { matched_buyers: ftMatched, total_buyers: profitByBuyer.size },
+    cohorts,
   });
 }
 

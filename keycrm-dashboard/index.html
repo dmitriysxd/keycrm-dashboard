@@ -2206,16 +2206,17 @@ function renderMarketingView() {
     </tr>`;
   }).join('') || `<tr><td colspan="16" class="hd-empty">Немає даних за період</td></tr>`;
 
-  // First-touch LTV
-  const ftCov = d.first_touch_coverage || { matched_buyers: 0, total_buyers: 0 };
+  // Когортний LTV:CAC по місяцю привлечення
   const ltvCacCell = (v) => { if (v == null) return '<span class="hd-dim">—</span>'; if (v >= 3) return `<span class="hd-pos">${v}×</span>`; if (v >= 1) return `<span style="color:var(--hd-warn)">${v}×</span>`; return `<span class="hd-neg">${v}×</span>`; };
-  const ftRows = (d.first_touch || []).map(f => `<tr>
-      <td class="hd-l">${f.channel}</td>
-      <td class="mono">${fmt(f.buyers)} <span class="hd-dim" style="font-size:11px">· опт ${fmt(f.buyers_opt||0)} / розн ${fmt(f.buyers_retail||0)}</span></td>
-      <td class="mono">${fmtMoney(f.ltv_avg)} <span class="hd-dim" style="font-size:11px">· опт ${fmtMoney(f.ltv_avg_opt||0)} / розн ${fmtMoney(f.ltv_avg_retail||0)}</span></td>
-      <td class="mono">${f.cac != null ? fmtMoney(f.cac) : '<span class="hd-dim">—</span>'}</td>
-      <td class="mono">${ltvCacCell(f.ltv_cac)}</td>
-    </tr>`).join('') || `<tr><td colspan="5" class="hd-empty">Немає даних</td></tr>`;
+  const mLabel = (ym) => { const [y, m] = ym.split('-'); const names = ['', 'січ', 'лют', 'бер', 'кві', 'трав', 'черв', 'лип', 'серп', 'вер', 'жовт', 'лист', 'груд']; return `${names[+m] || m} ${y}`; };
+  const cohRows = (d.cohorts || []).map(c => `<tr>
+      <td class="hd-l">${mLabel(c.month)} <span class="hd-dim" style="font-size:11px">· ${c.age_months === 0 ? 'цей міс' : c.age_months + ' міс тому'}</span></td>
+      <td class="mono">${fmt(c.new_customers)} <span class="hd-dim" style="font-size:11px">· опт ${fmt(c.new_opt||0)} / розн ${fmt(c.new_retail||0)}</span></td>
+      <td class="mono">${c.cac != null ? fmtMoney(c.cac) : '<span class="hd-dim">—</span>'}</td>
+      <td class="mono">${fmtMoney(c.ltv)} <span class="hd-dim" style="font-size:11px">· опт ${fmtMoney(c.ltv_opt||0)} / розн ${fmtMoney(c.ltv_retail||0)}</span></td>
+      <td class="mono">${ltvCacCell(c.ltv_cac)}</td>
+      <td class="mono hd-dim">${c.payback_months != null ? c.payback_months + ' міс' : '—'}</td>
+    </tr>`).join('') || `<tr><td colspan="6" class="hd-empty">Немає даних</td></tr>`;
 
   const addChannelOpts = MKT_KNOWN_CHANNELS.map(c => `<option value="${c}">${c}</option>`).join('');
 
@@ -2266,14 +2267,14 @@ function renderMarketingView() {
     </div>
 
     <div class="hd-card">
-      <div class="hd-card-h">Привлечення · LTV у прибутку по каналах першого дотику <span class="hd-hint">— хто реально привів клієнта · LTV = валовий прибуток за ВСЮ історію ÷ клієнтів · CAC = розхід за період ÷ нові · покриття first-touch ${fmt(ftCov.matched_buyers)}/${fmt(ftCov.total_buyers)}</span></div>
+      <div class="hd-card-h">Когортний LTV:CAC по місяцю привлечення <span class="hd-hint">— правильний спосіб: LTV і CAC по ОДНІЙ когорті · CAC = весь рекламний розхід місяця ÷ нові клієнти місяця (blended) · LTV = накопичений прибуток на клієнта (на сьогодні)</span></div>
       <div class="hd-tw">
         <table class="hd-table">
-          <thead><tr><th class="hd-l">Канал привлечення</th><th>Клієнтів (опт/розн)</th><th>LTV прибуток/клієнт (опт·розн)</th><th>CAC</th><th>LTV:CAC</th></tr></thead>
-          <tbody>${ftRows}</tbody>
+          <thead><tr><th class="hd-l">Місяць привлечення</th><th>Нові клієнти (опт/розн)</th><th>CAC</th><th>LTV прибуток/клієнт (опт·розн)</th><th>LTV:CAC</th><th>Окупність</th></tr></thead>
+          <tbody>${cohRows}</tbody>
         </table>
       </div>
-      <div class="hd-note"><b>LTV</b> — валовий прибуток (виручка − собівартість), що клієнт приніс за ВСЮ історію, у середньому на клієнта. <b>LTV:CAC</b> — у скільки разів клієнт окупає вартість свого залучення: 🟢 ≥3 (чудово, можна масштабувати залучення), 🟡 1–3 (працює, але впритул), 🔴 &lt;1 (залучення в збиток). Опт купує повторно → LTV вищий; розниця часто разова. Увага: LTV рахується за ВСЮ історію клієнта, а CAC — за вибраний період, тож співвідношення орієнтовне (для зрілих каналів — показове). Покриття first-touch ще неповне (скрипт встановлено недавно) — для «холодних» каналів цифри занижені.</div>
+      <div class="hd-note"><b>CAC</b> = весь рекламний розхід місяця ÷ нові клієнти того ж місяця (blended — не залежить від атрибуції). <b>LTV</b> = накопичений валовий прибуток (виручка − собівартість) на клієнта когорти, <b>на сьогодні</b>. <b>LTV:CAC</b>: 🟢 ≥3 (можна масштабувати залучення) · 🟡 1–3 (впритул) · 🔴 &lt;1 (залучення в збиток). <b>Окупність</b> — приблизно за скільки місяців клієнт відбиває свій CAC. ⚠️ <b>Свіжі когорти «молоді»</b> — клієнтів щойно залучили, повторних покупок ще не було, тож їх LTV і LTV:CAC занижені (це нормально). Дивись, як LTV росте вниз по таблиці (старіші когорти встигли дозріти) — це і є реальна картина. CAC «—» у старих місяцях = тоді не було даних по розходу.</div>
     </div>
   </div>`;
 }
