@@ -1258,6 +1258,43 @@ async function handleGa4(req, res) {
   return res.status(200).json({ configured: true, ok: true, from, to, totals: totalsRow, channels, values });
 }
 
+// ── Вкладка «Сегменти» (опт/розниця): здоров'я, удержання, LTV ──────────
+async function handleSegments(req, res, supabase) {
+  const months = Math.max(6, Math.min(36, parseInt((req.query && req.query.months) || "24")));
+  const [m, r] = await Promise.all([
+    supabase.rpc("segment_monthly", { _months: months }),
+    supabase.rpc("segment_retention", { _min_age_days: 90 }),
+  ]);
+  if (m.error) throw new Error("segment_monthly: " + m.error.message);
+  if (r.error) throw new Error("segment_retention: " + r.error.message);
+  const byMonth = new Map();
+  for (const row of (m.data || [])) {
+    let o = byMonth.get(row.month);
+    if (!o) { o = { month: row.month, opt: null, retail: null }; byMonth.set(row.month, o); }
+    const seg = {
+      revenue: Math.round(Number(row.revenue) || 0),
+      gross_profit: row.gross_profit != null ? Math.round(Number(row.gross_profit)) : null,
+      active: Number(row.active_buyers) || 0,
+      orders: Number(row.orders) || 0,
+      new_buyers: Number(row.new_buyers) || 0,
+      repeat_buyers: Number(row.repeat_buyers) || 0,
+    };
+    if (row.segment === "опт") o.opt = seg; else o.retail = seg;
+  }
+  const monthsRows = Array.from(byMonth.values()).sort((a, b) => b.month.localeCompare(a.month));
+  const retention = {};
+  for (const row of (r.data || [])) {
+    retention[row.segment === "опт" ? "opt" : "retail"] = {
+      buyers: Number(row.buyers) || 0,
+      returned: Number(row.returned) || 0,
+      repeat_pct: row.repeat_pct != null ? Number(row.repeat_pct) : null,
+      avg_orders: row.avg_orders != null ? Number(row.avg_orders) : null,
+      avg_profit: row.avg_profit != null ? Math.round(Number(row.avg_profit)) : null,
+    };
+  }
+  return res.status(200).json({ months: monthsRows, retention });
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -1279,6 +1316,7 @@ module.exports = async function handler(req, res) {
     if (type === "campaigns") return await handleCampaigns(req, res, supabase);
     if (type === "freshness") return await handleFreshness(req, res, supabase);
     if (type === "ga4") return await handleGa4(req, res);
+    if (type === "segments") return await handleSegments(req, res, supabase);
     return res.status(400).json({ error: "type required: ?type=trends | ?type=cohorts | ?type=marketing | ?type=campaigns | ?type=freshness | ?type=ga4" });
   } catch (err) {
     return res.status(500).json({ error: (err && err.message) || String(err) });

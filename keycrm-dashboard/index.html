@@ -628,6 +628,9 @@
       <div class="nav-item" onclick="navigate('ga4')">
         <span class="nav-icon">🧭</span> GA4 · Трафік
       </div>
+      <div class="nav-item" onclick="navigate('segments')">
+        <span class="nav-icon">🧩</span> Сегменти
+      </div>
     </nav>
 
     <div class="sidebar-bottom">
@@ -979,6 +982,7 @@ async function renderCurrentPage() {
   else if (currentPage === 'marketing'){ await renderMarketingPage(); }
   else if (currentPage === 'campaigns'){ await renderCampaignsPage(); }
   else if (currentPage === 'ga4')      { await renderGa4Page(); }
+  else if (currentPage === 'segments') { await renderSegmentsPage(); }
   updateFreshnessStatus(); // чесна свіжість по всіх джерелах (fire-and-forget)
 }
 
@@ -2662,6 +2666,83 @@ function renderGa4View() {
     ${valuesCard}
 
     <div class="hd-note">Чесна воронка: <b>Сеанс → Почав оформлення → Покупка</b>. «<b>У кошик</b>» — це кількість <b>подій</b> add_to_cart (один сеанс додає кілька разів), тому показуємо лише як лічильник, без % (інакше виходить >100%). «<b>Оформл.→оплата</b>» = скільки з тих, хто почав оформлення, реально оплатили — ключова метрика «де губимо на останньому кроці». Канали — стандартне групування GA4: <b>Paid Social</b> ≈ Meta, <b>Paid Search</b> ≈ Google Ads, <b>Organic Search</b> — органіка пошуку, <b>Direct</b> — прямі. Абсолютні числа занижені — порівнюй канали <b>між собою</b>, не з KeyCRM.</div>
+  </div>`;
+}
+
+// ══ Сторінка «Сегменти» — опт vs розниця: здоров'я, удержання, LTV ══
+let SEG_DATA = null;
+function segMonthLabel(ym) { const [y, m] = ym.split('-'); const n = ['', 'січ', 'лют', 'бер', 'кві', 'трав', 'черв', 'лип', 'серп', 'вер', 'жовт', 'лист', 'груд']; return `${n[+m] || m} ${y}`; }
+
+async function renderSegmentsPage() {
+  const main = document.getElementById('main-area');
+  main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Завантажуємо сегменти</div></div>';
+  try {
+    const r = await fetch(apiUrl('/api/analytics', 'type=segments&months=24'));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    SEG_DATA = j;
+  } catch (err) {
+    main.innerHTML = `<div class="state-wrap"><div class="error-card"><div class="error-title">Помилка завантаження</div><div class="state-sub">${(err && err.message) || err}</div></div></div>`;
+    return;
+  }
+  renderSegmentsView();
+}
+
+function renderSegmentsView() {
+  const d = SEG_DATA; if (!d) return;
+  const ret = d.retention || {};
+  const o = ret.opt || {}, rt = ret.retail || {};
+
+  const segCard = (title, s, color) => `<div class="hd-card" style="flex:1;min-width:280px">
+    <div class="hd-card-h"><span class="ads-dot" style="background:${color}"></span>${title}</div>
+    <div class="hd-kpis" style="padding:6px 16px 14px">
+      <div class="hd-kpi"><div class="hd-kpi-l">Клієнтів</div><div class="hd-kpi-v mono">${fmt(s.buyers || 0)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Утримання <span class="hd-dim">≥2 заказа</span></div><div class="hd-kpi-v mono ${(s.repeat_pct || 0) >= 50 ? 'hd-pos' : 'hd-neg'}">${s.repeat_pct != null ? s.repeat_pct : 0}%</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Заказів / клієнт</div><div class="hd-kpi-v mono">${s.avg_orders != null ? s.avg_orders : 0}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">LTV <span class="hd-dim">прибуток/клієнт</span></div><div class="hd-kpi-v mono hd-pos">${fmtMoney(s.avg_profit || 0)}</div></div>
+    </div></div>`;
+
+  const rows = (d.months || []).map(m => {
+    const op = m.opt || {}, re = m.retail || {};
+    const tot = (op.revenue || 0) + (re.revenue || 0);
+    const share = tot > 0 ? Math.round(100 * (op.revenue || 0) / tot) : 0;
+    return `<tr>
+      <td class="hd-l">${segMonthLabel(m.month)}</td>
+      <td class="mono hd-pos">${fmtMoney(op.revenue || 0)}</td>
+      <td class="mono hd-dim" style="font-size:12px">${fmt(op.active || 0)} <span class="hd-dim">(${fmt(op.new_buyers || 0)}нов/${fmt(op.repeat_buyers || 0)}повт)</span></td>
+      <td class="mono">${fmtMoney(re.revenue || 0)}</td>
+      <td class="mono hd-dim" style="font-size:12px">${fmt(re.active || 0)} <span class="hd-dim">(${fmt(re.new_buyers || 0)}нов/${fmt(re.repeat_buyers || 0)}повт)</span></td>
+      <td class="mono"><span class="${share >= 50 ? 'hd-pos' : ''}">${share}%</span></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" class="hd-empty">Немає даних</td></tr>';
+
+  document.getElementById('main-area').innerHTML = `
+  <div class="hd">
+    <div class="hd-head">
+      <div>
+        <div class="hd-h1">Сегменти · опт vs розниця</div>
+        <div class="hd-sub">здоров'я бізнесу по сегментах · усі замовлення (не лише сайт) · системні виключені</div>
+      </div>
+      <div class="hd-filters"><button class="hd-btn" onclick="renderSegmentsPage()">↺</button></div>
+    </div>
+
+    <div style="display:flex;gap:14px;flex-wrap:wrap">
+      ${segCard('🟢 Опт', o, 'var(--hd-accent)')}
+      ${segCard('⚪ Розниця', rt, 'var(--hd-warn)')}
+    </div>
+    <div class="hd-note" style="margin-top:-4px">Утримання/заказів/LTV — по клієнтах, залучених <b>&gt;3 міс тому</b> (встигли повернутись). <b>LTV</b> — середній валовий прибуток на клієнта за всю історію. Контраст тут — ключовий: опт купує повторно і приносить у рази більше, розниця здебільшого разова.</div>
+
+    <div class="hd-card">
+      <div class="hd-card-h">Помісячно <span class="hd-hint">— виручка і клієнти (нові/повторні) по сегментах; частка опту у виручці</span></div>
+      <div class="hd-tw"><table class="hd-table">
+        <thead><tr>
+          <th class="hd-l">Місяць</th><th>Опт виручка</th><th>Опт клієнти</th><th>Розн виручка</th><th>Розн клієнти</th><th>Частка опту</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+    </div>
+
+    <div class="hd-note">💡 Висновок із даних: <b>опт — двигун прибутку</b> (висока виручка, висока частка, купують роками), <b>розниця — обʼєм разових клієнтів</b> (самоокупається, але майже без повторів). Пріоритет бюджету — в опт (новий + утримання).</div>
   </div>`;
 }
 
