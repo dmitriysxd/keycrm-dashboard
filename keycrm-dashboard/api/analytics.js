@@ -267,6 +267,11 @@ function normChannel(utmSource, utmMedium, sourceName, utmCampaign) {
   }
   if (med === "email") return "Email-маркетинг";
 
+  // Наш тег Google Ads: utm_campaign=cid_{campaign.id}. Визначальний сигнал,
+  // незалежно від source/medium — потрібно для first-touch (де збережена лише
+  // кампанія, без medium, тож google-реклама інакше губиться в «органіці»).
+  if (/^cid_/.test(cmp)) return "Google Ads";
+
   if (s) {
     // 1) Прямі (direct + PWA homescreen + порожньо) — разом.
     if (/homescreen|b2c_app|standalone|\bpwa\b/.test(s)) return "Прямі";
@@ -390,7 +395,7 @@ async function handleMarketing(req, res, supabase) {
       })
       .order("order_id", { ascending: true })),
     fetchAll(() => supabase.from("buyers").select("buyer_id, client_type, phone")),
-    fetchAll(() => supabase.from("first_touch").select("phone_norm, first_source")),
+    fetchAll(() => supabase.from("first_touch").select("phone_norm, first_source, first_medium, first_campaign")),
     fetchAll(() => supabase.from("channel_costs").select("channel, period, amount")),
     fetchAll(() => supabase.from("meta_spend").select("date, spend, spend_uah, impressions, clicks")),
     // google_spend може ще не існувати (міграція 057) — не валимо сторінку.
@@ -402,12 +407,18 @@ async function handleMarketing(req, res, supabase) {
   // first-touch матчимо в Node по нормалізованому телефону — без важкого JOIN
   // через v_buyer_first_touch (normalize_phone по всіх покупцях давав timeout).
   const ftByPhone = new Map();
-  for (const f of ftRows) if (f.phone_norm && !ftByPhone.has(f.phone_norm)) ftByPhone.set(f.phone_norm, f.first_source || null);
-  const ftMap = new Map();
+  for (const f of ftRows) if (f.phone_norm && !ftByPhone.has(f.phone_norm)) ftByPhone.set(f.phone_norm, { source: f.first_source || null, medium: f.first_medium || null, campaign: f.first_campaign || null });
+  const ftMap = new Map(); // buyer_id -> { source, medium, campaign }
   for (const b of buyerRows) {
     const pn = normPhone(b.phone);
     if (pn && ftByPhone.has(pn)) ftMap.set(b.buyer_id, ftByPhone.get(pn));
   }
+  // Канал першого дотику: по source + campaign (cid_ → Google Ads). Існує лише
+  // якщо є source АБО кампанія. Інакше «— немає first-touch —».
+  const ftChannel = (ft) => {
+    if (!ft || (!ft.source && !ft.campaign)) return null;
+    return normChannel(ft.source || "", ft.medium || null, null, ft.campaign || "");
+  };
 
   const orderList = [];
   for (const r of orderRows) {
@@ -618,16 +629,15 @@ async function handleMarketing(req, res, supabase) {
   for (const [buyerId, firstAt] of firstActiveAt.entries()) {
     if (!inSegment(buyerId)) continue;
     if (hasRange) { const dk = ymdKey(firstAt); if (!dk || dk < from || dk > to) continue; }
-    const src = ftMap.get(buyerId);
-    const ch = src ? normChannel(src, null, null) : "— немає first-touch —";
+    const ch = ftChannel(ftMap.get(buyerId)) || "— немає first-touch —";
     newBuyersByCh.set(ch, (newBuyersByCh.get(ch) || 0) + 1);
   }
   const ftAgg = new Map();
   let ftMatched = 0;
   for (const [buyerId, profit] of profitByBuyer.entries()) {
-    const src = ftMap.get(buyerId);
-    const ch = src ? normChannel(src, null, null) : "— немає first-touch —";
-    if (src) ftMatched++;
+    const ch0 = ftChannel(ftMap.get(buyerId));
+    const ch = ch0 || "— немає first-touch —";
+    if (ch0) ftMatched++;
     const isOpt = typeMap.get(buyerId) === "опт";
     let a = ftAgg.get(ch);
     if (!a) { a = { channel: ch, buyers: 0, profit: 0, buyers_opt: 0, buyers_retail: 0, profit_opt: 0, profit_retail: 0 }; ftAgg.set(ch, a); }
