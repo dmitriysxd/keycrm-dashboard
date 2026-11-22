@@ -844,6 +844,8 @@ async function handleCampaigns(req, res, supabase) {
       revenue_opt: ro, revenue_retail: rr,
       orders_opt: n.act_opt || 0, orders_retail: n.act_retail || 0,
       opt_share: (ro + rr) > 0 ? Math.round(100 * ro / (ro + rr)) : null,
+      roas_opt: n.spend > 0 ? +(n.rev_opt / n.spend).toFixed(2) : null,
+      roas_retail: n.spend > 0 ? +(n.rev_retail / n.spend).toFixed(2) : null,
     }, extra || {}, metric(n.spend, n.impr, n.clicks, n.done + n.prog, n.rev, n.newO));
   };
 
@@ -889,6 +891,8 @@ async function handleCampaigns(req, res, supabase) {
       done, progress: prog, cancelled: canc, orders: active, revenue: rev, new_orders: nw,
       revenue_opt: rOpt, revenue_retail: rRet, orders_opt: oOpt, orders_retail: oRet,
       opt_share: (rOpt + rRet) > 0 ? Math.round(100 * rOpt / (rOpt + rRet)) : null,
+      roas_opt: spend > 0 ? +(rOpt / spend).toFixed(2) : null,
+      roas_retail: spend > 0 ? +(rRet / spend).toFixed(2) : null,
     }, metric(spend, impr, clicks, active, rev, nw));
   }
 
