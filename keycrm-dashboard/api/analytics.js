@@ -616,21 +616,29 @@ async function handleMarketing(req, res, supabase) {
     totCost += s.cost;
   }
 
-  // LTV first-touch — у ПРИБУТКУ (виручка − собівартість) по НЕ-скасованих
-  // заказах, за ВСЮ історію (lifetime). Окремо опт/розниця (сегмент клієнта).
-  const profitByBuyer = new Map(); // buyerId -> валовий прибуток (lifetime)
-  for (const o of orderList) {
-    if (o.grp === "cancelled" || !o.buyer_id || !inSegment(o.buyer_id)) continue;
-    const gp = o.revenue - (o.cogs != null ? o.cogs : 0);
-    profitByBuyer.set(o.buyer_id, (profitByBuyer.get(o.buyer_id) || 0) + gp);
-  }
   // ── Когортний LTV:CAC по МІСЯЦЮ ПРИВЛЕЧЕННЯ (blended, зі 100% даних) ──
   // Правильний спосіб (методички): LTV і CAC — по ОДНІЙ когорті й одному місяці.
-  //   CAC(M)  = ВЕСЬ рекламний розхід місяця M ÷ нові клієнти місяця M
-  //             (blended — не залежить від атрибуції first-touch).
-  //   LTV(M)  = накопичений валовий прибуток на клієнта когорти M (на сьогодні).
-  // Свіжі когорти «молоді» (прибутку ще мало, повторних покупок не було) — це
-  // нормально; дивись, як LTV росте зі «віком» когорти (старіші рядки).
+  //   CAC(M)  = ВЕСЬ рекламний розхід місяця M ÷ нові клієнти місяця M (blended).
+  //   LTV(M)  = валовий прибуток на клієнта когорти M — «на сьогодні» і на
+  //             ФІКСОВАНИХ горизонтах 3/6/12 міс від першого заказу (щоб когорти
+  //             порівнювались чесно). Горизонт показуємо лише коли когорта
+  //             дозріла (вік ≥ горизонту), інакше — «—».
+
+  // Прибуток кожного клієнта на горизонтах 3/6/12 міс від ЙОГО першого заказу.
+  const buyerHz = new Map(); // buyerId -> {p3,p6,p12,pt}
+  for (const o of orderList) {
+    if (o.grp === "cancelled" || !o.buyer_id || !inSegment(o.buyer_id)) continue;
+    const first = firstActiveAt.get(o.buyer_id);
+    if (!first) continue;
+    const gp = o.revenue - (o.cogs != null ? o.cogs : 0);
+    const days = (new Date(o.ordered_at).getTime() - new Date(first).getTime()) / 86400000;
+    let h = buyerHz.get(o.buyer_id);
+    if (!h) { h = { p3: 0, p6: 0, p12: 0, pt: 0 }; buyerHz.set(o.buyer_id, h); }
+    h.pt += gp;
+    if (days <= 90) h.p3 += gp;
+    if (days <= 180) h.p6 += gp;
+    if (days <= 365) h.p12 += gp;
+  }
 
   // Розхід реклами по календарних місяцях (Meta + Google + ручні витрати).
   const spendByMonth = new Map();
@@ -645,26 +653,28 @@ async function handleMarketing(req, res, supabase) {
     if (!inSegment(buyerId)) continue;
     const m = ymKey(firstAt);
     if (!m) continue;
-    const profit = profitByBuyer.get(buyerId) || 0;
+    const h = buyerHz.get(buyerId) || { p3: 0, p6: 0, p12: 0, pt: 0 };
     const isOpt = typeMap.get(buyerId) === "опт";
     let a = coh.get(m);
-    if (!a) { a = { month: m, n: 0, n_opt: 0, n_retail: 0, profit: 0, profit_opt: 0, profit_retail: 0 }; coh.set(m, a); }
-    a.n++; a.profit += profit;
-    if (isOpt) { a.n_opt++; a.profit_opt += profit; } else { a.n_retail++; a.profit_retail += profit; }
+    if (!a) { a = { month: m, n: 0, n_opt: 0, n_retail: 0, pt: 0, pt_opt: 0, pt_retail: 0, p3: 0, p6: 0, p12: 0 }; coh.set(m, a); }
+    a.n++; a.pt += h.pt; a.p3 += h.p3; a.p6 += h.p6; a.p12 += h.p12;
+    if (isOpt) { a.n_opt++; a.pt_opt += h.pt; } else { a.n_retail++; a.pt_retail += h.pt; }
   }
   const nowYM = ymKey(new Date().toISOString());
   const ymAge = (m) => { const [y1, m1] = m.split("-").map(Number); const [y2, m2] = nowYM.split("-").map(Number); return (y2 * 12 + m2) - (y1 * 12 + m1); };
-  const cohorts = Array.from(coh.values()).sort((a, b) => b.month.localeCompare(a.month)).slice(0, 18).map((a) => {
+  const cohorts = Array.from(coh.values()).sort((a, b) => b.month.localeCompare(a.month)).slice(0, 36).map((a) => {
     const spend = spendByMonth.get(a.month) || 0;
     const cac = (spend > 0 && a.n > 0) ? Math.round(spend / a.n) : null;
-    const ltv = a.n ? Math.round(a.profit / a.n) : 0;
+    const ltv = a.n ? Math.round(a.pt / a.n) : 0;
     const age = ymAge(a.month);
-    const monthlyProfit = age > 0 ? (a.profit / a.n) / age : null; // груба оцінка прибутку/міс на клієнта
+    const monthlyProfit = age > 0 ? (a.pt / a.n) / age : null; // груба оцінка прибутку/міс на клієнта
+    const hz = (sum, minAge) => (age >= minAge && a.n > 0) ? Math.round(sum / a.n) : null;
     return {
       month: a.month, age_months: age,
       new_customers: a.n, new_opt: a.n_opt, new_retail: a.n_retail,
       spend: Math.round(spend), cac,
-      ltv, ltv_opt: a.n_opt ? Math.round(a.profit_opt / a.n_opt) : 0, ltv_retail: a.n_retail ? Math.round(a.profit_retail / a.n_retail) : 0,
+      ltv, ltv_opt: a.n_opt ? Math.round(a.pt_opt / a.n_opt) : 0, ltv_retail: a.n_retail ? Math.round(a.pt_retail / a.n_retail) : 0,
+      ltv_3mo: hz(a.p3, 3), ltv_6mo: hz(a.p6, 6), ltv_12mo: hz(a.p12, 12),
       ltv_cac: (cac && cac > 0) ? +(ltv / cac).toFixed(1) : null,
       payback_months: (cac && monthlyProfit && monthlyProfit > 0) ? +(cac / monthlyProfit).toFixed(1) : null,
     };

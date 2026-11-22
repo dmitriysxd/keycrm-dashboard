@@ -2209,14 +2209,16 @@ function renderMarketingView() {
   // Когортний LTV:CAC по місяцю привлечення
   const ltvCacCell = (v) => { if (v == null) return '<span class="hd-dim">—</span>'; if (v >= 3) return `<span class="hd-pos">${v}×</span>`; if (v >= 1) return `<span style="color:var(--hd-warn)">${v}×</span>`; return `<span class="hd-neg">${v}×</span>`; };
   const mLabel = (ym) => { const [y, m] = ym.split('-'); const names = ['', 'січ', 'лют', 'бер', 'кві', 'трав', 'черв', 'лип', 'серп', 'вер', 'жовт', 'лист', 'груд']; return `${names[+m] || m} ${y}`; };
+  const hzCell = (v) => v != null ? fmtMoney(v) : '<span class="hd-dim">—</span>';
   const cohRows = (d.cohorts || []).map(c => `<tr>
       <td class="hd-l">${mLabel(c.month)} <span class="hd-dim" style="font-size:11px">· ${c.age_months === 0 ? 'цей міс' : c.age_months + ' міс тому'}</span></td>
       <td class="mono">${fmt(c.new_customers)} <span class="hd-dim" style="font-size:11px">· опт ${fmt(c.new_opt||0)} / розн ${fmt(c.new_retail||0)}</span></td>
       <td class="mono">${c.cac != null ? fmtMoney(c.cac) : '<span class="hd-dim">—</span>'}</td>
+      <td class="mono" style="font-size:12px">${hzCell(c.ltv_3mo)} <span class="hd-dim">/</span> ${hzCell(c.ltv_6mo)} <span class="hd-dim">/</span> ${hzCell(c.ltv_12mo)}</td>
       <td class="mono">${fmtMoney(c.ltv)} <span class="hd-dim" style="font-size:11px">· опт ${fmtMoney(c.ltv_opt||0)} / розн ${fmtMoney(c.ltv_retail||0)}</span></td>
       <td class="mono">${ltvCacCell(c.ltv_cac)}</td>
       <td class="mono hd-dim">${c.payback_months != null ? c.payback_months + ' міс' : '—'}</td>
-    </tr>`).join('') || `<tr><td colspan="6" class="hd-empty">Немає даних</td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="7" class="hd-empty">Немає даних</td></tr>`;
 
   const addChannelOpts = MKT_KNOWN_CHANNELS.map(c => `<option value="${c}">${c}</option>`).join('');
 
@@ -2270,11 +2272,11 @@ function renderMarketingView() {
       <div class="hd-card-h">Когортний LTV:CAC по місяцю привлечення <span class="hd-hint">— правильний спосіб: LTV і CAC по ОДНІЙ когорті · CAC = весь рекламний розхід місяця ÷ нові клієнти місяця (blended) · LTV = накопичений прибуток на клієнта (на сьогодні)</span></div>
       <div class="hd-tw">
         <table class="hd-table">
-          <thead><tr><th class="hd-l">Місяць привлечення</th><th>Нові клієнти (опт/розн)</th><th>CAC</th><th>LTV прибуток/клієнт (опт·розн)</th><th>LTV:CAC</th><th>Окупність</th></tr></thead>
+          <thead><tr><th class="hd-l">Місяць привлечення</th><th>Нові клієнти (опт/розн)</th><th>CAC</th><th>LTV 3/6/12 міс</th><th>LTV зараз (опт·розн)</th><th>LTV:CAC</th><th>Окупність</th></tr></thead>
           <tbody>${cohRows}</tbody>
         </table>
       </div>
-      <div class="hd-note"><b>CAC</b> = весь рекламний розхід місяця ÷ нові клієнти того ж місяця (blended — не залежить від атрибуції). <b>LTV</b> = накопичений валовий прибуток (виручка − собівартість) на клієнта когорти, <b>на сьогодні</b>. <b>LTV:CAC</b>: 🟢 ≥3 (можна масштабувати залучення) · 🟡 1–3 (впритул) · 🔴 &lt;1 (залучення в збиток). <b>Окупність</b> — приблизно за скільки місяців клієнт відбиває свій CAC. ⚠️ <b>Свіжі когорти «молоді»</b> — клієнтів щойно залучили, повторних покупок ще не було, тож їх LTV і LTV:CAC занижені (це нормально). Дивись, як LTV росте вниз по таблиці (старіші когорти встигли дозріти) — це і є реальна картина. CAC «—» у старих місяцях = тоді не було даних по розходу.</div>
+      <div class="hd-note"><b>CAC</b> = весь рекламний розхід місяця ÷ нові клієнти того ж місяця (blended — не залежить від атрибуції). <b>LTV</b> = накопичений валовий прибуток (виручка − собівартість) на клієнта когорти, <b>на сьогодні</b>. <b>LTV:CAC</b>: 🟢 ≥3 (можна масштабувати залучення) · 🟡 1–3 (впритул) · 🔴 &lt;1 (залучення в збиток). <b>LTV 3/6/12 міс</b> — прибуток на клієнта за перші 3/6/12 місяців від привлечення (фіксований горизонт, щоб когорти порівнювались чесно); «—» = когорта ще не дозріла до цього горизонту. <b>LTV зараз</b> — накопичено на сьогодні. <b>Окупність</b> — приблизно за скільки місяців клієнт відбиває CAC. ⚠️ <b>Свіжі когорти «молоді»</b> — повторних покупок ще не було, LTV занижений (це нормально). Дивись на зрілі місяці (де є LTV 12 міс) — там реальна картина. <b>CAC «—»</b> у старих місяцях = тоді ще не збирався розхід (Meta/Google-коннектори молоді), але LTV показується за всю історію (до 36 міс).</div>
     </div>
   </div>`;
 }
