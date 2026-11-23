@@ -631,6 +631,9 @@
       <div class="nav-item" onclick="navigate('acquisition')">
         <span class="nav-icon">🧲</span> Залучення
       </div>
+      <div class="nav-item" onclick="navigate('optquality')">
+        <span class="nav-icon">📡</span> Якість опту
+      </div>
     </nav>
 
     <div class="sidebar-bottom">
@@ -983,6 +986,7 @@ async function renderCurrentPage() {
   else if (currentPage === 'ga4')      { await renderGa4Page(); }
   else if (currentPage === 'segments') { await renderSegmentsPage(); }
   else if (currentPage === 'acquisition') { await renderAcquisitionPage(); }
+  else if (currentPage === 'optquality') { await renderOptQualityPage(); }
   updateFreshnessStatus(); // чесна свіжість по всіх джерелах (fire-and-forget)
 }
 
@@ -2830,6 +2834,125 @@ function renderAcquisitionView() {
 
     <div class="hd-note">💡 Канали з високою <b>часткою опту</b> (зелена смуга) — «оптові»: туди вкладати бюджет заради оптовиків (твій головний прибуток). Канали з великим <b>обʼємом розниці</b> і низькою часткою опту — машина разового роздробу (самоокупається). «Прямі» = постійники/бренд; метка відсутня у ~1% — атрибуції можна довіряти.</div>
   </div>`;
+}
+
+// ══ Сторінка «Якість залучення опту» — датчик якості привлечення ══
+let OPTQ_DATA = null, OPTQ_MONTHS = '24';
+async function renderOptQualityPage() {
+  const main = document.getElementById('main-area');
+  main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Рахуємо якість залучення опту</div></div>';
+  try {
+    const r = await fetch(apiUrl('/api/analytics', 'type=opt_quality&months=' + OPTQ_MONTHS));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    OPTQ_DATA = j;
+  } catch (err) {
+    main.innerHTML = `<div class="state-wrap"><div class="error-card"><div class="error-title">Помилка завантаження</div><div class="state-sub">${(err && err.message) || err}</div></div></div>`;
+    return;
+  }
+  renderOptQualityView();
+}
+function setOptqMonths(m) { OPTQ_MONTHS = m; renderOptQualityPage(); }
+
+function renderOptQualityView() {
+  const d = OPTQ_DATA; if (!d) return;
+  const rows = d.rows || [];
+  const thr = d.threshold || 45;
+  const colFor = p => p >= thr ? 'var(--green)' : p >= thr - 10 ? 'var(--gold)' : 'var(--red)';
+  const delta = Math.round(((d.last6_repeat3m || 0) - (d.prev6_repeat3m || 0)) * 10) / 10;
+  const deltaHtml = delta ? `<span style="color:${delta > 0 ? 'var(--green)' : 'var(--red)'};font-size:12px;margin-left:6px">${delta > 0 ? '+' : ''}${delta} п.п.</span>` : '';
+
+  const tableRows = rows.slice().reverse().map(r => `
+    <tr>
+      <td style="padding:7px 10px;font-weight:600">${r.cohort}</td>
+      <td style="padding:7px 10px;text-align:right" class="mono">${fmt(r.new_buyers)}</td>
+      <td style="padding:7px 10px;text-align:right" class="mono">${r.repeat_1m_pct}%</td>
+      <td style="padding:7px 10px;text-align:right;font-weight:600" class="mono"><span style="color:${colFor(r.repeat_3m_pct)}">${r.repeat_3m_pct}%</span></td>
+    </tr>`).join('') || '<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--muted)">Немає даних</td></tr>';
+
+  document.getElementById('main-area').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">Якість залучення опту</div>
+        <div class="page-sub">нові оптовики + ранній повтор по місяцях залучення · поріг здоров'я ${thr}%</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div style="display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+          ${[['12', '12 міс'], ['24', '24 міс'], ['36', '36 міс']].map(([v, l]) => `<button onclick="setOptqMonths('${v}')" style="padding:6px 14px;background:${OPTQ_MONTHS === v ? 'var(--gold2)' : 'transparent'};color:${OPTQ_MONTHS === v ? 'var(--gold)' : 'var(--muted)'};border:0;font-size:12px;cursor:pointer;font-weight:${OPTQ_MONTHS === v ? '600' : '400'}">${l}</button>`).join('')}
+        </div>
+        <button class="refresh-btn" onclick="renderOptQualityPage()"><span class="ri">↺</span> Оновити</button>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-accent green"></div>
+        <div class="kpi-label">Повтор за 3 міс · останні 6 когорт</div>
+        <div class="kpi-val" style="color:${colFor(d.last6_repeat3m || 0)}">${d.last6_repeat3m || 0}%${deltaHtml}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:var(--gold)"></div>
+        <div class="kpi-label">Нових оптовиків / міс (середнє)</div>
+        <div class="kpi-val">${fmt(d.avg_new_per_month || 0)}</div>
+      </div>
+      <div class="kpi"><div class="kpi-accent" style="background:var(--red)"></div>
+        <div class="kpi-label">Поріг здоров'я</div>
+        <div class="kpi-val">${thr}%</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Нові оптовики + повтор за 3 місяці</div>
+      <div style="position:relative;height:320px"><canvas id="optq-chart"></canvas></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">Помісячно</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--s2)">
+            <th style="padding:7px 10px;text-align:left;font-size:11px;color:var(--muted)">Когорта</th>
+            <th style="padding:7px 10px;text-align:right;font-size:11px;color:var(--muted)">Нових</th>
+            <th style="padding:7px 10px;text-align:right;font-size:11px;color:var(--muted)">Повтор 1 міс</th>
+            <th style="padding:7px 10px;text-align:right;font-size:11px;color:var(--muted)">Повтор 3 міс</th>
+          </tr></thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div style="border:1px solid var(--border);border-radius:8px;padding:14px 18px;margin-top:16px;background:var(--gold2)">
+      <div style="font-size:13px;color:var(--text);line-height:1.6">
+        <b style="color:var(--gold)">Як читати:</b> «Повтор за 3 міс» — % нових оптовиків місяця, що зробили 2-й заказ протягом 3 місяців. Це датчик якості привлечення: <b style="color:var(--green)">≥${thr}%</b> — здорово, <b style="color:var(--red)">нижче</b> — приваблюєш менш цільових (беруть раз і йдуть). Стеж за ним, коли масштабуєш рекламу: якщо кількість росте, а повтор падає — бюджет ллється в нецільовий трафік. Останні 1–2 когорти не показані: вони ще не «дожили» до +3 міс.
+      </div>
+    </div>
+  `;
+  setTimeout(() => drawOptQualityChart(rows, thr), 0);
+}
+
+function drawOptQualityChart(rows, threshold) {
+  if (charts.optQuality) charts.optQuality.destroy();
+  const labels = rows.map(r => r.cohort);
+  charts.optQuality = new Chart(document.getElementById('optq-chart'), {
+    data: {
+      labels,
+      datasets: [
+        { type: 'bar', label: 'Нових оптовиків', data: rows.map(r => r.new_buyers),
+          backgroundColor: 'rgba(201,169,110,0.35)', borderColor: 'rgba(201,169,110,0.9)', borderWidth: 1, yAxisID: 'y', order: 2 },
+        { type: 'line', label: 'Повтор за 3 міс, %', data: rows.map(r => r.repeat_3m_pct),
+          borderColor: 'rgba(92,184,138,0.95)', backgroundColor: 'rgba(92,184,138,0.15)', tension: 0.3, pointRadius: 3, yAxisID: 'y1', fill: false, order: 1 },
+        { type: 'line', label: 'Поріг ' + threshold + '%', data: rows.map(() => threshold),
+          borderColor: 'rgba(224,96,96,0.8)', borderDash: [6, 4], pointRadius: 0, yAxisID: 'y1', fill: false, order: 0 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: true, position: 'bottom' } },
+      scales: {
+        y: { position: 'left', beginAtZero: true, title: { display: true, text: 'Нових оптовиків' } },
+        y1: { position: 'right', beginAtZero: true, max: 100, grid: { drawOnChartArea: false }, ticks: { callback: v => v + '%' } },
+        x: { ticks: { maxRotation: 45, autoSkip: true, autoSkipPadding: 8 } },
+      },
+    },
+  });
 }
 
 // ── Cohorts page ────────────────────────────

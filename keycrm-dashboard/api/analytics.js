@@ -1223,6 +1223,36 @@ async function handleAcquisition(req, res, supabase) {
   });
 }
 
+// type=opt_quality: якість залучення опту по місяцях (нові оптовики + ранній
+// повтор 1/3 міс). «Датчик» — чи не псується привлечення при масштабуванні.
+async function handleOptQuality(req, res, supabase) {
+  const months = Math.max(6, Math.min(36, parseInt((req.query && req.query.months) || "24")));
+  const { data, error } = await supabase.rpc("opt_acquisition_quality", { _months: months });
+  if (error) return res.status(500).json({ error: error.message });
+
+  const rows = (data || []).map(r => ({
+    cohort: r.cohort,
+    new_buyers: Number(r.new_buyers) || 0,
+    repeat_1m_pct: r.repeat_1m_pct != null ? Number(r.repeat_1m_pct) : 0,
+    repeat_3m_pct: r.repeat_3m_pct != null ? Number(r.repeat_3m_pct) : 0,
+  }));
+
+  // Зведення: середнє за останні 6 когорт vs попередні 6; порог 45%.
+  const r3 = rows.map(r => r.repeat_3m_pct);
+  const avg = a => a.length ? Math.round(a.reduce((s, x) => s + x, 0) / a.length * 10) / 10 : 0;
+  const last6 = avg(r3.slice(-6));
+  const prev6 = avg(r3.slice(-12, -6));
+  const avgNew = rows.length ? Math.round(rows.reduce((s, r) => s + r.new_buyers, 0) / rows.length) : 0;
+
+  return res.status(200).json({
+    rows, months,
+    threshold: 45,
+    last6_repeat3m: last6,
+    prev6_repeat3m: prev6,
+    avg_new_per_month: avgNew,
+  });
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -1245,7 +1275,8 @@ module.exports = async function handler(req, res) {
     if (type === "ga4") return await handleGa4(req, res);
     if (type === "segments") return await handleSegments(req, res, supabase);
     if (type === "acquisition") return await handleAcquisition(req, res, supabase);
-    return res.status(400).json({ error: "type required: ?type=trends | ?type=cohorts | ?type=marketing | ?type=campaigns | ?type=freshness | ?type=ga4 | ?type=segments | ?type=acquisition" });
+    if (type === "opt_quality") return await handleOptQuality(req, res, supabase);
+    return res.status(400).json({ error: "type required: ?type=cohorts | ?type=marketing | ?type=campaigns | ?type=freshness | ?type=ga4 | ?type=segments | ?type=acquisition | ?type=opt_quality" });
   } catch (err) {
     return res.status(500).json({ error: (err && err.message) || String(err) });
   }
