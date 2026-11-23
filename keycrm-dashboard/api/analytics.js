@@ -1037,6 +1037,37 @@ const GA4_CH_LABEL = {
 
 function ga4YMD(d) { return d.toISOString().slice(0, 10); }
 
+// Класифікація GA4-трафіку по source+medium власною логікою (а не готовою
+// групою GA4) — щоб meta/cpc рахувався як платний, і канали збігались із
+// вкладкою «Маркетинг». GA4 не знає «meta» як соцмережу, тож дефолтна група
+// кидає платну Meta в «Organic Social»; тут виправляємо.
+function ga4Channel(sourceRaw, mediumRaw) {
+  const s = (sourceRaw || "").toLowerCase().trim();
+  const m = (mediumRaw || "").toLowerCase().trim();
+  const paid = /cpc|ppc|paid|display|cpm|retargeting/.test(m);
+  const noMed = (!m || m === "(none)" || m === "(not set)" || m === "none");
+
+  if ((!s || s === "(direct)" || /^direct$/.test(s)) && (noMed || m === "referral")) return "Прямі";
+  if (/chatgpt|openai|perplexity|gemini|copilot|claude\.ai/.test(s)) return "AI (ChatGPT/Gemini)";
+
+  const isMeta = /facebook|instagram|l\.instagram|l\.facebook|m\.facebook|fb\.com|^fb$|^ig$|^meta$|^an$|^msg$|site_source_name/.test(s);
+  if (isMeta) return paid ? "Meta (реклама)" : "Meta (органіка)";
+
+  // Google Ads: авто-тег (google/cpc) або наші мітки (lama/adwords/…)
+  if (((/^google$|google\.com/.test(s)) && paid) || /lama|adwords|pmax|gclid|google_/.test(s)) return "Google Ads";
+
+  if (m === "email" || /sendpulse|esputnik|^email$|e-mail|^mail$|ukr\.net/.test(s)) return "Email-маркетинг";
+  if (/viber|telegram|\btg\b/.test(s)) return "Месенджери (реферал)";
+
+  if (/organic|seo/.test(m) || /^google$|google\.com|bing|duckduckgo|yandex/.test(s)) return "Пошук / органіка";
+  if (/^prom/.test(s)) return "Prom.ua";
+
+  if (m === "referral" || /referral/.test(m)) return "Реферали";
+  if (paid) return "Платне (інше)";
+  if (!s || s === "(direct)") return "Прямі";
+  return "Інше: " + (sourceRaw || "(не визначено)");
+}
+
 async function handleGa4(req, res) {
   const propertyId = String(process.env.GA4_PROPERTY_ID || "").replace(/\D/g, "");
   if (!propertyId) {
@@ -1067,11 +1098,11 @@ async function handleGa4(req, res) {
   const metrics = ["sessions", "totalUsers", "newUsers", "addToCarts", "checkouts", "ecommercePurchases", "purchaseRevenue"];
   const body = {
     dateRanges: [{ startDate: from, endDate: to }],
-    dimensions: [{ name: "sessionDefaultChannelGroup" }],
+    dimensions: [{ name: "sessionSource" }, { name: "sessionMedium" }],
     metrics: metrics.map((m) => ({ name: m })),
     metricAggregations: ["TOTAL"],
     orderBys: [{ desc: true, metric: { metricName: "sessions" } }],
-    limit: 250,
+    limit: 500,
   };
 
   let j;
@@ -1082,27 +1113,46 @@ async function handleGa4(req, res) {
   }
 
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-  const mapRow = (metricValues, channelRaw) => {
-    const mv = {};
-    metrics.forEach((m, i) => { mv[m] = num(metricValues && metricValues[i] && metricValues[i].value); });
-    const sessions = mv.sessions, carts = mv.addToCarts, checkouts = mv.checkouts, purchases = mv.ecommercePurchases;
-    const pct = (a, b) => (b > 0 ? +(100 * a / b).toFixed(2) : 0);
-    return {
-      channel: channelRaw,
-      label: GA4_CH_LABEL[channelRaw] || channelRaw || "(не визначено)",
-      sessions, users: mv.totalUsers, newUsers: mv.newUsers,
-      carts, checkouts, purchases, revenue: mv.purchaseRevenue,
-      cr_cart: pct(carts, sessions),         // сеанс → в кошик (увага: addToCarts — ПОДІЇ, може бути >100%)
-      cr_checkout: pct(checkouts, sessions), // сеанс → почав оформлення
-      cr_purchase: pct(purchases, sessions), // сеанс → покупка (головна конверсія)
-      cr_checkout_purchase: pct(purchases, checkouts), // оформлення → оплата (доводять до кінця)
-    };
-  };
+  const pct = (a, b) => (b > 0 ? +(100 * a / b).toFixed(2) : 0);
 
-  const channels = (j.rows || []).map((row) =>
-    mapRow(row.metricValues, row.dimensionValues && row.dimensionValues[0] && row.dimensionValues[0].value)
-  );
-  const totalsRow = j.totals && j.totals[0] ? mapRow(j.totals[0].metricValues, "__total__") : null;
+  // Агрегуємо рядки source×medium у наші канали (ga4Channel) — meta/cpc = платний.
+  const byChannel = new Map();
+  for (const row of (j.rows || [])) {
+    const src = row.dimensionValues && row.dimensionValues[0] && row.dimensionValues[0].value;
+    const med = row.dimensionValues && row.dimensionValues[1] && row.dimensionValues[1].value;
+    const label = ga4Channel(src, med);
+    let c = byChannel.get(label);
+    if (!c) { c = { channel: label, label, sessions: 0, users: 0, newUsers: 0, carts: 0, checkouts: 0, purchases: 0, revenue: 0 }; byChannel.set(label, c); }
+    const mv = {};
+    metrics.forEach((mn, i) => { mv[mn] = num(row.metricValues && row.metricValues[i] && row.metricValues[i].value); });
+    c.sessions += mv.sessions; c.users += mv.totalUsers; c.newUsers += mv.newUsers;
+    c.carts += mv.addToCarts; c.checkouts += mv.checkouts;
+    c.purchases += mv.ecommercePurchases; c.revenue += mv.purchaseRevenue;
+  }
+  const channels = Array.from(byChannel.values()).map((c) => ({
+    channel: c.channel, label: c.label,
+    sessions: c.sessions, users: c.users, newUsers: c.newUsers,
+    carts: c.carts, checkouts: c.checkouts, purchases: c.purchases, revenue: c.revenue,
+    cr_cart: pct(c.carts, c.sessions),
+    cr_checkout: pct(c.checkouts, c.sessions),
+    cr_purchase: pct(c.purchases, c.sessions),
+    cr_checkout_purchase: pct(c.purchases, c.checkouts),
+  })).sort((a, b) => b.sessions - a.sessions);
+
+  let totalsRow = null;
+  if (j.totals && j.totals[0]) {
+    const mv = {};
+    metrics.forEach((mn, i) => { mv[mn] = num(j.totals[0].metricValues && j.totals[0].metricValues[i] && j.totals[0].metricValues[i].value); });
+    totalsRow = {
+      channel: "__total__", label: "Разом",
+      sessions: mv.sessions, users: mv.totalUsers, newUsers: mv.newUsers,
+      carts: mv.addToCarts, checkouts: mv.checkouts, purchases: mv.ecommercePurchases, revenue: mv.purchaseRevenue,
+      cr_cart: pct(mv.addToCarts, mv.sessions),
+      cr_checkout: pct(mv.checkouts, mv.sessions),
+      cr_purchase: pct(mv.ecommercePurchases, mv.sessions),
+      cr_checkout_purchase: pct(mv.ecommercePurchases, mv.checkouts),
+    };
+  }
 
   // ── Другий звіт: середня сума кошика на кроках «оформлення» vs «покупка».
   // Перевірка гіпотези про мінімалку 500 грн: якщо середній кошик на
@@ -1113,20 +1163,21 @@ async function handleGa4(req, res) {
   try {
     const vb = {
       dateRanges: [{ startDate: from, endDate: to }],
-      dimensions: [{ name: "sessionDefaultChannelGroup" }, { name: "eventName" }],
+      dimensions: [{ name: "sessionSource" }, { name: "sessionMedium" }, { name: "eventName" }],
       metrics: [{ name: "eventCount" }, { name: "eventValue" }],
       dimensionFilter: { filter: { fieldName: "eventName", inListFilter: { values: ["begin_checkout", "purchase"] } } },
-      limit: 500,
+      limit: 1000,
     };
     const jv = await ga4RunReport(propertyId, token, vb);
     const byCh = {};
     let tBC = { c: 0, v: 0 }, tP = { c: 0, v: 0 };
     for (const row of (jv.rows || [])) {
-      const chRaw = row.dimensionValues[0] && row.dimensionValues[0].value;
-      const ev = row.dimensionValues[1] && row.dimensionValues[1].value;
+      const src = row.dimensionValues[0] && row.dimensionValues[0].value;
+      const med = row.dimensionValues[1] && row.dimensionValues[1].value;
+      const ev = row.dimensionValues[2] && row.dimensionValues[2].value;
       const cnt = num(row.metricValues[0] && row.metricValues[0].value);
       const val = num(row.metricValues[1] && row.metricValues[1].value);
-      const label = GA4_CH_LABEL[chRaw] || chRaw || "(не визначено)";
+      const label = ga4Channel(src, med);
       if (!byCh[label]) byCh[label] = { label, bcCount: 0, bcVal: 0, pCount: 0, pVal: 0 };
       if (ev === "begin_checkout") { byCh[label].bcCount += cnt; byCh[label].bcVal += val; tBC.c += cnt; tBC.v += val; }
       else if (ev === "purchase") { byCh[label].pCount += cnt; byCh[label].pVal += val; tP.c += cnt; tP.v += val; }
