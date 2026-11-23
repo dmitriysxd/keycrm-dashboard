@@ -2257,13 +2257,17 @@ module.exports = async function handler(req, res) {
       // замовлень з KeyCRM /order і UPDATE'ить sales WHERE source_id IS NULL.
       // Не state-machine — приймає ?from=N, повертає next_page.
       const startMs = Date.now();
-      const TIME_BUDGET_MS = 45 * 1000;
       const fromP = Math.max(1, parseInt(fromPage || 1));
       // line_cost вже залитий у попередній сесії. За замовчуванням його НЕ
       // переписуємо (це ~3500 UPDATE/виклик = головна причина 504). Для UTM-
       // бекфілу достатньо оновити source+utm на рівні заказу (~50/сторінку).
       // За потреби знову залити line_cost: ?with_cost=1.
       const withCost = (req.query && (req.query.with_cost === "1" || req.query.with_cost === "true")) || false;
+      // З with_cost кожна сторінка — ~700 UPDATE line_cost, важка. Бюджет 45с
+      // встигав захопити ще одну таку сторінку й вилізти за ліміт Vercel (~60с)
+      // → 504 на кожному другому виклику. Для cost-режиму ріжемо бюджет до 25с:
+      // кожен виклик гарантовано вкладається, без 504 і меншими порціями в БД.
+      const TIME_BUDGET_MS = (withCost ? 25 : 45) * 1000;
 
       // Завантажуємо мапу id→name джерел з KeyCRM один раз.
       // KeyCRM має ендпойнт /order/source — список усіх джерел замовлень.
