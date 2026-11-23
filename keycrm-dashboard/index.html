@@ -2197,8 +2197,8 @@ function renderMarketingView() {
       <td class="mono">${fmt(c.done)}</td>
       <td class="mono" style="color:var(--hd-warn)">${fmt(c.progress)}</td>
       <td class="mono hd-neg">${fmt(c.cancelled)}</td>
-      <td class="mono hd-pos">${fmt(c.new_orders)}</td>
-      <td class="mono" style="color:var(--hd-sky)">${fmt(c.repeat_orders)}</td>
+      <td class="mono hd-pos">${fmt(c.new_orders)} <span class="hd-dim" style="font-size:10px">опт ${fmt(c.new_opt||0)}</span></td>
+      <td class="mono" style="color:var(--hd-sky)">${fmt(c.repeat_orders)} <span class="hd-dim" style="font-size:10px">опт ${fmt(c.repeat_opt||0)}</span></td>
       <td class="mono">${fmtMoney(c.revenue)}</td>
       <td class="mono hd-pos">${fmtMoney(c.revenue_opt||0)} <span class="hd-dim" style="font-size:11px">· ${fmt(c.orders_opt||0)} зам · ${c.opt_share!=null?c.opt_share:0}%</span></td>
       <td class="mono hd-dim">${fmtMoney(c.revenue_retail||0)} <span style="font-size:11px">· ${fmt(c.orders_retail||0)} зам</span></td>
@@ -2245,7 +2245,7 @@ function renderMarketingView() {
       <div class="hd-kpi"><div class="hd-kpi-l">Виручка</div><div class="hd-kpi-v mono">${fmtMoney(totRev)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">З них опт <span class="hd-dim">· ${t.opt_share!=null?t.opt_share:0}%</span></div><div class="hd-kpi-v mono hd-pos">${fmtMoney(t.revenue_opt||0)} <span class="hd-dim" style="font-size:12px">· ${fmt(t.orders_opt||0)} зам</span></div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Розниця</div><div class="hd-kpi-v mono">${fmtMoney(t.revenue_retail||0)} <span class="hd-dim" style="font-size:12px">· ${fmt(t.orders_retail||0)} зам</span></div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">Замовлення · Нові / Повт.</div><div class="hd-kpi-v mono">${fmt((t.done||0)+(t.progress||0))} <span class="hd-kpi-x"><span class="hd-pos">${fmt(t.new_orders||0)}</span> / <span style="color:var(--hd-sky)">${fmt(t.repeat_orders||0)}</span></span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Замовлення · Нові / Повт. <span class="hd-dim">(опт)</span></div><div class="hd-kpi-v mono">${fmt((t.done||0)+(t.progress||0))} <span class="hd-kpi-x"><span class="hd-pos">${fmt(t.new_orders||0)}</span> / <span style="color:var(--hd-sky)">${fmt(t.repeat_orders||0)}</span> <span class="hd-dim" style="font-size:11px">· опт ${fmt(t.new_opt||0)}/${fmt(t.repeat_opt||0)}</span></span></div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Виконані</div><div class="hd-kpi-v mono">${fmt(t.done||0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">В роботі</div><div class="hd-kpi-v mono" style="color:var(--hd-warn)">${fmt(t.progress||0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Скасовані (не враховуються)</div><div class="hd-kpi-v mono hd-neg">${fmt(t.cancelled||0)}</div></div>
@@ -2391,6 +2391,7 @@ function renderCampaignsView() {
       <td class="mono hd-dim">${c.cpm != null ? fmt(c.cpm) : '—'}</td>
       <td class="mono hd-dim">${c.ctr != null ? c.ctr + '%' : '—'}</td>
       <td class="mono">${fmt(c.orders)}</td>
+      <td class="mono" style="font-size:11px"><span class="hd-pos">${fmt(c.new_orders||0)}</span> / <span style="color:var(--hd-sky)">${fmt(c.repeat_orders||0)}</span> <span class="hd-dim" style="font-size:10px">(опт ${fmt(c.new_opt||0)}/${fmt(c.repeat_opt||0)})</span></td>
       <td class="mono">${fmtMoney(c.revenue)}</td>
       <td class="mono hd-pos">${c.revenue_opt ? fmtMoney(c.revenue_opt) : '<span class="hd-dim">—</span>'}<span class="hd-dim" style="font-size:11px">${c.orders_opt ? ` · ${fmt(c.orders_opt)} зам` : ''}${c.opt_share != null ? ` · ${c.opt_share}%` : ''}</span></td>
       <td class="mono hd-dim">${c.revenue_retail ? fmtMoney(c.revenue_retail) : '—'}${c.orders_retail ? ` <span style="font-size:11px">· ${fmt(c.orders_retail)} зам</span>` : ''}</td>
@@ -2419,13 +2420,15 @@ function renderCampaignsView() {
         }
       }
     }
-    if (!cmp.length) body = `<tr><td colspan="14" class="hd-empty">Немає даних за період</td></tr>`;
+    if (!cmp.length) body = `<tr><td colspan="15" class="hd-empty">Немає даних за період</td></tr>`;
     const tt = ch.totals || {};
     const totRow = cmp.length ? `<tr class="ads-tot">
       <td class="hd-l">Разом ${ch.channel}</td>
       <td class="mono">${fmtMoney(tt.spend)}</td><td class="mono hd-dim">${adsNum(tt.impressions)}</td><td class="mono hd-dim">${adsNum(tt.clicks)}</td>
       <td class="mono hd-dim">${tt.cpm != null ? fmt(tt.cpm) : '—'}</td><td class="mono hd-dim">${tt.ctr != null ? tt.ctr + '%' : '—'}</td>
-      <td class="mono">${fmt(tt.orders)}</td><td class="mono">${fmtMoney(tt.revenue)}</td>
+      <td class="mono">${fmt(tt.orders)}</td>
+      <td class="mono" style="font-size:11px"><span class="hd-pos">${fmt(tt.new_orders||0)}</span> / <span style="color:var(--hd-sky)">${fmt(tt.repeat_orders||0)}</span> <span class="hd-dim" style="font-size:10px">(опт ${fmt(tt.new_opt||0)}/${fmt(tt.repeat_opt||0)})</span></td>
+      <td class="mono">${fmtMoney(tt.revenue)}</td>
       <td class="mono hd-pos">${tt.revenue_opt ? fmtMoney(tt.revenue_opt) : '—'}${tt.orders_opt ? ` · ${fmt(tt.orders_opt)} зам` : ''}${tt.opt_share != null ? ` · ${tt.opt_share}%` : ''}</td><td class="mono hd-dim">${tt.revenue_retail ? fmtMoney(tt.revenue_retail) : '—'}${tt.orders_retail ? ` · ${fmt(tt.orders_retail)} зам` : ''}</td>
       <td class="mono">${adsRoas3(tt.roas, tt.roas_opt, tt.roas_retail, tt.breakeven_roas, tt.breakeven_roas_opt, tt.breakeven_roas_retail)}</td><td class="mono">${tt.cps != null ? fmtMoney(tt.cps) : '—'}</td><td class="mono">${tt.cac != null ? fmtMoney(tt.cac) : '—'}</td><td class="mono">${adsProfit(tt)}</td>
     </tr>` : '';
@@ -2436,7 +2439,7 @@ function renderCampaignsView() {
       <div class="hd-card-h"><span class="ads-dot" style="background:${dot}"></span>${ch.channel}
         <span class="hd-hint">— ${cmp.length} кампаній · ${note}${hint}</span></div>
       <div class="hd-tw"><table class="hd-table">
-        <thead><tr><th class="hd-l">Кампанія / Група / Оголошення</th><th>Витрати</th><th>Покази</th><th>Кліки</th><th>CPM</th><th>CTR</th><th>Замовл.</th><th>Виручка</th><th>Опт ₴·зам·%</th><th>Розниця ₴·зам</th><th>ROAS</th><th>CPS</th><th>CAC</th><th>Прибуток</th></tr></thead>
+        <thead><tr><th class="hd-l">Кампанія / Група / Оголошення</th><th>Витрати</th><th>Покази</th><th>Кліки</th><th>CPM</th><th>CTR</th><th>Замовл.</th><th>Нові/Повт (опт)</th><th>Виручка</th><th>Опт ₴·зам·%</th><th>Розниця ₴·зам</th><th>ROAS</th><th>CPS</th><th>CAC</th><th>Прибуток</th></tr></thead>
         <tbody>${body}${totRow}</tbody>
       </table></div>
     </div>`;
@@ -2468,7 +2471,7 @@ function renderCampaignsView() {
       <div class="hd-kpi"><div class="hd-kpi-l">Замовлення</div><div class="hd-kpi-v mono">${fmt(t.orders || 0)}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">CPS · ціна замовл.</div><div class="hd-kpi-v mono">${t.cps != null ? fmtMoney(t.cps) : '—'}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">CAC · ціна нов. клієнта</div><div class="hd-kpi-v mono">${t.cac != null ? fmtMoney(t.cac) : '—'}</div></div>
-      <div class="hd-kpi"><div class="hd-kpi-l">Нові клієнти</div><div class="hd-kpi-v mono hd-pos">${fmt(t.new_orders || 0)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Нові клієнти <span class="hd-dim">· опт</span></div><div class="hd-kpi-v mono hd-pos">${fmt(t.new_orders || 0)} <span class="hd-dim" style="font-size:12px">· опт ${fmt(t.new_opt || 0)}</span></div></div>
     </div>
     ${cards}
     <div class="hd-note">CPS = Витрати ÷ Замовлення (виконані + в роботі). CAC = Витрати ÷ Нові клієнти. ROAS = Виручка ÷ Витрати. <b>ROAS фарбується за точкою беззбитковості</b> (ROAS в ноль = 1 ÷ маржа): 🟢 на 10%+ вище — прибуток, 🟡 ±10% біля нуля — впритул, 🔴 нижче — збиток (а не за старим порогом 1.0, бо при ROAS 1.0 ти ще в мінусі на собівартість). <b>Прибуток</b> = (Виручка − Собівартість) − Витрати; маржа фактична, лише по заказах з відомою закупкою (<code>line_cost</code>). Беззбитковий ROAS окремо для опту й розниці (у опта маржа тонша → поріг вищий). Виручка/ROAS/прибуток — лише по заказах із правильною розміткою (Meta <b>utm_source=meta</b>, Google <b>cid_…</b>). Розхід Meta по оголошеннях — крок <b>meta_ad_spend</b>.</div>
