@@ -3362,6 +3362,7 @@ function renderClientModal() {
 async function loadClientRecs(buyerId) {
   const el = document.getElementById('client-recs-body');
   if (!el) return;
+  const esc = s => (s == null ? '' : String(s)).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
   try {
     const r = await fetch(apiUrl('/api/analytics', 'type=reorder_recs&buyer_id=' + encodeURIComponent(buyerId)));
     const j = await r.json();
