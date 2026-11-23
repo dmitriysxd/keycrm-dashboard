@@ -631,6 +631,9 @@
       <div class="nav-item" onclick="navigate('segments')">
         <span class="nav-icon">🧩</span> Сегменти
       </div>
+      <div class="nav-item" onclick="navigate('acquisition')">
+        <span class="nav-icon">🧲</span> Залучення
+      </div>
     </nav>
 
     <div class="sidebar-bottom">
@@ -983,6 +986,7 @@ async function renderCurrentPage() {
   else if (currentPage === 'campaigns'){ await renderCampaignsPage(); }
   else if (currentPage === 'ga4')      { await renderGa4Page(); }
   else if (currentPage === 'segments') { await renderSegmentsPage(); }
+  else if (currentPage === 'acquisition') { await renderAcquisitionPage(); }
   updateFreshnessStatus(); // чесна свіжість по всіх джерелах (fire-and-forget)
 }
 
@@ -2743,6 +2747,93 @@ function renderSegmentsView() {
     </div>
 
     <div class="hd-note">💡 Висновок із даних: <b>опт — двигун прибутку</b> (висока виручка, висока частка, купують роками), <b>розниця — обʼєм разових клієнтів</b> (самоокупається, але майже без повторів). Пріоритет бюджету — в опт (новий + утримання).</div>
+  </div>`;
+}
+
+// ══ Сторінка «Залучення» — який канал приводить опт/розницю (first-touch) ══
+let ACQ_DATA = null, ACQ_WINDOW = 'all';
+function setAcqWindow(w) { ACQ_WINDOW = w; renderAcquisitionPage(); }
+function acqSinceParam() {
+  const months = { '12': 12, '6': 6, '3': 3 }[ACQ_WINDOW];
+  if (!months) return '';
+  const d = new Date(); d.setMonth(d.getMonth() - months);
+  return 'since=' + d.toISOString().slice(0, 10);
+}
+
+async function renderAcquisitionPage() {
+  const main = document.getElementById('main-area');
+  main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Рахуємо залучення по каналах</div></div>';
+  try {
+    const sp = acqSinceParam();
+    const r = await fetch(apiUrl('/api/analytics', 'type=acquisition' + (sp ? '&' + sp : '')));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    ACQ_DATA = j;
+  } catch (err) {
+    main.innerHTML = `<div class="state-wrap"><div class="error-card"><div class="error-title">Помилка завантаження</div><div class="state-sub">${(err && err.message) || err}</div></div></div>`;
+    return;
+  }
+  renderAcquisitionView();
+}
+
+function renderAcquisitionView() {
+  const d = ACQ_DATA; if (!d) return;
+  const tot = d.total_buyers || 0, opt = d.total_opt || 0, ret = d.total_retail || 0;
+  const optShare = tot > 0 ? Math.round(100 * opt / tot) : 0;
+
+  const rows = (d.channels || []).map(c => {
+    const pct = c.opt_pct || 0;
+    const pctCls = pct >= 40 ? 'hd-pos' : pct >= 20 ? '' : 'hd-dim';
+    return `<tr>
+      <td class="hd-l">${c.channel}</td>
+      <td class="mono hd-pos">${fmt(c.opt || 0)}</td>
+      <td class="mono">${fmt(c.retail || 0)}</td>
+      <td class="mono hd-dim">${fmt(c.total || 0)}</td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="flex:1;min-width:70px;height:8px;background:var(--hd-warn);opacity:.9;border-radius:4px;overflow:hidden">
+            <div style="width:${pct}%;height:100%;background:var(--hd-accent)"></div>
+          </div>
+          <span class="mono ${pctCls}" style="min-width:44px;text-align:right">${pct}%</span>
+        </div>
+      </td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="5" class="hd-empty">Немає даних</td></tr>';
+
+  const winBtns = [['all', 'Вся історія'], ['12', '12 міс'], ['6', '6 міс'], ['3', '3 міс']].map(([w, l]) =>
+    `<button onclick="setAcqWindow('${w}')" style="padding:6px 12px;background:${ACQ_WINDOW === w ? 'var(--gold2)' : 'transparent'};color:${ACQ_WINDOW === w ? 'var(--gold)' : 'var(--muted)'};border:0;font-size:12px;cursor:pointer;font-weight:${ACQ_WINDOW === w ? '600' : '400'}">${l}</button>`
+  ).join('');
+
+  document.getElementById('main-area').innerHTML = `
+  <div class="hd">
+    <div class="hd-head">
+      <div>
+        <div class="hd-h1">Залучення · який канал приводить опт і розницю</div>
+        <div class="hd-sub">first-touch: канал ПЕРШОГО заказу кожного покупця · bijboom, системні виключені</div>
+      </div>
+      <div class="hd-filters" style="gap:8px;align-items:center">
+        <div style="display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden">${winBtns}</div>
+        <button class="hd-btn" onclick="renderAcquisitionPage()">↺</button>
+      </div>
+    </div>
+
+    <div class="hd-kpis" style="padding:4px 0 2px;display:flex;gap:14px;flex-wrap:wrap">
+      <div class="hd-kpi"><div class="hd-kpi-l">Нових клієнтів</div><div class="hd-kpi-v mono">${fmt(tot)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">З них опт</div><div class="hd-kpi-v mono hd-pos">${fmt(opt)} <span class="hd-dim" style="font-size:12px">· ${optShare}%</span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Розниця</div><div class="hd-kpi-v mono">${fmt(ret)} <span class="hd-dim" style="font-size:12px">· ${100 - optShare}%</span></div></div>
+    </div>
+
+    <div class="hd-card">
+      <div class="hd-card-h">Канали залучення <span class="hd-hint">— скільки нових оптовиків / роздрібних привів кожен канал; смуга = частка опту</span></div>
+      <div class="hd-tw"><table class="hd-table">
+        <thead><tr>
+          <th class="hd-l">Канал</th><th>Опт</th><th>Розниця</th><th>Всього</th><th>Частка опту</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+    </div>
+
+    <div class="hd-note">💡 Канали з високою <b>часткою опту</b> (зелена смуга) — «оптові»: туди вкладати бюджет заради оптовиків (твій головний прибуток). Канали з великим <b>обʼємом розниці</b> і низькою часткою опту — машина разового роздробу (самоокупається). «Прямі» = постійники/бренд; метка відсутня у ~1% — атрибуції можна довіряти.</div>
   </div>`;
 }
 

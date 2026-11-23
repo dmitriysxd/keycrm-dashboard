@@ -1209,6 +1209,45 @@ async function handleSegments(req, res, supabase) {
   return res.status(200).json({ months: monthsRows, retention });
 }
 
+// type=acquisition: first-touch залучення по каналах × сегмент (опт/розниця).
+// RPC повертає по рядку на покупця (сегмент + utm першого заказу), канал
+// класифікуємо normChannel (як у «Маркетинг»), агрегуємо тут.
+async function handleAcquisition(req, res, supabase) {
+  // ?since=YYYY-MM-DD — вікно по даті залучення (перший заказ); без нього — вся історія.
+  const since = (req.query && req.query.since) || null;
+  const { data, error } = await supabase.rpc("acquisition_first_touch", { _since: since });
+  if (error) return res.status(500).json({ error: error.message });
+
+  const byChannel = new Map(); // channel → { opt, retail }
+  let totOpt = 0, totRetail = 0;
+  for (const r of (data || [])) {
+    const ch = normChannel(r.utm_source, r.utm_medium, r.source_name, r.utm_campaign);
+    let c = byChannel.get(ch);
+    if (!c) { c = { opt: 0, retail: 0 }; byChannel.set(ch, c); }
+    if (r.segment === "опт") { c.opt++; totOpt++; } else { c.retail++; totRetail++; }
+  }
+  const channels = Array.from(byChannel.entries())
+    .map(([channel, c]) => {
+      const total = c.opt + c.retail;
+      return {
+        channel,
+        opt: c.opt,
+        retail: c.retail,
+        total,
+        opt_pct: total > 0 ? Math.round((c.opt / total) * 1000) / 10 : 0,
+      };
+    })
+    .sort((a, b) => b.total - a.total);
+
+  return res.status(200).json({
+    channels,
+    total_buyers: totOpt + totRetail,
+    total_opt: totOpt,
+    total_retail: totRetail,
+    since: since || null,
+  });
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -1231,7 +1270,8 @@ module.exports = async function handler(req, res) {
     if (type === "freshness") return await handleFreshness(req, res, supabase);
     if (type === "ga4") return await handleGa4(req, res);
     if (type === "segments") return await handleSegments(req, res, supabase);
-    return res.status(400).json({ error: "type required: ?type=trends | ?type=cohorts | ?type=marketing | ?type=campaigns | ?type=freshness | ?type=ga4" });
+    if (type === "acquisition") return await handleAcquisition(req, res, supabase);
+    return res.status(400).json({ error: "type required: ?type=trends | ?type=cohorts | ?type=marketing | ?type=campaigns | ?type=freshness | ?type=ga4 | ?type=segments | ?type=acquisition" });
   } catch (err) {
     return res.status(500).json({ error: (err && err.message) || String(err) });
   }
