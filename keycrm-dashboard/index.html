@@ -2712,13 +2712,14 @@ function renderSegmentsView() {
     const share = tot > 0 ? Math.round(100 * (op.revenue || 0) / tot) : 0;
     return `<tr>
       <td class="hd-l">${segMonthLabel(m.month)}</td>
+      <td class="mono"><b>${fmtMoney(tot)}</b></td>
       <td class="mono hd-pos">${fmtMoney(op.revenue || 0)}</td>
       <td class="mono hd-dim" style="font-size:12px">${fmt(op.active || 0)} <span class="hd-dim">(${fmt(op.new_buyers || 0)}нов/${fmt(op.repeat_buyers || 0)}повт)</span></td>
       <td class="mono">${fmtMoney(re.revenue || 0)}</td>
       <td class="mono hd-dim" style="font-size:12px">${fmt(re.active || 0)} <span class="hd-dim">(${fmt(re.new_buyers || 0)}нов/${fmt(re.repeat_buyers || 0)}повт)</span></td>
       <td class="mono"><span class="${share >= 50 ? 'hd-pos' : ''}">${share}%</span></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="6" class="hd-empty">Немає даних</td></tr>';
+  }).join('') || '<tr><td colspan="7" class="hd-empty">Немає даних</td></tr>';
 
   document.getElementById('main-area').innerHTML = `
   <div class="hd">
@@ -2740,7 +2741,7 @@ function renderSegmentsView() {
       <div class="hd-card-h">Помісячно <span class="hd-hint">— виручка і клієнти (нові/повторні) по сегментах; частка опту у виручці</span></div>
       <div class="hd-tw"><table class="hd-table">
         <thead><tr>
-          <th class="hd-l">Місяць</th><th>Опт виручка</th><th>Опт клієнти</th><th>Розн виручка</th><th>Розн клієнти</th><th>Частка опту</th>
+          <th class="hd-l">Місяць</th><th>Виручка всього</th><th>Опт виручка</th><th>Опт клієнти</th><th>Розн виручка</th><th>Розн клієнти</th><th>Частка опту</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
