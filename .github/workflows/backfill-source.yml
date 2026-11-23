@@ -30,6 +30,14 @@ on:
         description: 'Заливати line_cost (собівартість) теж? true для бекфілу 2025'
         required: false
         default: 'false'
+      from_date:
+        description: 'Точково: з дати (YYYY-MM-DD). Разом з to_date — лише цей діапазон'
+        required: false
+        default: ''
+      to_date:
+        description: 'Точково: по дату (YYYY-MM-DD)'
+        required: false
+        default: ''
 
 jobs:
   backfill:
@@ -41,6 +49,8 @@ jobs:
           START_PAGE: ${{ github.event.inputs.start_page }}
           MAX_ITER: ${{ github.event.inputs.max_iterations }}
           WITH_COST: ${{ github.event.inputs.with_cost }}
+          FROM_DATE: ${{ github.event.inputs.from_date }}
+          TO_DATE: ${{ github.event.inputs.to_date }}
         run: |
           if [ -z "$CRON_SECRET" ]; then
             echo "::error::CRON_SECRET не налаштовано"; exit 1
@@ -48,6 +58,8 @@ jobs:
           set +e
           COST_PARAM=""
           if [ "$WITH_COST" = "true" ]; then COST_PARAM="&with_cost=1"; echo "line_cost backfill УВІМКНЕНО"; fi
+          DATE_PARAM=""
+          if [ -n "$FROM_DATE" ] && [ -n "$TO_DATE" ]; then DATE_PARAM="&from_date=$FROM_DATE&to_date=$TO_DATE"; echo "Точковий режим: $FROM_DATE .. $TO_DATE"; fi
           PAGE=$START_PAGE
           TOTAL_UPDATED=0
           TOTAL_SEEN=0
@@ -55,7 +67,7 @@ jobs:
             echo "=== iteration $i/$MAX_ITER · from_page=$PAGE ==="
             HTTP=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
               --max-time 90 \
-              "https://keycrm-dashboard.vercel.app/api/cron/ingest?step=backfill_source&from=$PAGE${COST_PARAM}&secret=$CRON_SECRET")
+              "https://keycrm-dashboard.vercel.app/api/cron/ingest?step=backfill_source&from=$PAGE${COST_PARAM}${DATE_PARAM}&secret=$CRON_SECRET")
             echo "HTTP $HTTP"
             cat /tmp/resp.json | head -c 600
             echo ""
