@@ -2330,6 +2330,11 @@ module.exports = async function handler(req, res) {
           // Ре-синк статусу (фікс застряглих за час простоїв автозагрузки).
           const bfStatus = (order.status && (order.status.name || order.status.title)) || null;
           if (bfStatus) updateObj.order_status = bfStatus;
+          // Ре-синк підсумку заказу зі знижкою — щоб звіряти з KeyCRM до гривни
+          // (заказы, редаговані в KeyCRM після синхри, мають застарілий total).
+          const gt = order.grand_total != null && !isNaN(parseFloat(order.grand_total))
+            ? parseFloat(order.grand_total) : null;
+          if (gt != null) updateObj.order_grand_total = gt;
           if (sId != null || sName) {
             updateObj.source_id = sId && !isNaN(sId) ? sId : null;
             updateObj.source_name = sName;
