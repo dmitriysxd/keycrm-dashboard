@@ -1253,6 +1253,30 @@ async function handleOptQuality(req, res, supabase) {
   });
 }
 
+// type=reorder_recs&buyer_id=N: рекомендації новинок для оптовика (вкусовые
+// двойники). Ліниво по одному покупцю при відкритті картки.
+async function handleReorderRecs(req, res, supabase) {
+  const buyerId = parseInt((req.query && req.query.buyer_id) || "");
+  if (!buyerId) return res.status(400).json({ error: "buyer_id required" });
+  const newDays = Math.max(7, Math.min(120, parseInt((req.query && req.query.new_days) || "45")));
+  const limit = Math.max(5, Math.min(30, parseInt((req.query && req.query.limit) || "15")));
+  const { data, error } = await supabase.rpc("reorder_recs", {
+    _buyer_id: buyerId, _new_days: newDays, _limit: limit,
+  });
+  if (error) return res.status(500).json({ error: error.message });
+  const items = (data || []).map(r => ({
+    product_id: r.product_id,
+    article: r.article || null,
+    name: r.name || null,
+    category: r.category || null,
+    price: r.price != null ? Number(r.price) : null,
+    stock: r.stock != null ? Number(r.stock) : 0,
+    twins: Number(r.twins) || 0,
+    score: r.score != null ? Number(r.score) : 0,
+  }));
+  return res.status(200).json({ items, new_days: newDays });
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -1276,6 +1300,7 @@ module.exports = async function handler(req, res) {
     if (type === "segments") return await handleSegments(req, res, supabase);
     if (type === "acquisition") return await handleAcquisition(req, res, supabase);
     if (type === "opt_quality") return await handleOptQuality(req, res, supabase);
+    if (type === "reorder_recs") return await handleReorderRecs(req, res, supabase);
     return res.status(400).json({ error: "type required: ?type=cohorts | ?type=marketing | ?type=campaigns | ?type=freshness | ?type=ga4 | ?type=segments | ?type=acquisition | ?type=opt_quality" });
   } catch (err) {
     return res.status(500).json({ error: (err && err.message) || String(err) });

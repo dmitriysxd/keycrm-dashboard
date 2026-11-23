@@ -3342,6 +3342,11 @@ function renderClientModal() {
         <div style="max-height:240px;overflow-y:auto">${ordersHtml}</div>
       </div>
     </div>
+    ${buyer.is_wholesale ? `
+    <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">🧲 Новинки, що зайдуть</div>
+      <div id="client-recs-body" style="font-size:12px;color:var(--muted)">Підбираємо під смак…</div>
+    </div>` : ''}
   `;
 
   document.getElementById('client-status-select').addEventListener('change', e => {
@@ -3350,6 +3355,43 @@ function renderClientModal() {
   document.getElementById('client-wholesale-toggle').addEventListener('change', e => {
     patchClient(buyer.buyer_id, { is_wholesale: e.target.checked });
   });
+  if (buyer.is_wholesale) loadClientRecs(buyer.buyer_id);
+}
+
+// Рекомендації новинок для оптовика (вкусовые двойники) — ліниво при відкритті.
+async function loadClientRecs(buyerId) {
+  const el = document.getElementById('client-recs-body');
+  if (!el) return;
+  try {
+    const r = await fetch(apiUrl('/api/analytics', 'type=reorder_recs&buyer_id=' + encodeURIComponent(buyerId)));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    const items = j.items || [];
+    if (!items.length) { el.innerHTML = '<span class="muted">Поки немає новинок під цей смак — зайди пізніше.</span>'; return; }
+    el.innerHTML = `
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Нові товари (поява за ${j.new_days} дн.) у наявності, яких він ще не брав — відранжовані за смаком схожих оптовиків. <b>👥</b> = скільки «двійників» уже взяли.</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="background:var(--s2)">
+          <th style="padding:6px 8px;text-align:left;color:var(--muted);font-size:11px">Артикул</th>
+          <th style="padding:6px 8px;text-align:left;color:var(--muted);font-size:11px">Назва</th>
+          <th style="padding:6px 8px;text-align:left;color:var(--muted);font-size:11px">Категорія</th>
+          <th style="padding:6px 8px;text-align:right;color:var(--muted);font-size:11px">Ціна</th>
+          <th style="padding:6px 8px;text-align:right;color:var(--muted);font-size:11px">Залишок</th>
+          <th style="padding:6px 8px;text-align:right;color:var(--muted);font-size:11px">👥</th>
+        </tr></thead>
+        <tbody>${items.map(it => `
+          <tr>
+            <td style="padding:6px 8px;font-family:monospace;white-space:nowrap">${esc(it.article || '—')}</td>
+            <td style="padding:6px 8px">${esc(it.name || '—')}</td>
+            <td style="padding:6px 8px;color:var(--muted)">${esc(it.category || '—')}</td>
+            <td style="padding:6px 8px;text-align:right" class="mono">${it.price != null ? fmt(it.price) + ' ₴' : '—'}</td>
+            <td style="padding:6px 8px;text-align:right" class="mono">${fmt(it.stock)}</td>
+            <td style="padding:6px 8px;text-align:right;color:var(--gold)" class="mono">${it.twins}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>`;
+  } catch (err) {
+    el.innerHTML = '<span class="muted">⚠ ' + ((err && err.message) || 'Помилка') + '</span>';
+  }
 }
 
 async function setClientStatus(buyerId, statusId) {
