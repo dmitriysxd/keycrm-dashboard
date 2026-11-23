@@ -458,6 +458,8 @@ async function handleMarketing(req, res, supabase) {
       channel: b.channel,
       done: b.done, progress: b.prog, cancelled: b.canc,
       new_orders: b.newO, repeat_orders: b.repO,
+      new_opt: b.new_opt, new_retail: b.new_retail,
+      repeat_opt: Math.max(0, b.act_opt - b.new_opt), repeat_retail: Math.max(0, b.act_retail - b.new_retail),
       revenue: Math.round(b.revenue), buyers: b.buyers.size,
       aov: active ? Math.round(b.revenue / active) : 0,
       // Розріз опт/розниця: виручка й активні заказы (розхід ОДИН на обидва).
@@ -582,6 +584,7 @@ async function handleMarketing(req, res, supabase) {
         orders_opt: tActOpt, orders_retail: tActRetail,
         opt_share: (tRevOpt + tRevRetail) > 0 ? Math.round(100 * tRevOpt / (tRevOpt + tRevRetail)) : null,
         new_opt: tNewOpt, new_retail: tNewRetail,
+        repeat_opt: Math.max(0, tActOpt - tNewOpt), repeat_retail: Math.max(0, tActRetail - tNewRetail),
         cost: Math.round(totCost), roas: totCost > 0 ? +(tRev / totCost).toFixed(2) : null,
         roas_opt: totCost > 0 ? +(tRevOpt / totCost).toFixed(2) : null,
         roas_retail: totCost > 0 ? +(tRevRetail / totCost).toFixed(2) : null,
@@ -705,6 +708,7 @@ async function handleCampaigns(req, res, supabase) {
   const adLookup = new Map();    // normCampName+SEP+normAdName -> [adNode] (fallback по імені)
   const adById = new Map();      // ad_id -> adNode (точний матч, коли utm_content={{ad.id}})
   const rz = () => ({ rev: 0, done: 0, prog: 0, canc: 0, newO: 0, rev_opt: 0, rev_retail: 0, act_opt: 0, act_retail: 0,
+    new_opt: 0, new_retail: 0,
     crev_opt: 0, cogs_opt: 0, crev_retail: 0, cogs_retail: 0 });
   for (const r of (metaAdRows || [])) {
     if (hasRange && (!r.date || r.date < from || r.date > to)) continue;
@@ -749,8 +753,8 @@ async function handleCampaigns(req, res, supabase) {
     node.rev += o.revenue;
     if (isNew) node.newO++;
     const hc = o.cogs_known && o.cogs != null;
-    if (isOptOrder(o)) { node.rev_opt += o.revenue; node.act_opt++; if (hc) { node.crev_opt += o.revenue; node.cogs_opt += o.cogs; } }
-    else { node.rev_retail += o.revenue; node.act_retail++; if (hc) { node.crev_retail += o.revenue; node.cogs_retail += o.cogs; } }
+    if (isOptOrder(o)) { node.rev_opt += o.revenue; node.act_opt++; if (isNew) node.new_opt++; if (hc) { node.crev_opt += o.revenue; node.cogs_opt += o.cogs; } }
+    else { node.rev_retail += o.revenue; node.act_retail++; if (isNew) node.new_retail++; if (hc) { node.crev_retail += o.revenue; node.cogs_retail += o.cogs; } }
   }
   // Хвіст: виручка каналу, яку не прив'язати до кампанії (стара розмітка lama,
   // google без cid, старі fb/ig). Щоб сума по каналу сходилась із «загальним».
@@ -794,7 +798,8 @@ async function handleCampaigns(req, res, supabase) {
             else {
               if (o.grp === "done") { n.done++; n._adset.done++; } else { n.prog++; n._adset.prog++; }
               if (isNew) { n.newO++; n._adset.newO++; }
-              if (oOpt) { n.act_opt++; n._adset.act_opt++; } else { n.act_retail++; n._adset.act_retail++; }
+              if (oOpt) { n.act_opt++; n._adset.act_opt++; if (isNew) { n.new_opt++; n._adset.new_opt++; } }
+              else { n.act_retail++; n._adset.act_retail++; if (isNew) { n.new_retail++; n._adset.new_retail++; } }
             }
           }
         }
@@ -854,6 +859,10 @@ async function handleCampaigns(req, res, supabase) {
     return Object.assign(mb, {
       name: n.name, done: n.done, progress: n.prog, cancelled: n.canc,
       orders: n.done + n.prog, revenue: Math.round(n.rev), new_orders: n.newO,
+      repeat_orders: Math.max(0, (n.done + n.prog) - n.newO),
+      new_opt: n.new_opt || 0, new_retail: n.new_retail || 0,
+      repeat_opt: Math.max(0, (n.act_opt || 0) - (n.new_opt || 0)),
+      repeat_retail: Math.max(0, (n.act_retail || 0) - (n.new_retail || 0)),
       revenue_opt: ro, revenue_retail: rr,
       orders_opt: n.act_opt || 0, orders_retail: n.act_retail || 0,
       opt_share: (ro + rr) > 0 ? Math.round(100 * ro / (ro + rr)) : null,
@@ -898,13 +907,17 @@ async function handleCampaigns(req, res, supabase) {
 
   function channelTotals(camps) {
     let spend = 0, impr = 0, clicks = 0, done = 0, prog = 0, canc = 0, rev = 0, nw = 0, rOpt = 0, rRet = 0, oOpt = 0, oRet = 0;
+    let nwOpt = 0, nwRet = 0;
     let cO = 0, kO = 0, cR = 0, kR = 0; // сирі crev/cogs опт/розниця
-    for (const c of camps) { spend += c.spend; impr += c.impressions; clicks += c.clicks; done += c.done; prog += c.progress; canc += c.cancelled; rev += c.revenue; nw += c.new_orders; rOpt += c.revenue_opt || 0; rRet += c.revenue_retail || 0; oOpt += c.orders_opt || 0; oRet += c.orders_retail || 0; cO += c._crevO || 0; kO += c._cogsO || 0; cR += c._crevR || 0; kR += c._cogsR || 0; }
+    for (const c of camps) { spend += c.spend; impr += c.impressions; clicks += c.clicks; done += c.done; prog += c.progress; canc += c.cancelled; rev += c.revenue; nw += c.new_orders; nwOpt += c.new_opt || 0; nwRet += c.new_retail || 0; rOpt += c.revenue_opt || 0; rRet += c.revenue_retail || 0; oOpt += c.orders_opt || 0; oRet += c.orders_retail || 0; cO += c._crevO || 0; kO += c._cogsO || 0; cR += c._crevR || 0; kR += c._cogsR || 0; }
     const active = done + prog;
     return Object.assign(
       marginBlock(cO, kO, cR, kR, rOpt, rRet, spend),
       {
         done, progress: prog, cancelled: canc, orders: active, revenue: rev, new_orders: nw,
+        repeat_orders: Math.max(0, active - nw),
+        new_opt: nwOpt, new_retail: nwRet,
+        repeat_opt: Math.max(0, oOpt - nwOpt), repeat_retail: Math.max(0, oRet - nwRet),
         revenue_opt: rOpt, revenue_retail: rRet, orders_opt: oOpt, orders_retail: oRet,
         opt_share: (rOpt + rRet) > 0 ? Math.round(100 * rOpt / (rOpt + rRet)) : null,
         roas_opt: spend > 0 ? +(rOpt / spend).toFixed(2) : null,
