@@ -74,77 +74,52 @@ function bucketKey(date, bucket) {
   return d.toISOString().slice(0, 7); // YYYY-MM
 }
 
-async function handleTrends(req, res, supabase) {
-  const bucket = (req.query && req.query.bucket) || "month";
-  if (!["week", "month", "year"].includes(bucket)) {
-    return res.status(400).json({ error: "bucket must be week|month|year" });
-  }
-
-  // Агрегація в БД (RPC trends_series) — швидко й стійко під навантаженням.
-  // Логіка та фільтри (опт-клієнти, виключені статуси, gamijok) — у міграції 069.
-  const { data, error } = await supabase.rpc("trends_series", { _bucket: bucket });
-  if (error) return res.status(500).json({ error: error.message });
-
-  const series = (data || [])
-    .map(r => ({
-      bucket: r.bucket,
-      orders: Number(r.orders) || 0,
-      buyers: Number(r.buyers) || 0,
-      revenue: Math.round(Number(r.revenue) || 0),
-      aov: Number(r.aov) || 0,
-    }))
-    .sort((a, b) => (a.bucket < b.bucket ? -1 : 1));
-
-  const total_orders = series.reduce((sum, b) => sum + b.orders, 0);
-  return res.status(200).json({ bucket, series, total_orders });
-}
-
 async function handleCohorts(req, res, supabase) {
   // Параметр periodMonths: 12 / 24 / 36 / all. Скільки місячних когорт показати.
   const periodParam = (req.query && req.query.months) || "24";
   const periodMonths = periodParam === "all" ? null : parseInt(periodParam);
 
-  // Агрегація в БД (RPC cohort_retention) — повертає «довгий» формат
-  // (cohort, month_after, size, active). Заповнення нулів і обрізання до
-  // останніх N когорт лишаємо у Node (легко, рядків мало).
+  // RPC cohort_retention повертає «довгий» формат у розрізі сегмента
+  // (segment, cohort, month_after, size, active). Розбиваємо на опт/розницю,
+  // заповнюємо нулі й обрізаємо до останніх N когорт у Node.
   const { data, error } = await supabase.rpc("cohort_retention", { _months: periodMonths });
   if (error) return res.status(500).json({ error: error.message });
 
-  const byCohort = new Map(); // cohort → { size, active: Map<month_after, active> }
+  const bySeg = { "опт": new Map(), "розниця": new Map() };
   for (const r of (data || [])) {
+    const segMap = bySeg[r.segment === "опт" ? "опт" : "розниця"];
     const c = r.cohort;
-    if (!byCohort.has(c)) byCohort.set(c, { size: Number(r.size) || 0, active: new Map() });
-    byCohort.get(c).active.set(Number(r.month_after), Number(r.active) || 0);
+    if (!segMap.has(c)) segMap.set(c, { size: Number(r.size) || 0, active: new Map() });
+    segMap.get(c).active.set(Number(r.month_after), Number(r.active) || 0);
   }
 
   const nowMonth = new Date().toISOString().slice(0, 7);
-  const cohortKeys = Array.from(byCohort.keys()).sort();
-  const maxMonths = cohortKeys.length ? monthDiff(cohortKeys[0], nowMonth) : 0;
-  let total_buyers = 0;
-  for (const c of cohortKeys) total_buyers += byCohort.get(c).size;
-
-  const out = cohortKeys.map(cohort => {
-    const { size, active } = byCohort.get(cohort);
-    const maxMonthsForThis = monthDiff(cohort, nowMonth);
-    const retention = [];
-    for (let i = 0; i <= maxMonthsForThis; i++) {
-      const a = active.get(i) || 0;
-      retention.push({
-        month_after: i,
-        active: a,
-        pct: size > 0 ? Math.round((a / size) * 1000) / 10 : 0, // 1 decimal
-      });
-    }
-    return { cohort, size, retention };
-  });
-
-  // Якщо обрано period — обрізаємо до останніх N когорт.
-  const trimmed = periodMonths ? out.slice(-periodMonths) : out;
+  function build(segMap) {
+    const cohortKeys = Array.from(segMap.keys()).sort();
+    const maxMonths = cohortKeys.length ? monthDiff(cohortKeys[0], nowMonth) : 0;
+    let total_buyers = 0;
+    for (const c of cohortKeys) total_buyers += segMap.get(c).size;
+    const out = cohortKeys.map(cohort => {
+      const { size, active } = segMap.get(cohort);
+      const maxMonthsForThis = monthDiff(cohort, nowMonth);
+      const retention = [];
+      for (let i = 0; i <= maxMonthsForThis; i++) {
+        const a = active.get(i) || 0;
+        retention.push({
+          month_after: i,
+          active: a,
+          pct: size > 0 ? Math.round((a / size) * 1000) / 10 : 0, // 1 decimal
+        });
+      }
+      return { cohort, size, retention };
+    });
+    const trimmed = periodMonths ? out.slice(-periodMonths) : out;
+    return { cohorts: trimmed, total_buyers, max_months_window: maxMonths };
+  }
 
   return res.status(200).json({
-    cohorts: trimmed,
-    total_buyers,
-    max_months_window: maxMonths,
+    opt: build(bySeg["опт"]),
+    retail: build(bySeg["розниця"]),
     period_months: periodMonths,
   });
 }
@@ -1264,7 +1239,6 @@ module.exports = async function handler(req, res) {
       if (req.method === "POST") return await handleMarketingPost(req, res, supabase);
       return await handleMarketing(req, res, supabase);
     }
-    if (type === "trends") return await handleTrends(req, res, supabase);
     if (type === "cohorts") return await handleCohorts(req, res, supabase);
     if (type === "campaigns") return await handleCampaigns(req, res, supabase);
     if (type === "freshness") return await handleFreshness(req, res, supabase);
