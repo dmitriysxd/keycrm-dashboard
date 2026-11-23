@@ -1274,7 +1274,39 @@ async function handleReorderRecs(req, res, supabase) {
     twins: Number(r.twins) || 0,
     score: r.score != null ? Number(r.score) : 0,
   }));
-  return res.status(200).json({ items, new_days: newDays });
+
+  // Загальна влучність рекомендацій (толерантно — якщо таблиці/функції ще нема).
+  let hitrate = null;
+  try {
+    const hr = await supabase.rpc("reorder_recs_hitrate", { _min_age_days: 3 });
+    if (!hr.error && hr.data && hr.data[0]) {
+      hitrate = {
+        sent: Number(hr.data[0].sent) || 0,
+        bought: Number(hr.data[0].bought) || 0,
+        pct: hr.data[0].hitrate_pct != null ? Number(hr.data[0].hitrate_pct) : null,
+      };
+    }
+  } catch (_) { /* метрика необов'язкова */ }
+
+  return res.status(200).json({ items, new_days: newDays, hitrate });
+}
+
+// POST type=reorder_log: записати, що менеджер відправив підбірку (при «Копіювати»).
+async function handleReorderLog(req, res, supabase) {
+  let body = req.body;
+  if (typeof body === "string") { try { body = JSON.parse(body); } catch (e) { body = {}; } }
+  const buyerId = parseInt((body && body.buyer_id) || "");
+  const productIds = (body && Array.isArray(body.product_ids)) ? body.product_ids : [];
+  if (!buyerId || !productIds.length) return res.status(400).json({ error: "buyer_id and product_ids required" });
+  const rows = productIds
+    .map(p => parseInt(p))
+    .filter(p => p)
+    .slice(0, 50)
+    .map(product_id => ({ buyer_id: buyerId, product_id }));
+  if (!rows.length) return res.status(400).json({ error: "no valid product_ids" });
+  const { error } = await supabase.from("reorder_recs_log").insert(rows);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.status(200).json({ ok: true, logged: rows.length });
 }
 
 module.exports = async function handler(req, res) {
@@ -1301,6 +1333,7 @@ module.exports = async function handler(req, res) {
     if (type === "acquisition") return await handleAcquisition(req, res, supabase);
     if (type === "opt_quality") return await handleOptQuality(req, res, supabase);
     if (type === "reorder_recs") return await handleReorderRecs(req, res, supabase);
+    if (type === "reorder_log") return await handleReorderLog(req, res, supabase);
     return res.status(400).json({ error: "type required: ?type=cohorts | ?type=marketing | ?type=campaigns | ?type=freshness | ?type=ga4 | ?type=segments | ?type=acquisition | ?type=opt_quality" });
   } catch (err) {
     return res.status(500).json({ error: (err && err.message) || String(err) });

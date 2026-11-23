@@ -3369,7 +3369,16 @@ async function loadClientRecs(buyerId) {
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
     const items = j.items || [];
     if (!items.length) { el.innerHTML = '<span class="muted">Поки немає новинок під цей смак — зайди пізніше.</span>'; return; }
+    const hr = j.hitrate;
+    const hitLine = (hr && hr.sent > 0)
+      ? `<span style="font-size:11px;color:var(--muted)">Влучність рекомендацій: <b style="color:var(--gold)">${hr.pct != null ? hr.pct : 0}%</b> <span style="opacity:.7">(${hr.bought} з ${hr.sent} надісланих куплено)</span></span>`
+      : `<span style="font-size:11px;color:var(--muted);opacity:.7">Влучність: поки нема надісланих підбірок</span>`;
+    const copyText = 'Новинки для вас:\n' + items.map(it => `• ${it.article || ''} — ${it.name || ''}`).join('\n');
     el.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+        ${hitLine}
+        <button id="recs-copy-btn" style="padding:6px 12px;background:var(--gold);color:#1a1108;border:0;border-radius:6px;font-weight:600;font-size:12px;cursor:pointer">📋 Скопіювати підбірку</button>
+      </div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Нові товари (поява за ${j.new_days} дн.) у наявності, яких він ще не брав — відранжовані за смаком схожих оптовиків. <b>👥</b> = скільки «двійників» уже взяли.</div>
       <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr style="background:var(--s2)">
@@ -3388,9 +3397,27 @@ async function loadClientRecs(buyerId) {
             <td style="padding:6px 8px;text-align:right;color:var(--gold)" class="mono">${it.twins}</td>
           </tr>`).join('')}</tbody>
       </table></div>`;
+    const btn = document.getElementById('recs-copy-btn');
+    if (btn) btn.addEventListener('click', () => copyRecs(buyerId, items, copyText, btn));
   } catch (err) {
     el.innerHTML = '<span class="muted">⚠ ' + ((err && err.message) || 'Помилка') + '</span>';
   }
+}
+
+// Копіювати підбірку в буфер + залогувати відправку (для вимірювача влучності).
+async function copyRecs(buyerId, items, text, btn) {
+  try { await navigator.clipboard.writeText(text); }
+  catch (_) { /* буфер може бути недоступний — все одно логуємо */ }
+  const orig = btn.textContent;
+  btn.textContent = 'Скопійовано ✓';
+  setTimeout(() => { btn.textContent = orig; }, 1600);
+  try {
+    await fetch(apiUrl('/api/analytics', 'type=reorder_log'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ buyer_id: buyerId, product_ids: items.map(it => it.product_id) }),
+    });
+  } catch (_) { /* лог необов'язковий */ }
 }
 
 async function setClientStatus(buyerId, statusId) {
