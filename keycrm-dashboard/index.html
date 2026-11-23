@@ -3376,7 +3376,6 @@ async function loadClientRecs(buyerId) {
           <th style="padding:6px 8px;text-align:left;color:var(--muted);font-size:11px">Артикул</th>
           <th style="padding:6px 8px;text-align:left;color:var(--muted);font-size:11px">Назва</th>
           <th style="padding:6px 8px;text-align:left;color:var(--muted);font-size:11px">Категорія</th>
-          <th style="padding:6px 8px;text-align:right;color:var(--muted);font-size:11px">Ціна</th>
           <th style="padding:6px 8px;text-align:right;color:var(--muted);font-size:11px">Залишок</th>
           <th style="padding:6px 8px;text-align:right;color:var(--muted);font-size:11px">👥</th>
         </tr></thead>
@@ -3385,7 +3384,6 @@ async function loadClientRecs(buyerId) {
             <td style="padding:6px 8px;font-family:monospace;white-space:nowrap">${esc(it.article || '—')}</td>
             <td style="padding:6px 8px">${esc(it.name || '—')}</td>
             <td style="padding:6px 8px;color:var(--muted)">${esc(it.category || '—')}</td>
-            <td style="padding:6px 8px;text-align:right" class="mono">${it.price != null ? fmt(it.price) + ' ₴' : '—'}</td>
             <td style="padding:6px 8px;text-align:right" class="mono">${fmt(it.stock)}</td>
             <td style="padding:6px 8px;text-align:right;color:var(--gold)" class="mono">${it.twins}</td>
           </tr>`).join('')}</tbody>
