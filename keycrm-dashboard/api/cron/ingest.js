@@ -2268,6 +2268,13 @@ module.exports = async function handler(req, res) {
       // → 504 на кожному другому виклику. Для cost-режиму ріжемо бюджет до 25с:
       // кожен виклик гарантовано вкладається, без 504 і меншими порціями в БД.
       const TIME_BUDGET_MS = (withCost ? 25 : 45) * 1000;
+      // Точковий режим: ?from_date=YYYY-MM-DD&to_date=YYYY-MM-DD — тягнемо лише
+      // заказы цього діапазону (filter[created_between]), а не всю історію по
+      // сторінках. Для дозаливки окремого місяця (напр. квітень 2025).
+      const fromDateBf = (req.query && req.query.from_date) || null;
+      const toDateBf = (req.query && req.query.to_date) || null;
+      const dateFilter = (fromDateBf && toDateBf)
+        ? { ["filter[created_between]"]: fromDateBf + "," + toDateBf } : {};
 
       // Завантажуємо мапу id→name джерел з KeyCRM один раз.
       // KeyCRM має ендпойнт /order/source — список усіх джерел замовлень.
@@ -2299,7 +2306,7 @@ module.exports = async function handler(req, res) {
         // include=products.offer — щоб у відповіді була і структура позицій
         // з purchased_price для бекфілу sales.line_cost (точна закупка на
         // момент створення замовлення).
-        const resp = await get("/order", { page, limit: 50, include: "products.offer,marketing,status" }, apiKey, ctx);
+        const resp = await get("/order", Object.assign({ page, limit: 50, include: "products.offer,marketing,status" }, dateFilter), apiKey, ctx);
         const rows = (resp && resp.data) || [];
         if (!rows.length) { endReached = true; break; }
         ordersSeenBf += rows.length;
@@ -2362,6 +2369,7 @@ module.exports = async function handler(req, res) {
         done: endReached,
         sources_endpoint: sourcesEndpoint,
         sources_count: Object.keys(sourcesMap).length,
+        date_filter: (fromDateBf && toDateBf) ? (fromDateBf + ".." + toDateBf) : null,
       };
     }
 
