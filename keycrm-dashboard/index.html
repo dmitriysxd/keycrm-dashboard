@@ -998,6 +998,8 @@ function destroyCharts() {
 // ── Helpers ──────────────────────────
 const fmt = n => n >= 1e6 ? `${(n/1e6).toFixed(1)}М` : n >= 1e3 ? `${(n/1e3).toFixed(1)}к` : Math.round(n).toString();
 const fmtMoney = n => `${fmt(n)} ₴`;
+// Повна сума з розділювачами (для звірки з KeyCRM): 1 112 528 ₴
+const uah = n => `${Math.round(n || 0).toLocaleString('uk-UA').replace(/ /g, ' ')} ₴`;
 
 function pageHeader(title, sub) {
   return `
@@ -2712,10 +2714,10 @@ function renderSegmentsView() {
     const share = tot > 0 ? Math.round(100 * (op.revenue || 0) / tot) : 0;
     return `<tr>
       <td class="hd-l">${segMonthLabel(m.month)}</td>
-      <td class="mono"><b>${fmtMoney(tot)}</b></td>
-      <td class="mono hd-pos">${fmtMoney(op.revenue || 0)}</td>
+      <td class="mono"><b>${uah(tot)}</b></td>
+      <td class="mono hd-pos">${uah(op.revenue || 0)}</td>
       <td class="mono hd-dim" style="font-size:12px">${fmt(op.active || 0)} <span class="hd-dim">(${fmt(op.new_buyers || 0)}нов/${fmt(op.repeat_buyers || 0)}повт)</span></td>
-      <td class="mono">${fmtMoney(re.revenue || 0)}</td>
+      <td class="mono">${uah(re.revenue || 0)}</td>
       <td class="mono hd-dim" style="font-size:12px">${fmt(re.active || 0)} <span class="hd-dim">(${fmt(re.new_buyers || 0)}нов/${fmt(re.repeat_buyers || 0)}повт)</span></td>
       <td class="mono"><span class="${share >= 50 ? 'hd-pos' : ''}">${share}%</span></td>
     </tr>`;
