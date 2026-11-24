@@ -1,0 +1,61 @@
+# Щоденна звірка прапорів клієнта (опт/розниця) з KeyCRM.
+#
+# ingest оновлює buyers лише коли клієнт робить новий заказ, тож ручна зміна
+# прапора «Опт» у KeyCRM на старому клієнті не підхоплюється. Цей воркфлоу
+# щодня проходить СПИСОК усіх клієнтів KeyCRM і bulk-оновлює is_wholesale +
+# custom_fields_raw (тригер чинить client_type). Двосторонньо: опт↔розниця.
+#
+# Цикл: /api/cron/ingest?step=sync_buyer_flags&from=N доки next_page=null.
+
+name: Sync buyer flags (опт/розниця)
+
+on:
+  schedule:
+    # 04:17 UTC щодня (після основного нічного циклу о 03:00). Хвилина :17 —
+    # щоб не потрапляти в пік початку години (GitHub менше затримує).
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      start_page:
+        description: 'Початкова сторінка (1 = спочатку)'
+        required: false
+        default: '1'
+      max_iterations:
+        description: 'Макс ітерацій'
+        required: false
+        default: '200'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Loop sync_buyer_flags until done
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          START_PAGE: ${{ github.event.inputs.start_page || '1' }}
+          MAX_ITER: ${{ github.event.inputs.max_iterations || '200' }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then echo "::error::CRON_SECRET не налаштовано"; exit 1; fi
+          set +e
+          PAGE=$START_PAGE
+          TOTAL_UPD=0
+          TOTAL_SEEN=0
+          for i in $(seq 1 $MAX_ITER); do
+            echo "=== iteration $i/$MAX_ITER · from_page=$PAGE ==="
+            HTTP=$(curl -s -o /tmp/resp.json -w "%{http_code}" --max-time 90 \
+              "https://keycrm-dashboard.vercel.app/api/cron/ingest?step=sync_buyer_flags&from=$PAGE&secret=$CRON_SECRET")
+            echo "HTTP $HTTP"; cat /tmp/resp.json | head -c 500; echo ""
+            if [ "$HTTP" != "200" ]; then echo "::warning::HTTP $HTTP — чекаю 30s"; sleep 30; continue; fi
+            NEXT=$(python3 -c "import json;d=json.load(open('/tmp/resp.json'));print(d.get('next_page') if d.get('next_page') is not None else 'DONE')")
+            UPD=$(python3 -c "import json;d=json.load(open('/tmp/resp.json'));print(d.get('buyers_updated',0))")
+            SEEN=$(python3 -c "import json;d=json.load(open('/tmp/resp.json'));print(d.get('buyers_seen',0))")
+            TOTAL_UPD=$((TOTAL_UPD + UPD)); TOTAL_SEEN=$((TOTAL_SEEN + SEEN))
+            echo "Cumulative: $TOTAL_UPD updated / $TOTAL_SEEN seen"
+            if [ "$NEXT" = "DONE" ]; then
+              echo "✓ Звірка завершена! Оновлено $TOTAL_UPD карток із $TOTAL_SEEN переглянутих."
+              exit 0
+            fi
+            PAGE=$NEXT
+            sleep 2
+          done
+          echo "::warning::Досягнуто MAX_ITER=$MAX_ITER. Останній page=$PAGE."

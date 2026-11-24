@@ -2251,6 +2251,51 @@ module.exports = async function handler(req, res) {
         maxConfirm: 200,
       });
     }
+    // ── Щоденна звірка прапорів клієнта (опт/розниця) з KeyCRM ──────────────
+    // Тягне СПИСОК клієнтів (/buyer?include=custom_fields) і bulk-оновлює лише
+    // наявні картки через RPC sync_buyer_flags. Двосторонньо (опт↔розниця):
+    // тригер чинить client_type з custom_fields_raw, is_wholesale — тут.
+    // Безпечно: клієнтів з ПОРОЖНІМИ custom_fields пропускаємо (захист від
+    // збою API, щоб не зняти прапор помилково). Цикл по сторінках, ?from=N.
+    if (step === "sync_buyer_flags") {
+      const startMs = Date.now();
+      const SB_BUDGET_MS = 25 * 1000;
+      let page = Math.max(1, parseInt(fromPage || 1));
+      let pagesDone = 0, seen = 0, updated = 0, skippedNoCf = 0;
+      let endReached = false;
+      while (Date.now() - startMs < SB_BUDGET_MS) {
+        const resp = await get("/buyer", { page, limit: 50, include: "custom_fields" }, apiKey, ctx);
+        const rows = (resp && resp.data) || (Array.isArray(resp) ? resp : []);
+        if (!rows.length) { endReached = true; break; }
+        seen += rows.length;
+        const payload = [];
+        for (const b of rows) {
+          const id = b && (b.id != null ? parseInt(b.id) : null);
+          if (!id) continue;
+          const cf = b.custom_fields || b.customFields || b.fields || null;
+          const hasCf = Array.isArray(cf) ? cf.length > 0
+            : (cf && typeof cf === "object" ? Object.keys(cf).length > 0 : false);
+          if (!hasCf) { skippedNoCf++; continue; } // порожні — не чіпаємо
+          payload.push({ buyer_id: id, is_wholesale: parseWholesaleFlag(b), cf });
+        }
+        if (payload.length) {
+          const { data: upd, error } = await supabase.rpc("sync_buyer_flags", { _rows: payload });
+          if (error) throw new Error("sync_buyer_flags RPC: " + error.message);
+          updated += (typeof upd === "number" ? upd : parseInt(upd) || 0);
+        }
+        pagesDone++;
+        page++;
+        if (rows.length < 50) { endReached = true; break; }
+      }
+      return res.status(200).json({
+        ok: true, step: "sync_buyer_flags",
+        pages_processed: pagesDone, buyers_seen: seen,
+        buyers_updated: updated, skipped_no_cf: skippedNoCf,
+        next_page: endReached ? null : page, done: endReached,
+        api_calls: ctx.apiCalls,
+      });
+    }
+
     let backfillSource = null;
     if (step === "backfill_source") {
       // One-off бекфіл: підтягує source_id/source_name для всіх історичних
