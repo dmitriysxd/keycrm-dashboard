@@ -194,6 +194,36 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Точковий режим: ?buyer_id=N — догрузити ОДНУ картку, минаючи важкий
+  // pending_buyer_ids-скан (який таймаутить на великому sales). Для кейсів,
+  // коли заказы клієнта є в sales, а картки в buyers нема (перенос у KeyCRM).
+  const oneId = req.query && req.query.buyer_id ? parseInt(req.query.buyer_id) : null;
+  if (oneId) {
+    try {
+      const b = await fetchBuyer(apiKey, oneId, ctx);
+      if (!b || b.__notFound) return res.status(200).json({ ok: true, buyer_id: oneId, result: "not_found_in_keycrm" });
+      if (b.__error) return res.status(500).json({ error: b.__error });
+      const cf = b.custom_fields || b.customFields || b.fields || null;
+      const hasCf = Array.isArray(cf) ? cf.length > 0 : (cf && typeof cf === "object" ? Object.keys(cf).length > 0 : false);
+      const row = {
+        buyer_id: oneId,
+        full_name: pickFullName(b),
+        phone: pickPhone(b),
+        email: pickEmail(b),
+        last_synced_at: new Date().toISOString(),
+      };
+      if (hasCf) { row.custom_fields_raw = cf; row.is_wholesale = parseWholesaleFlag(b); }
+      await flushBuyersRows(supabase, [row]);
+      return res.status(200).json({
+        ok: true, buyer_id: oneId, full_name: row.full_name,
+        is_wholesale: Object.prototype.hasOwnProperty.call(row, "is_wholesale") ? row.is_wholesale : null,
+        has_custom_fields: hasCf, api_calls: ctx.apiCalls,
+      });
+    } catch (e) {
+      return res.status(500).json({ error: (e && e.message) || String(e) });
+    }
+  }
+
   let runId = null;
   try {
     const ins = await supabase
