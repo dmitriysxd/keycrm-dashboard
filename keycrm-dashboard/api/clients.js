@@ -57,12 +57,12 @@ module.exports = async function handler(req, res) {
       const wholesaleHead = await supabase
         .from("buyers")
         .select("buyer_id", { count: "exact", head: true })
-        .eq("is_wholesale", true);
+        .eq("client_type", "опт");
 
       // Підрахунок клієнтів по сегментах для KPI-карток.
-      // Беремо лише опт-клієнтів (сторінка завжди фільтрує по wholesale).
+      // Опт = client_type='опт' (єдиний критерій, як уся аналітика).
       const wholesaleBuyers = await fetchAll(() =>
-        supabase.from("buyers").select("buyer_id").eq("is_wholesale", true)
+        supabase.from("buyers").select("buyer_id").eq("client_type", "опт")
       );
       const wholesaleIds = new Set(wholesaleBuyers.map(b => b.buyer_id));
       const rfmAll = await fetchAll(() =>
@@ -97,8 +97,10 @@ module.exports = async function handler(req, res) {
 
     // Основной список.
     let buyersBuilder = () => {
-      let bq = supabase.from("buyers").select("buyer_id, full_name, phone, email, is_wholesale, status_id, first_seen_at");
-      if (wholesaleOnly) bq = bq.eq("is_wholesale", true);
+      // Єдиний критерій опт — client_type='опт' (як уся аналітика). is_wholesale
+      // лишаємо у відповіді для сумісності, але фільтр і класифікація — по типу.
+      let bq = supabase.from("buyers").select("buyer_id, full_name, phone, email, is_wholesale, client_type, status_id, first_seen_at");
+      if (wholesaleOnly) bq = bq.eq("client_type", "опт");
       if (statusId) bq = bq.eq("status_id", statusId);
       return bq;
     };
@@ -132,6 +134,7 @@ module.exports = async function handler(req, res) {
         phone: b.phone,
         email: b.email,
         is_wholesale: b.is_wholesale,
+        client_type: b.client_type,
         status_id: b.status_id,
         status_name: st ? st.name : null,
         status_color: st ? st.color : null,

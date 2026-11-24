@@ -1949,7 +1949,7 @@ function renderClientsTable() {
         : '<span class="muted">—</span>';
       return `
         <tr style="cursor:pointer;${overdueStyle}" onclick="openClientModal(${r.buyer_id})">
-          <td>${esc(r.full_name) || '<span class="muted">— без імені —</span>'}${r.is_wholesale ? ' <span style="color:var(--gold);font-size:10px">★опт</span>' : ''}</td>
+          <td>${esc(r.full_name) || '<span class="muted">— без імені —</span>'}${r.client_type === 'опт' ? ' <span style="color:var(--gold);font-size:10px">★опт</span>' : ''}</td>
           <td class="muted">${esc(r.phone) || '—'}</td>
           <td>${statusBadge}</td>
           <td>${segBadge}</td>
@@ -3184,7 +3184,7 @@ function renderClientModal() {
   const { buyer, rfm, enriched, orders, notes } = CURRENT_CLIENT;
   const esc = s => (s == null ? '' : String(s)).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 
-  document.getElementById('client-modal-title').textContent = (buyer.full_name || '— без імені —') + (buyer.is_wholesale ? '  ★опт' : '');
+  document.getElementById('client-modal-title').textContent = (buyer.full_name || '— без імені —') + (buyer.client_type === 'опт' ? '  ★опт' : '');
   document.getElementById('client-modal-sub').textContent =
     (buyer.phone ? '📞 ' + buyer.phone : '') + (buyer.email ? '  ·  ' + buyer.email : '');
 
@@ -3317,11 +3317,9 @@ function renderClientModal() {
             <button onclick="addClientStatusPrompt()" title="Додати новий статус" style="padding:4px 10px">+</button>
           </div>
         </div>
-        <div style="margin-bottom:12px">
-          <label style="display:flex;align-items:center;gap:8px;color:var(--text);font-size:12px;cursor:pointer">
-            <input type="checkbox" id="client-wholesale-toggle" ${buyer.is_wholesale ? 'checked' : ''}>
-            Оптовий клієнт
-          </label>
+        <div style="margin-bottom:12px;font-size:12px;color:var(--muted)">
+          Тип клієнта: <b style="color:${buyer.client_type === 'опт' ? 'var(--gold)' : 'var(--text)'}">${buyer.client_type === 'опт' ? 'опт' : (buyer.client_type === 'системні' ? 'системний' : 'розниця')}</b>
+          <span style="opacity:.7">— з поля «Опт» у KeyCRM (синхрон щоночі)</span>
         </div>
         ${analyticsHtml}
         <hr style="border:0;border-top:1px solid var(--border);margin:16px 0">
@@ -3345,7 +3343,7 @@ function renderClientModal() {
         <div style="max-height:240px;overflow-y:auto">${ordersHtml}</div>
       </div>
     </div>
-    ${buyer.is_wholesale ? `
+    ${buyer.client_type === 'опт' ? `
     <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px">
       <div style="font-size:12px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">🧲 Новинки, що зайдуть</div>
       <div id="client-recs-body" style="font-size:12px;color:var(--muted)">Підбираємо під смак…</div>
@@ -3355,10 +3353,7 @@ function renderClientModal() {
   document.getElementById('client-status-select').addEventListener('change', e => {
     setClientStatus(buyer.buyer_id, e.target.value || null);
   });
-  document.getElementById('client-wholesale-toggle').addEventListener('change', e => {
-    patchClient(buyer.buyer_id, { is_wholesale: e.target.checked });
-  });
-  if (buyer.is_wholesale) loadClientRecs(buyer.buyer_id);
+  if (buyer.client_type === 'опт') loadClientRecs(buyer.buyer_id);
 }
 
 // Рекомендації новинок для оптовика (вкусовые двойники) — ліниво при відкритті.
