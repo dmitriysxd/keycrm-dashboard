@@ -2251,6 +2251,46 @@ module.exports = async function handler(req, res) {
         maxConfirm: 200,
       });
     }
+    // ── Внутрішньоденна досинхронізація заказів (кожні ~2 год) ──────────────
+    // Повний цикл тягне заказы раз на добу (Vercel cron 03:00), тож нові денні
+    // заказы інакше чекали б до наступної ночі. Цей крок дотягує свіжі
+    // (created/updated за останні 3 дні) у sales — усі вкладки, що читають
+    // sales (Маркетинг/Реклама/Сегменти/Когорти/Залучення/Якість/реко), стають
+    // актуальними протягом дня. Якщо встигаємо в ліміт — ще й рефрешимо
+    // матв'юшки (SKU/Клієнти).
+    if (step === "recent_orders") {
+      const startMs = Date.now();
+      const RO_BUDGET_MS = 22 * 1000;
+      let ordersSeen = 0, salesUpserted = 0, chunks = 0;
+      for (const sub of ["created", "updated"]) {
+        let page = 1;
+        while (Date.now() - startMs < RO_BUDGET_MS) {
+          const r = await ingestSalesChunk(apiKey, supabase, ctx, sub, page, 11000);
+          ordersSeen += r.ordersSeen || 0;
+          salesUpserted += r.salesUpserted || 0;
+          chunks++;
+          if (r.more) page = r.lastPage + 1; else break;
+        }
+      }
+      const refreshWith = (rpc, ms) => Promise.race([
+        (async () => { const r = await supabase.rpc(rpc); if (r && r.error) throw new Error(r.error.message); return true; })(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(rpc + " timeout")), ms)),
+      ]);
+      const ts = {}; let skuOk = false, rfmOk = false;
+      if (Date.now() - startMs < 24000) {
+        try { await refreshWith("refresh_sku_metrics", 16000); skuOk = true; ts.sku_metrics_at = new Date().toISOString(); } catch (_) {}
+      }
+      if (Date.now() - startMs < 42000) {
+        try { await refreshWith("refresh_buyer_rfm", 10000); rfmOk = true; ts.buyer_rfm_at = new Date().toISOString(); } catch (_) {}
+      }
+      if (Object.keys(ts).length) { try { await supabase.from("ingest_state").update(ts).eq("id", 1); } catch (_) {} }
+      return res.status(200).json({
+        ok: true, step: "recent_orders",
+        orders_seen: ordersSeen, sales_upserted: salesUpserted, chunks,
+        metrics_sku: skuOk, metrics_rfm: rfmOk, api_calls: ctx.apiCalls,
+      });
+    }
+
     // ── Щоденна звірка прапорів клієнта (опт/розниця) з KeyCRM ──────────────
     // Тягне СПИСОК клієнтів (/buyer?include=custom_fields) і bulk-оновлює лише
     // наявні картки через RPC sync_buyer_flags. Двосторонньо (опт↔розниця):
