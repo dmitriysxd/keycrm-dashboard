@@ -2379,6 +2379,14 @@ function renderCampaignsView() {
   const seg = (v, l) => `<button class="hd-seg-b${ADS_SEGMENT === v ? ' on' : ''}" onclick="setAdsSegment('${v}')">${l}</button>`;
   const pb = (k, l) => `<button class="hd-seg-b${ap === k ? ' on' : ''}" onclick="adsPreset('${k}')">${l}</button>`;
 
+  // ROAS по нових клієнтах, фарбований за беззбитком (1 заказ окупає рекламу?).
+  const nroas = (v, be) => {
+    if (v == null) return '<span class="hd-dim">—</span>';
+    const col = (be != null && be > 0)
+      ? (v >= be * 1.1 ? 'var(--hd-accent)' : v >= be * 0.9 ? 'var(--hd-warn)' : 'var(--hd-neg)')
+      : 'var(--text)';
+    return `<span style="color:${col}">${v}×</span>`;
+  };
   const row = (c, level, key, canExp) => {
     const tri = canExp ? `<span class="ads-tri">${ADS_EXPANDED.has(key) ? '▾' : '▸'}</span>` : `<span class="ads-tri" style="opacity:0">▸</span>`;
     const nameCls = (level === 1 ? 'ads-l1' : (level === 2 ? 'ads-l2' : '')) + (c.is_other ? ' hd-dim' : '');
@@ -2398,6 +2406,7 @@ function renderCampaignsView() {
       <td class="mono">${adsRoas3(c.roas, c.roas_opt, c.roas_retail, c.breakeven_roas, c.breakeven_roas_opt, c.breakeven_roas_retail)}</td>
       <td class="mono">${c.cps != null ? fmtMoney(c.cps) : '<span class="hd-dim">—</span>'}</td>
       <td class="mono">${c.cac != null ? fmtMoney(c.cac) : '<span class="hd-dim">—</span>'}</td>
+      <td class="mono" style="font-size:11px">${nroas(c.roas_new_opt, c.breakeven_roas_opt)} <span class="hd-dim">/</span> ${nroas(c.roas_new_retail, c.breakeven_roas_retail)}</td>
       <td class="mono">${adsProfit(c)}</td>
     </tr>`;
   };
@@ -2420,7 +2429,7 @@ function renderCampaignsView() {
         }
       }
     }
-    if (!cmp.length) body = `<tr><td colspan="15" class="hd-empty">Немає даних за період</td></tr>`;
+    if (!cmp.length) body = `<tr><td colspan="16" class="hd-empty">Немає даних за період</td></tr>`;
     const tt = ch.totals || {};
     const totRow = cmp.length ? `<tr class="ads-tot">
       <td class="hd-l">Разом ${ch.channel}</td>
@@ -2430,7 +2439,7 @@ function renderCampaignsView() {
       <td class="mono" style="font-size:11px"><span class="hd-pos">${fmt(tt.new_orders||0)}</span> / <span style="color:var(--hd-sky)">${fmt(tt.repeat_orders||0)}</span> <span class="hd-dim" style="font-size:10px">(опт ${fmt(tt.new_opt||0)}/${fmt(tt.repeat_opt||0)})</span></td>
       <td class="mono">${fmtMoney(tt.revenue)}</td>
       <td class="mono hd-pos">${tt.revenue_opt ? fmtMoney(tt.revenue_opt) : '—'}${tt.orders_opt ? ` · ${fmt(tt.orders_opt)} зам` : ''}${tt.opt_share != null ? ` · ${tt.opt_share}%` : ''}</td><td class="mono hd-dim">${tt.revenue_retail ? fmtMoney(tt.revenue_retail) : '—'}${tt.orders_retail ? ` · ${fmt(tt.orders_retail)} зам` : ''}</td>
-      <td class="mono">${adsRoas3(tt.roas, tt.roas_opt, tt.roas_retail, tt.breakeven_roas, tt.breakeven_roas_opt, tt.breakeven_roas_retail)}</td><td class="mono">${tt.cps != null ? fmtMoney(tt.cps) : '—'}</td><td class="mono">${tt.cac != null ? fmtMoney(tt.cac) : '—'}</td><td class="mono">${adsProfit(tt)}</td>
+      <td class="mono">${adsRoas3(tt.roas, tt.roas_opt, tt.roas_retail, tt.breakeven_roas, tt.breakeven_roas_opt, tt.breakeven_roas_retail)}</td><td class="mono">${tt.cps != null ? fmtMoney(tt.cps) : '—'}</td><td class="mono">${tt.cac != null ? fmtMoney(tt.cac) : '—'}</td><td class="mono" style="font-size:11px">${nroas(tt.roas_new_opt, tt.breakeven_roas_opt)} <span class="hd-dim">/</span> ${nroas(tt.roas_new_retail, tt.breakeven_roas_retail)}</td><td class="mono">${adsProfit(tt)}</td>
     </tr>` : '';
     const dot = ch.channel === 'Meta Ads' ? 'var(--hd-accent)' : 'var(--hd-warn)';
     const note = ch.from ? `дані з ${mktDMY(ch.from)}` : 'немає розмічених заказів';
@@ -2439,7 +2448,7 @@ function renderCampaignsView() {
       <div class="hd-card-h"><span class="ads-dot" style="background:${dot}"></span>${ch.channel}
         <span class="hd-hint">— ${cmp.length} кампаній · ${note}${hint}</span></div>
       <div class="hd-tw"><table class="hd-table">
-        <thead><tr><th class="hd-l">Кампанія / Група / Оголошення</th><th>Витрати</th><th>Покази</th><th>Кліки</th><th>CPM</th><th>CTR</th><th>Замовл.</th><th>Нові/Повт (опт)</th><th>Виручка</th><th>Опт ₴·зам·%</th><th>Розниця ₴·зам</th><th>ROAS</th><th>CPS</th><th>CAC</th><th>Прибуток</th></tr></thead>
+        <thead><tr><th class="hd-l">Кампанія / Група / Оголошення</th><th>Витрати</th><th>Покази</th><th>Кліки</th><th>CPM</th><th>CTR</th><th>Замовл.</th><th>Нові/Повт (опт)</th><th>Виручка</th><th>Опт ₴·зам·%</th><th>Розниця ₴·зам</th><th>ROAS</th><th>CPS</th><th>CAC</th><th>ROAS нові (опт/розн)</th><th>Прибуток</th></tr></thead>
         <tbody>${body}${totRow}</tbody>
       </table></div>
     </div>`;
@@ -2472,9 +2481,10 @@ function renderCampaignsView() {
       <div class="hd-kpi"><div class="hd-kpi-l">CPS · ціна замовл.</div><div class="hd-kpi-v mono">${t.cps != null ? fmtMoney(t.cps) : '—'}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">CAC · ціна нов. клієнта</div><div class="hd-kpi-v mono">${t.cac != null ? fmtMoney(t.cac) : '—'}</div></div>
       <div class="hd-kpi"><div class="hd-kpi-l">Нові клієнти <span class="hd-dim">· опт</span></div><div class="hd-kpi-v mono hd-pos">${fmt(t.new_orders || 0)} <span class="hd-dim" style="font-size:12px">· опт ${fmt(t.new_opt || 0)}</span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">ROAS нові <span class="hd-dim">опт / розн</span></div><div class="hd-kpi-v mono" style="font-size:15px">${nroas(t.roas_new_opt, t.breakeven_roas_opt)} <span class="hd-dim">/</span> ${nroas(t.roas_new_retail, t.breakeven_roas_retail)}</div></div>
     </div>
     ${cards}
-    <div class="hd-note">CPS = Витрати ÷ Замовлення (виконані + в роботі). CAC = Витрати ÷ Нові клієнти. ROAS = Виручка ÷ Витрати. <b>ROAS фарбується за точкою беззбитковості</b> (ROAS в ноль = 1 ÷ маржа): 🟢 на 10%+ вище — прибуток, 🟡 ±10% біля нуля — впритул, 🔴 нижче — збиток (а не за старим порогом 1.0, бо при ROAS 1.0 ти ще в мінусі на собівартість). <b>Прибуток</b> = (Виручка − Собівартість) − Витрати; маржа фактична, лише по заказах з відомою закупкою (<code>line_cost</code>). Беззбитковий ROAS окремо для опту й розниці (у опта маржа тонша → поріг вищий). Виручка/ROAS/прибуток — лише по заказах із правильною розміткою (Meta <b>utm_source=meta</b>, Google <b>cid_…</b>). Розхід Meta по оголошеннях — крок <b>meta_ad_spend</b>.</div>
+    <div class="hd-note">CPS = Витрати ÷ Замовлення (виконані + в роботі). CAC = Витрати ÷ Нові клієнти. ROAS = Виручка ÷ Витрати. <b>ROAS фарбується за точкою беззбитковості</b> (ROAS в ноль = 1 ÷ маржа): 🟢 на 10%+ вище — прибуток, 🟡 ±10% біля нуля — впритул, 🔴 нижче — збиток (а не за старим порогом 1.0, бо при ROAS 1.0 ти ще в мінусі на собівартість). <b>Прибуток</b> = (Виручка − Собівартість) − Витрати; маржа фактична, лише по заказах з відомою закупкою (<code>line_cost</code>). Беззбитковий ROAS окремо для опту й розниці (у опта маржа тонша → поріг вищий). Виручка/ROAS/прибуток — лише по заказах із правильною розміткою (Meta <b>utm_source=meta</b>, Google <b>cid_…</b>). Розхід Meta по оголошеннях — крок <b>meta_ad_spend</b>.<br><br><b>ROAS нові (опт/розн)</b> = виручка ПЕРШИХ заказів нових клієнтів ÷ розхід — чи окупає реклама привлечення <b>вже на першому заказі</b>. 🟢 ≥ беззбитку — так (можна масштабувати без ризику). 🔴 нижче — на першому не окупається: для <b>опта</b> це ок (він живе роками — дивись окупність за місяцями в LTV:CAC нижче), а для <b>розниці</b> це збиток <b>без шансу відбити</b> (вона одноразова). Тобто: опт суди по LTV:CAC, розницю — по ROAS нові.</div>
   </div>`;
 }
 
