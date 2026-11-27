@@ -2855,13 +2855,52 @@ function renderAcquisitionView() {
 
 // ══ Сторінка «Привів vs Закрив» — асист-аналіз на базі first_touch ══
 let ASSIST_DATA = null, ASSIST_SEG = 'all';
+let ASSIST_FROM = null, ASSIST_TO = null; // 'YYYY-MM-DD' або null (увесь час)
 function setAssistSeg(s) { ASSIST_SEG = s; renderAssistPage(); }
+
+// Пресети діапазону (ті самі, що в «Маркетинг»; спільні mkt* хелпери дат).
+function assistRangeLabel() { return (ASSIST_FROM && ASSIST_TO) ? (mktDMY(ASSIST_FROM) + ' – ' + mktDMY(ASSIST_TO)) : 'Увесь час'; }
+function assistPreset(kind) {
+  const today = mktTodayKyiv();
+  const yd = mktAddDays(today, -1);
+  const [Y, M] = today.split('-').map(Number);
+  const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
+  if (kind === 'all') { ASSIST_FROM = null; ASSIST_TO = null; }
+  else if (kind === 'this_month') { const f = iso(Y, M, 1); ASSIST_FROM = f; ASSIST_TO = yd >= f ? yd : f; }
+  else if (kind === 'prev_month') {
+    let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
+    const lastDay = new Date(Date.UTC(py, pm, 0)).getUTCDate();
+    ASSIST_FROM = iso(py, pm, 1); ASSIST_TO = iso(py, pm, lastDay);
+  }
+  else if (kind === 'yesterday') { ASSIST_FROM = yd; ASSIST_TO = yd; }
+  else if (kind === 'last7') { ASSIST_FROM = mktAddDays(yd, -6); ASSIST_TO = yd; }
+  else if (kind === 'last14') { ASSIST_FROM = mktAddDays(yd, -13); ASSIST_TO = yd; }
+  renderAssistPage();
+}
+function assistOpenCal() { calOpen('assist-pill', ASSIST_FROM, ASSIST_TO, (f, t) => { ASSIST_FROM = f; ASSIST_TO = t; renderAssistPage(); }); }
+function assistActivePreset() {
+  const today = mktTodayKyiv();
+  const yd = mktAddDays(today, -1);
+  const [Y, M] = today.split('-').map(Number);
+  const iso = (y, m, d) => y + '-' + mktPad(m) + '-' + mktPad(d);
+  if (!ASSIST_FROM && !ASSIST_TO) return 'all';
+  const f1 = iso(Y, M, 1);
+  if (ASSIST_FROM === f1 && ASSIST_TO === (yd >= f1 ? yd : f1)) return 'this_month';
+  if (ASSIST_FROM === yd && ASSIST_TO === yd) return 'yesterday';
+  if (ASSIST_FROM === mktAddDays(yd, -6) && ASSIST_TO === yd) return 'last7';
+  if (ASSIST_FROM === mktAddDays(yd, -13) && ASSIST_TO === yd) return 'last14';
+  let py = Y, pm = M - 1; if (pm < 1) { pm = 12; py--; }
+  const lastDay = new Date(Date.UTC(py, pm, 0)).getUTCDate();
+  if (ASSIST_FROM === iso(py, pm, 1) && ASSIST_TO === iso(py, pm, lastDay)) return 'prev_month';
+  return 'custom';
+}
 
 async function renderAssistPage() {
   const main = document.getElementById('main-area');
   main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Рахуємо «Привів vs Закрив» по каналах</div></div>';
   try {
-    const sp = ASSIST_SEG !== 'all' ? '&segment=' + ASSIST_SEG : '';
+    let sp = ASSIST_SEG !== 'all' ? '&segment=' + ASSIST_SEG : '';
+    if (ASSIST_FROM && ASSIST_TO) sp += '&from=' + ASSIST_FROM + '&to=' + ASSIST_TO;
     const r = await fetch(apiUrl('/api/analytics', 'type=assist' + sp));
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
@@ -2912,18 +2951,31 @@ function renderAssistView() {
     `<button onclick="setAssistSeg('${v}')" style="padding:6px 14px;background:${ASSIST_SEG === v ? 'var(--gold2)' : 'transparent'};color:${ASSIST_SEG === v ? 'var(--gold)' : 'var(--muted)'};border:0;font-size:12px;cursor:pointer;font-weight:${ASSIST_SEG === v ? '600' : '400'}">${l}</button>`
   ).join('');
 
+  const activePreset = assistActivePreset();
+  const presetBtn = (kind, label) => `<button class="hd-seg-b${activePreset===kind?' on':''}" onclick="assistPreset('${kind}')">${label}</button>`;
+  const dateBar = `
+    <div class="hd-daterow">
+      <span class="hd-dim" style="font-size:12px">Період:</span>
+      <button class="hd-datepill" id="assist-pill" onclick="assistOpenCal()">📅 ${assistRangeLabel()}</button>
+      <span class="hd-daterow-sep"></span>
+      <div class="hd-seg">
+        ${presetBtn('this_month','Поточний місяць')}${presetBtn('prev_month','Попередній місяць')}${presetBtn('yesterday','Вчора')}${presetBtn('last7','7 днів')}${presetBtn('last14','14 днів')}${presetBtn('all','Весь час')}
+      </div>
+    </div>`;
+
   document.getElementById('main-area').innerHTML = `
   <div class="hd">
     <div class="hd-head">
       <div>
         <div class="hd-h1">Привів vs Закрив · який канал формує інтерес, а який закриває</div>
-        <div class="hd-sub">first-touch (справжній перший візит на сайт, таблиця first_touch) проти каналу реального заказу · bijboom, системні виключені</div>
+        <div class="hd-sub">first-touch (справжній перший візит на сайт, таблиця first_touch) проти каналу реального заказу · ${assistRangeLabel()} · bijboom, системні виключені</div>
       </div>
       <div class="hd-filters" style="gap:8px;align-items:center">
         <div style="display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden">${segBtns}</div>
         <button class="hd-btn" onclick="renderAssistPage()">↺</button>
       </div>
     </div>
+    ${dateBar}
 
     <div class="hd-kpis" style="padding:4px 0 2px;display:flex;gap:14px;flex-wrap:wrap">
       <div class="hd-kpi"><div class="hd-kpi-l">Клієнтів у порівнянні</div><div class="hd-kpi-v mono">${fmt(d.matched || 0)}</div></div>
