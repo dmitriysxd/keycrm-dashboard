@@ -1431,52 +1431,46 @@ async function runAutoChunk(req, supabase, apiKey, ctx) {
         result.advanced = "metrics";
       }
     } else if (stepName === "metrics") {
-      // Фінальний крок: рефреш обох matview. pg_cron більше не запускається
-      // на фіксованому розкладі (міграція 036) — щоб уникнути гонки з ingest.
-      // Тепер це єдине місце де matview оновлюються автоматично.
-      //
-      // Реальні тривалості за історією: sku_metrics 4-15s, buyer_rfm 3-5s.
-      // PG statement_timeout для цих функцій піднято до 180s (міграція 040),
-      // тому наш JS-таймаут НЕ має різати раніше за PG. Даємо sku 45s
-      // (з запасом), rfm 12s — сумарно вкладаємось у 60s Vercel ліміт, бо
-      // цей чанк тільки рефрешить, нічого важкого до нього не робить.
-      const refreshWith = async (rpcName, timeoutMs) => {
-        return Promise.race([
-          (async () => {
-            const r = await supabase.rpc(rpcName);
-            if (r && r.error) throw new Error(r.error.message);
-            return true;
-          })(),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(rpcName + " timeout " + timeoutMs + "ms")), timeoutMs)
-          ),
-        ]);
-      };
-
-      const metricsTs = {};
-      try {
-        await refreshWith("refresh_sku_metrics", 45000);
-        result.metrics_sku = true;
-        metricsTs.sku_metrics_at = new Date().toISOString(); // час реального рефрешу
-      } catch (err) {
-        result.metrics_sku_error = (err && err.message) || String(err);
+      // Рефреш matview — РОЗБИТО НА ДВА ЧАНКИ. sku_metrics виросла і разом з
+      // buyer_rfm не вкладалась у 60s Vercel → рефреш sku зрізався, мітка
+      // sku_metrics_at лишалась вчорашньою (а то й дані не дочитувались).
+      // Тепер кожна матвʼюшка — окремий чанк з повним бюджетом:
+      //   substep 'sku' → refresh_sku_metrics (~55s), потім
+      //   substep 'rfm' → refresh_buyer_rfm, потім reconcile.
+      const refreshWith = async (rpcName, timeoutMs) => Promise.race([
+        (async () => { const r = await supabase.rpc(rpcName); if (r && r.error) throw new Error(r.error.message); return true; })(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error(rpcName + " timeout " + timeoutMs + "ms")), timeoutMs)),
+      ]);
+      const msub = state.current_substep || "sku";
+      if (msub === "sku") {
+        const ts = {};
+        try {
+          await refreshWith("refresh_sku_metrics", 55000);
+          result.metrics_sku = true;
+          ts.sku_metrics_at = new Date().toISOString();
+        } catch (err) {
+          result.metrics_sku_error = (err && err.message) || String(err);
+        }
+        await writeState(supabase, Object.assign({
+          current_step: "metrics", current_substep: "rfm", current_page: 1,
+          last_chunk_at: new Date().toISOString(),
+        }, ts));
+        result.advanced = "metrics/rfm";
+      } else {
+        const ts = {};
+        try {
+          await refreshWith("refresh_buyer_rfm", 30000);
+          result.metrics_rfm = true;
+          ts.buyer_rfm_at = new Date().toISOString();
+        } catch (err) {
+          result.metrics_rfm_error = (err && err.message) || String(err);
+        }
+        await writeState(supabase, Object.assign({
+          current_step: "reconcile", current_substep: null, current_page: 1,
+          last_chunk_at: new Date().toISOString(),
+        }, ts));
+        result.advanced = "reconcile";
       }
-
-      try {
-        await refreshWith("refresh_buyer_rfm", 15000);
-        result.metrics_rfm = true;
-        metricsTs.buyer_rfm_at = new Date().toISOString();
-      } catch (err) {
-        result.metrics_rfm_error = (err && err.message) || String(err);
-      }
-
-      // Після метрик — крок reconcile (розпізнавання об'єднань покупців).
-      await writeState(supabase, Object.assign({
-        current_step: "reconcile",
-        current_page: 1,
-        last_chunk_at: new Date().toISOString(),
-      }, metricsTs));
-      result.advanced = "reconcile";
     } else if (stepName === "reconcile") {
       // Розпізнавання merge'ів. У звичайні дні кандидатів 0 — швидкий no-op.
       // Жорсткий cap 40с (Promise.race) ПОВЕРХ внутрішнього бюджету — гарантує,
