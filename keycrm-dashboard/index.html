@@ -786,8 +786,8 @@ async function exportReklamaExcel(from, to, btn) {
   const orig = btn ? btn.innerHTML : null;
   if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Готуємо…'; }
   try {
-    const extra = (from && to) ? ('from=' + from + '&to=' + to) : '';
-    const r = await fetch(apiUrl('/api/report/excel', extra));
+    const extra = 'type=report_excel' + ((from && to) ? ('&from=' + from + '&to=' + to) : '');
+    const r = await fetch(apiUrl('/api/analytics', extra));
     if (!r.ok) { let m = 'HTTP ' + r.status; try { m = (await r.json()).error || m; } catch (e) {} throw new Error(m); }
     const blob = await r.blob();
     const stamp = (from && to) ? (from + '_' + to) : 'vsya-istoriya';
