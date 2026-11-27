@@ -1296,6 +1296,125 @@ async function handleAcquisition(req, res, supabase) {
   });
 }
 
+// type=assist: «Привів vs Закрив» — асистент-аналіз на базі таблиці first_touch
+// (справжній ПЕРШИЙ візит на сайт). Порівнюємо по каналу:
+//   • ПРИВІВ  — скільки клієнтів канал привів (first_source першого дотику);
+//   • ЗАКРИВ  — для тих самих клієнтів, у скількох канал був ОСТАННІМ дотиком
+//               при купівлі (канал найсвіжішого активного заказу клієнта).
+// Коеф = привів ÷ закрив. >1 — «відкривач» (формує інтерес, а закриває хтось
+// інший); <1 — «закривач». Так видно канал, що формує попит, але по last-touch
+// ROAS виглядає слабким (його не можна оцінювати лише по закритих продажах).
+// Один клієнт = одна одиниця з обох боків → суми привів/закрив збігаються,
+// тож коеф чесний. Виручка клієнта рахується один раз на кожну сторону.
+async function handleAssist(req, res, supabase) {
+  const segment = (req.query && req.query.segment) || "all";
+  const reDate = /^\d{4}-\d{2}-\d{2}$/;
+  let from = (req.query && req.query.from) || null;
+  let to = (req.query && req.query.to) || null;
+  const period = (req.query && req.query.period) || "all";
+  if (!reDate.test(String(from))) from = null;
+  if (!reDate.test(String(to))) to = null;
+  if ((!from || !to) && /^\d{4}-\d{2}$/.test(period)) { from = period + "-01"; to = period + "-31"; }
+  const hasRange = !!(from && to);
+
+  const since = new Date("2015-01-01T00:00:00Z");
+  const [orderRows, buyerRows, ftRows] = await Promise.all([
+    fetchAll(() => supabase
+      .rpc("marketing_order_facts", { _since: since.toISOString(), _source: "bijboom-opt.com.ua" })
+      .order("order_id", { ascending: true })),
+    fetchAll(() => supabase.from("buyers").select("buyer_id, client_type, phone")),
+    fetchAll(() => supabase.from("first_touch").select("phone_norm, first_source, first_medium, first_campaign")),
+  ]);
+
+  const typeMap = new Map();
+  for (const b of buyerRows) typeMap.set(b.buyer_id, b.client_type || null);
+
+  // first-touch по нормалізованому телефону (справжній перший візит на сайт).
+  const ftByPhone = new Map();
+  for (const f of ftRows) if (f.phone_norm && !ftByPhone.has(f.phone_norm)) ftByPhone.set(f.phone_norm, { source: f.first_source || null, medium: f.first_medium || null, campaign: f.first_campaign || null });
+  const ftChannel = (ft) => {
+    if (!ft || (!ft.source && !ft.campaign)) return null;
+    return normChannel(ft.source || "", ft.medium || null, null, ft.campaign || "");
+  };
+  const ledByBuyer = new Map(); // buyer_id → канал першого дотику
+  for (const b of buyerRows) {
+    const pn = normPhone(b.phone);
+    if (pn && ftByPhone.has(pn)) {
+      const ch = ftChannel(ftByPhone.get(pn));
+      if (ch) ledByBuyer.set(b.buyer_id, ch);
+    }
+  }
+
+  function inSegment(t) {
+    if (t === "системні") return false;
+    if (segment === "opt") return t === "опт";
+    if (segment === "retail") return t !== "опт";
+    return true;
+  }
+
+  // Активні заказы клієнта в вікні → виручка + канал найсвіжішого (закрив).
+  const custRev = new Map();     // buyer_id → сума активної виручки у вікні
+  const custLast = new Map();    // buyer_id → { at, ch } найсвіжішого активного заказу
+  let totalActiveCust = 0;       // усіх активних клієнтів у вікні (для покриття)
+  const seenActive = new Set();
+  for (const r of orderRows) {
+    if (!r.ordered_at || !r.buyer_id) continue;
+    const t = typeMap.get(r.buyer_id);
+    if (!inSegment(t)) continue;
+    if (statusGroup(r.order_status) === "cancelled") continue;
+    if (hasRange) { const dk = ymdKey(r.ordered_at); if (!dk || dk < from || dk > to) continue; }
+    const rev = r.revenue != null ? parseFloat(r.revenue) : 0;
+    custRev.set(r.buyer_id, (custRev.get(r.buyer_id) || 0) + rev);
+    const ch = normChannel(r.utm_source, r.utm_medium, r.source_name, r.utm_campaign);
+    const cur = custLast.get(r.buyer_id);
+    if (!cur || r.ordered_at > cur.at) custLast.set(r.buyer_id, { at: r.ordered_at, ch });
+    if (!seenActive.has(r.buyer_id)) { seenActive.add(r.buyer_id); totalActiveCust++; }
+  }
+
+  // Скоуп = активні клієнти у вікні, в яких є справжній first-touch.
+  const byCh = new Map(); // channel → { led, led_rev, closed, closed_rev }
+  function b(ch) { let x = byCh.get(ch); if (!x) { x = { led: 0, led_rev: 0, closed: 0, closed_rev: 0 }; byCh.set(ch, x); } return x; }
+  let matched = 0, tLed = 0, tRev = 0;
+  for (const buyerId of seenActive) {
+    const led = ledByBuyer.get(buyerId);
+    if (!led) continue; // немає first-touch — не входить у порівняння
+    const rev = custRev.get(buyerId) || 0;
+    const closerCh = (custLast.get(buyerId) || {}).ch || "— невідомо —";
+    const L = b(led); L.led++; L.led_rev += rev;
+    const C = b(closerCh); C.closed++; C.closed_rev += rev;
+    matched++; tLed++; tRev += rev;
+  }
+
+  const rows = Array.from(byCh.entries())
+    .map(([channel, x]) => {
+      const coef = x.closed > 0 ? Math.round((x.led / x.closed) * 100) / 100 : null;
+      let role;
+      if (x.led === 0) role = "closer";          // лише закриває
+      else if (x.closed === 0) role = "opener";  // лише відкриває
+      else if (coef >= 1.3) role = "opener";
+      else if (coef <= 0.77) role = "closer";
+      else role = "balanced";
+      return {
+        channel,
+        led: x.led, led_rev: Math.round(x.led_rev),
+        closed: x.closed, closed_rev: Math.round(x.closed_rev),
+        coef, role,
+      };
+    })
+    .filter((r) => r.led > 0 || r.closed > 0)
+    .sort((a, b) => (b.led + b.closed) - (a.led + a.closed));
+
+  return res.status(200).json({
+    rows,
+    matched,               // клієнтів з first-touch у порівнянні
+    total_active: totalActiveCust, // усіх активних клієнтів у вікні
+    coverage_pct: totalActiveCust > 0 ? Math.round((matched / totalActiveCust) * 1000) / 10 : 0,
+    total_led: tLed,
+    total_rev: Math.round(tRev),
+    segment, from: from || null, to: to || null,
+  });
+}
+
 // type=opt_quality: якість залучення опту по місяцях (нові оптовики + ранній
 // повтор 1/3 міс). «Датчик» — чи не псується привлечення при масштабуванні.
 async function handleOptQuality(req, res, supabase) {
@@ -1404,6 +1523,7 @@ module.exports = async function handler(req, res) {
     if (type === "ga4") return await handleGa4(req, res);
     if (type === "segments") return await handleSegments(req, res, supabase);
     if (type === "acquisition") return await handleAcquisition(req, res, supabase);
+    if (type === "assist") return await handleAssist(req, res, supabase);
     if (type === "opt_quality") return await handleOptQuality(req, res, supabase);
     if (type === "reorder_recs") return await handleReorderRecs(req, res, supabase);
     if (type === "reorder_log") return await handleReorderLog(req, res, supabase);

@@ -634,6 +634,9 @@
       <div class="nav-item" onclick="navigate('optquality')">
         <span class="nav-icon">📡</span> Якість опту
       </div>
+      <div class="nav-item" onclick="navigate('assist')">
+        <span class="nav-icon">🔀</span> Привів vs Закрив
+      </div>
     </nav>
 
     <div class="sidebar-bottom">
@@ -987,6 +990,7 @@ async function renderCurrentPage() {
   else if (currentPage === 'segments') { await renderSegmentsPage(); }
   else if (currentPage === 'acquisition') { await renderAcquisitionPage(); }
   else if (currentPage === 'optquality') { await renderOptQualityPage(); }
+  else if (currentPage === 'assist') { await renderAssistPage(); }
   updateFreshnessStatus(); // чесна свіжість по всіх джерелах (fire-and-forget)
 }
 
@@ -2846,6 +2850,103 @@ function renderAcquisitionView() {
     </div>
 
     <div class="hd-note">💡 Канали з високою <b>часткою опту</b> (зелена смуга) — «оптові»: туди вкладати бюджет заради оптовиків (твій головний прибуток). Канали з великим <b>обʼємом розниці</b> і низькою часткою опту — машина разового роздробу (самоокупається). «Прямі» = постійники/бренд; метка відсутня у ~1% — атрибуції можна довіряти.</div>
+  </div>`;
+}
+
+// ══ Сторінка «Привів vs Закрив» — асист-аналіз на базі first_touch ══
+let ASSIST_DATA = null, ASSIST_SEG = 'all';
+function setAssistSeg(s) { ASSIST_SEG = s; renderAssistPage(); }
+
+async function renderAssistPage() {
+  const main = document.getElementById('main-area');
+  main.innerHTML = '<div class="state-wrap"><div class="spinner"></div><div class="state-title">Рахуємо «Привів vs Закрив» по каналах</div></div>';
+  try {
+    const sp = ASSIST_SEG !== 'all' ? '&segment=' + ASSIST_SEG : '';
+    const r = await fetch(apiUrl('/api/analytics', 'type=assist' + sp));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    ASSIST_DATA = j;
+  } catch (err) {
+    main.innerHTML = `<div class="state-wrap"><div class="error-card"><div class="error-title">Помилка завантаження</div><div class="state-sub">${(err && err.message) || err}</div></div></div>`;
+    return;
+  }
+  renderAssistView();
+}
+
+function renderAssistView() {
+  const d = ASSIST_DATA; if (!d) return;
+  const rows = d.rows || [];
+  const maxBar = Math.max(1, ...rows.map(r => Math.max(r.led || 0, r.closed || 0)));
+
+  const roleBadge = (role) => {
+    if (role === 'opener') return '<span style="font-size:11px;font-weight:600;color:#3b82f6">↗ Відкривач</span>';
+    if (role === 'closer') return '<span style="font-size:11px;font-weight:600;color:var(--green)">✔ Закривач</span>';
+    return '<span style="font-size:11px;color:var(--muted)">= Збалансований</span>';
+  };
+  const bar = (v, color) => `<div style="flex:1;min-width:46px;height:7px;background:var(--hd-warn);opacity:.9;border-radius:4px;overflow:hidden"><div style="width:${Math.round(100 * (v || 0) / maxBar)}%;height:100%;background:${color}"></div></div>`;
+
+  const tr = rows.map(r => {
+    const coefTxt = r.coef == null ? '∞' : r.coef.toFixed(2);
+    const coefCol = r.coef == null ? '#3b82f6' : r.coef >= 1.3 ? '#3b82f6' : r.coef <= 0.77 ? 'var(--green)' : 'var(--muted)';
+    return `<tr>
+      <td class="hd-l">${r.channel}</td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          ${bar(r.led, '#3b82f6')}
+          <span class="mono" style="min-width:34px;text-align:right;color:#3b82f6">${fmt(r.led || 0)}</span>
+        </div>
+      </td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          ${bar(r.closed, 'var(--green)')}
+          <span class="mono" style="min-width:34px;text-align:right;color:var(--green)">${fmt(r.closed || 0)}</span>
+        </div>
+      </td>
+      <td class="mono" style="text-align:right;font-weight:700;color:${coefCol}">${coefTxt}</td>
+      <td style="text-align:center">${roleBadge(r.role)}</td>
+      <td class="mono hd-dim" style="text-align:right">${uah(r.led_rev || 0)}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" class="hd-empty">Немає даних first-touch у цьому сегменті</td></tr>';
+
+  const segBtns = [['all', 'Всі'], ['opt', 'Опт'], ['retail', 'Розниця']].map(([v, l]) =>
+    `<button onclick="setAssistSeg('${v}')" style="padding:6px 14px;background:${ASSIST_SEG === v ? 'var(--gold2)' : 'transparent'};color:${ASSIST_SEG === v ? 'var(--gold)' : 'var(--muted)'};border:0;font-size:12px;cursor:pointer;font-weight:${ASSIST_SEG === v ? '600' : '400'}">${l}</button>`
+  ).join('');
+
+  document.getElementById('main-area').innerHTML = `
+  <div class="hd">
+    <div class="hd-head">
+      <div>
+        <div class="hd-h1">Привів vs Закрив · який канал формує інтерес, а який закриває</div>
+        <div class="hd-sub">first-touch (справжній перший візит на сайт, таблиця first_touch) проти каналу реального заказу · bijboom, системні виключені</div>
+      </div>
+      <div class="hd-filters" style="gap:8px;align-items:center">
+        <div style="display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden">${segBtns}</div>
+        <button class="hd-btn" onclick="renderAssistPage()">↺</button>
+      </div>
+    </div>
+
+    <div class="hd-kpis" style="padding:4px 0 2px;display:flex;gap:14px;flex-wrap:wrap">
+      <div class="hd-kpi"><div class="hd-kpi-l">Клієнтів у порівнянні</div><div class="hd-kpi-v mono">${fmt(d.matched || 0)}</div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Покриття first-touch</div><div class="hd-kpi-v mono ${(d.coverage_pct || 0) >= 50 ? 'hd-pos' : 'hd-dim'}">${d.coverage_pct || 0}% <span class="hd-dim" style="font-size:12px">· з ${fmt(d.total_active || 0)}</span></div></div>
+      <div class="hd-kpi"><div class="hd-kpi-l">Виручка в порівнянні</div><div class="hd-kpi-v mono">${uah(d.total_rev || 0)}</div></div>
+    </div>
+
+    <div class="hd-card">
+      <div class="hd-card-h">Канали <span class="hd-hint">— <b style="color:#3b82f6">Привів</b> = перший візит на сайт був із цього каналу; <b style="color:var(--green)">Закрив</b> = цей канал був останнім при купівлі; Коеф = привів ÷ закрив</span></div>
+      <div class="hd-tw"><table class="hd-table">
+        <thead><tr>
+          <th class="hd-l">Канал</th>
+          <th>Привів (клієнтів)</th>
+          <th>Закрив (клієнтів)</th>
+          <th style="text-align:right">Коеф</th>
+          <th style="text-align:center">Роль</th>
+          <th style="text-align:right">Виручка (привів)</th>
+        </tr></thead>
+        <tbody>${tr}</tbody>
+      </table></div>
+    </div>
+
+    <div class="hd-note">💡 <b style="color:#3b82f6">Відкривач</b> (коеф &gt;1.3): формує інтерес, а закриває продаж хтось інший — по last-touch ROAS виглядає слабко, але <b>різати не можна</b>, бо без нього не буде кого закривати. <b style="color:var(--green)">Закривач</b> (коеф &lt;0.77): знімає попит, створений іншими. <b>Коеф ∞</b> — канал лише приводить, сам жодної угоди не закрив.<br>Один клієнт = одна одиниця з обох боків, тож суми «привів» і «закрив» рівні — коеф чесний. Порівнюються лише клієнти, яких вдалося звʼязати з first-touch по телефону (покриття ${d.coverage_pct || 0}%); решта — хто заходив до встановлення трекера або не лишав телефон на сайті.</div>
   </div>`;
 }
 
