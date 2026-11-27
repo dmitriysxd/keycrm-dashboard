@@ -11,6 +11,7 @@
 
 const { getSupabase } = require("../lib/supabase");
 const { checkDashboardToken } = require("../lib/auth");
+const ExcelJS = require("exceljs");
 
 // Pagination wrapper — Supabase повертає max 1000 рядків за запит.
 async function fetchAll(buildQuery, pageSize = 1000, hardCap = 500000) {
@@ -1501,6 +1502,253 @@ async function handleReorderLog(req, res, supabase) {
   return res.status(200).json({ ok: true, logged: rows.length });
 }
 
+// ── Excel-звіт по рекламі (type=report_excel) ─────────────────────
+// Збираємо .xlsx з даних «Кампанії»/«Маркетинг»/«Привів-Закрив». Хендлери
+// викликаємо ЛОКАЛЬНО (fake-res ловить їх JSON) — без self-fetch і без нової
+// serverless-функції (на Hobby ліміт 12). Повний варіант: з COGS/маржею/розрізом.
+const _XLC = {
+  dark: "FF2B2117", gold: "FFC9A227", goldLt: "FFF2E8C8", goldText: "FFE8C766",
+  green: "FF2E7D32", red: "FFC62828", gray: "FF8A8A8A", zebra: "FFFBF8F0", border: "FFE2D9C4",
+};
+const _XNF = { money: '#,##0" ₴"', pct: '0.0"%"', roas: '0.00"×"', int: "#,##0" };
+const _xthin = { style: "thin", color: { argb: _XLC.border } };
+const _XBORDER = { top: _xthin, left: _xthin, bottom: _xthin, right: _xthin };
+function _xDmy(s) { if (!s) return ""; const p = String(s).split("-"); return p.length === 3 ? p[2] + "." + p[1] + "." + p[0] : s; }
+function _xHeaderRow(row) {
+  row.eachCell((cell) => {
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: _XLC.dark } };
+    cell.font = { bold: true, color: { argb: _XLC.goldText }, size: 10 };
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    cell.border = _XBORDER;
+  });
+  row.height = 30;
+}
+function _xTable(ws, startRow, columns, rows, opts) {
+  opts = opts || {};
+  const hdr = ws.getRow(startRow);
+  columns.forEach((c, i) => { hdr.getCell(i + 1).value = c.h; });
+  _xHeaderRow(hdr);
+  columns.forEach((c, i) => { ws.getColumn(i + 1).width = c.w || 12; });
+  let r = startRow;
+  rows.forEach((row, ri) => {
+    r++;
+    const xr = ws.getRow(r);
+    columns.forEach((c, i) => {
+      const cell = xr.getCell(i + 1);
+      let v = row[c.key];
+      if (v === undefined) v = null;
+      cell.value = (v === null || v === "") ? (c.type === "text" ? (v || "") : null) : v;
+      if (c.nf) cell.numFmt = c.nf;
+      cell.border = _XBORDER;
+      cell.alignment = { horizontal: c.type === "text" ? "left" : "right", vertical: "middle", wrapText: c.type === "text" };
+      cell.font = { size: 10 };
+      if (c.type === "roasCond" && typeof v === "number") {
+        const be = row["__be_" + c.key];
+        if (typeof be === "number" && be > 0) cell.font = { size: 10, bold: true, color: { argb: v >= be ? _XLC.green : _XLC.red } };
+        else cell.font = { size: 10, bold: true };
+      }
+      if (row.__bold) cell.font = Object.assign({}, cell.font, { bold: true });
+    });
+    if (!row.__bold && !row.__band && ri % 2 === 1) xr.eachCell((cell) => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: _XLC.zebra } }; });
+    if (row.__band) xr.eachCell((cell) => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: _XLC.goldLt } }; cell.font = { bold: true, size: 10, color: { argb: _XLC.dark } }; });
+    xr.height = 18;
+  });
+  if (opts.dataBarKey) {
+    const ci = columns.findIndex((c) => c.key === opts.dataBarKey);
+    if (ci >= 0 && r > startRow) {
+      const col = String.fromCharCode(65 + ci);
+      ws.addConditionalFormatting({ ref: `${col}${startRow + 1}:${col}${r}`, rules: [{ type: "dataBar", gradient: false, cfvo: [{ type: "min" }, { type: "max" }], color: { argb: _XLC.gold }, minLength: 0, maxLength: 100 }] });
+    }
+  }
+  ws.views = [{ state: "frozen", ySplit: startRow }];
+  return r;
+}
+function _xCampRow(n, extra) {
+  const spend = n.spend != null ? n.spend : (n.cost || 0);
+  const cpc = (spend > 0 && n.clicks > 0) ? Math.round(spend / n.clicks) : null;
+  return Object.assign({
+    name: n.name, spend,
+    impressions: n.impressions || 0, clicks: n.clicks || 0, ctr: n.ctr, cpc,
+    orders: (n.orders != null) ? n.orders : ((n.done || 0) + (n.progress || 0)),
+    revenue: n.revenue || 0, revenue_opt: n.revenue_opt || 0, revenue_retail: n.revenue_retail || 0,
+    roas: n.roas, roas_opt: n.roas_opt, roas_retail: n.roas_retail,
+    roas_new_opt: n.roas_new_opt != null ? n.roas_new_opt : null,
+    new_orders: n.new_orders || 0, new_opt: n.new_opt || 0, repeat_orders: n.repeat_orders || 0,
+    cac: n.cac, margin: n.margin, net_profit: n.net_profit,
+    __be_roas: n.breakeven_roas, __be_roas_opt: n.breakeven_roas_opt,
+  }, extra || {});
+}
+const _XCAMP_COLS = [
+  { h: "Кампанія / канал", key: "name", w: 34, type: "text" },
+  { h: "Витрата", key: "spend", w: 13, nf: _XNF.money, type: "money" },
+  { h: "Показы", key: "impressions", w: 12, nf: _XNF.int, type: "int" },
+  { h: "Кліки", key: "clicks", w: 10, nf: _XNF.int, type: "int" },
+  { h: "CTR", key: "ctr", w: 8, nf: _XNF.pct, type: "pct" },
+  { h: "CPC", key: "cpc", w: 10, nf: _XNF.money, type: "money" },
+  { h: "Заказы", key: "orders", w: 9, nf: _XNF.int, type: "int" },
+  { h: "Виручка", key: "revenue", w: 14, nf: _XNF.money, type: "money" },
+  { h: "Виручка опт", key: "revenue_opt", w: 14, nf: _XNF.money, type: "money" },
+  { h: "Виручка розн", key: "revenue_retail", w: 14, nf: _XNF.money, type: "money" },
+  { h: "ROAS", key: "roas", w: 9, nf: _XNF.roas, type: "roasCond" },
+  { h: "ROAS опт", key: "roas_opt", w: 9, nf: _XNF.roas, type: "roasCond" },
+  { h: "ROAS розн", key: "roas_retail", w: 9, nf: _XNF.roas, type: "roas" },
+  { h: "ROAS нові опт", key: "roas_new_opt", w: 10, nf: _XNF.roas, type: "roas" },
+  { h: "Нові", key: "new_orders", w: 8, nf: _XNF.int, type: "int" },
+  { h: "Нові опт", key: "new_opt", w: 9, nf: _XNF.int, type: "int" },
+  { h: "Повторні", key: "repeat_orders", w: 9, nf: _XNF.int, type: "int" },
+  { h: "CAC", key: "cac", w: 11, nf: _XNF.money, type: "money" },
+  { h: "Маржа", key: "margin", w: 9, nf: _XNF.pct, type: "pct" },
+  { h: "Прибуток", key: "net_profit", w: 14, nf: _XNF.money, type: "money" },
+];
+// Викликає хендлер локально, ловить його res.json(payload).
+function _runCapture(handler, req, supabase) {
+  return new Promise((resolve, reject) => {
+    const fake = {
+      _code: 200,
+      status(c) { this._code = c; return this; },
+      setHeader() { return this; },
+      json(o) { if (this._code >= 400) reject(new Error((o && o.error) || "handler error")); else resolve(o); return this; },
+      send() { resolve(null); return this; },
+      end() { resolve(null); return this; },
+    };
+    Promise.resolve(handler(req, fake, supabase)).catch(reject);
+  });
+}
+async function handleReportExcel(req, res, supabase) {
+  const reDate = /^\d{4}-\d{2}-\d{2}$/;
+  let from = (req.query && req.query.from) || null;
+  let to = (req.query && req.query.to) || null;
+  if (!reDate.test(String(from))) from = null;
+  if (!reDate.test(String(to))) to = null;
+  const hasRange = !!(from && to);
+  const periodLabel = hasRange ? (_xDmy(from) + " – " + _xDmy(to)) : "Весь час";
+  // Прокидаємо from/to у під-хендлери через req.query (segment=all за замовчуванням).
+  const subReq = { query: Object.assign({}, req.query) };
+  const [camp, mkt, assist] = await Promise.all([
+    _runCapture(handleCampaigns, subReq, supabase),
+    _runCapture(handleMarketing, subReq, supabase),
+    _runCapture(handleAssist, subReq, supabase),
+  ]);
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "Bijboom-opt dashboard";
+  wb.created = new Date();
+
+  // ═══ Підсумок ═══
+  const s1 = wb.addWorksheet("Підсумок", { properties: { defaultColWidth: 16 } });
+  s1.mergeCells("A1:D1");
+  s1.getCell("A1").value = "Звіт по рекламі · Bijboom-opt";
+  s1.getCell("A1").font = { bold: true, size: 18, color: { argb: _XLC.dark } };
+  s1.getRow(1).height = 30;
+  s1.mergeCells("A2:D2");
+  s1.getCell("A2").value = "Період: " + periodLabel;
+  s1.getCell("A2").font = { size: 12, italic: true, color: { argb: _XLC.gray } };
+  s1.getRow(2).height = 20;
+  const t = mkt.totals || {};
+  const kpis = [
+    ["Витрата на рекламу", t.cost, _XNF.money], ["Виручка (всього)", t.revenue, _XNF.money],
+    ["  — опт", t.revenue_opt, _XNF.money], ["  — розниця", t.revenue_retail, _XNF.money],
+    ["Частка опту", t.opt_share, _XNF.pct], ["ROAS (всього)", t.roas, _XNF.roas],
+    ["  — опт", t.roas_opt, _XNF.roas], ["  — розниця", t.roas_retail, _XNF.roas],
+    ["Беззбитковий ROAS", t.breakeven_roas, _XNF.roas],
+    ["Заказы активні", (t.done || 0) + (t.progress || 0), _XNF.int],
+    ["Нові клієнти", t.new_orders, _XNF.int], ["  — опт", t.new_opt, _XNF.int],
+    ["Повторні заказы", t.repeat_orders, _XNF.int], ["CAC (ціна нового клієнта)", t.cac, _XNF.money],
+    ["Маржа", t.margin, _XNF.pct], ["Чистий прибуток (після реклами)", t.net_profit, _XNF.money],
+  ];
+  let rr = 4;
+  const kh = s1.getRow(rr); kh.getCell(1).value = "Показник"; kh.getCell(2).value = "Значення"; _xHeaderRow(kh);
+  s1.getColumn(1).width = 34; s1.getColumn(2).width = 18;
+  kpis.forEach((k, i) => {
+    rr++;
+    const row = s1.getRow(rr), c1 = row.getCell(1), c2 = row.getCell(2);
+    c1.value = k[0]; c2.value = (k[1] == null ? null : k[1]); c2.numFmt = k[2];
+    const sub = k[0].startsWith("  ");
+    c1.font = { size: 10, bold: !sub, color: { argb: sub ? _XLC.gray : _XLC.dark } };
+    c2.font = { size: 10, bold: !sub }; c2.alignment = { horizontal: "right" };
+    c1.border = _XBORDER; c2.border = _XBORDER;
+    if (i % 2 === 1) { c1.fill = c2.fill = { type: "pattern", pattern: "solid", fgColor: { argb: _XLC.zebra } }; }
+    row.height = 18;
+  });
+  const allCamps = [];
+  for (const ch of (camp.channels || [])) for (const c of (ch.campaigns || [])) if (!c.is_other) allCamps.push(Object.assign({ _channel: ch.channel }, c));
+  allCamps.sort((a, b) => (b.revenue || 0) - (a.revenue || 0));
+  const top = allCamps.slice(0, 5);
+  if (top.length) {
+    rr += 2;
+    s1.mergeCells(`A${rr}:D${rr}`);
+    s1.getCell(`A${rr}`).value = "Топ-5 кампаній по виручці";
+    s1.getCell(`A${rr}`).font = { bold: true, size: 12, color: { argb: _XLC.dark } };
+    rr++;
+    const th = s1.getRow(rr);
+    ["Кампанія", "Канал", "Витрата", "Виручка", "ROAS"].forEach((h, i) => th.getCell(i + 1).value = h);
+    _xHeaderRow(th);
+    top.forEach((c) => {
+      rr++;
+      const row = s1.getRow(rr);
+      row.getCell(1).value = c.name; row.getCell(2).value = c._channel;
+      row.getCell(3).value = c.spend || 0; row.getCell(3).numFmt = _XNF.money;
+      row.getCell(4).value = c.revenue || 0; row.getCell(4).numFmt = _XNF.money;
+      row.getCell(5).value = c.roas; row.getCell(5).numFmt = _XNF.roas;
+      for (let i = 1; i <= 5; i++) { row.getCell(i).border = _XBORDER; row.getCell(i).font = { size: 10 }; }
+      row.getCell(1).alignment = { horizontal: "left" }; row.getCell(2).alignment = { horizontal: "left" };
+    });
+  }
+
+  // ═══ Кампанії ═══
+  const s2 = wb.addWorksheet("Кампанії");
+  const campRows = [];
+  for (const ch of (camp.channels || [])) {
+    const tt = ch.totals || {};
+    campRows.push(Object.assign(_xCampRow(Object.assign({}, tt, { name: "▸ " + ch.channel + " — разом" })), { __band: true }));
+    for (const c of (ch.campaigns || [])) campRows.push(_xCampRow(c));
+  }
+  if (camp.totals) campRows.push(Object.assign(_xCampRow(Object.assign({}, camp.totals, { name: "ВСЬОГО" })), { __bold: true }));
+  _xTable(s2, 1, _XCAMP_COLS, campRows, { dataBarKey: "revenue" });
+
+  // ═══ Канали ═══
+  const s3 = wb.addWorksheet("Канали");
+  const chRows = (mkt.channels || []).map((c) => _xCampRow(Object.assign({}, c, { name: c.channel })));
+  if (mkt.totals) chRows.push(Object.assign(_xCampRow(Object.assign({}, mkt.totals, { name: "ВСЬОГО" })), { __bold: true }));
+  const CH_COLS = _XCAMP_COLS.filter((c) => c.key !== "roas_new_opt");
+  CH_COLS[0] = Object.assign({}, CH_COLS[0], { h: "Канал" });
+  _xTable(s3, 1, CH_COLS, chRows, { dataBarKey: "revenue" });
+
+  // ═══ Привів vs Закрив ═══
+  const s4 = wb.addWorksheet("Привів vs Закрив");
+  s4.mergeCells("A1:G1");
+  s4.getCell("A1").value = "Привів vs Закрив — хто формує інтерес, а хто закриває (first-touch)";
+  s4.getCell("A1").font = { bold: true, size: 13, color: { argb: _XLC.dark } };
+  s4.getRow(1).height = 24;
+  s4.mergeCells("A2:G2");
+  s4.getCell("A2").value = `Покриття first-touch: ${assist.coverage_pct || 0}% (${assist.matched || 0} з ${assist.total_active || 0} активних клієнтів). ` +
+    "Привів = перший візит на сайт був із каналу; Закрив = канал був останнім при купівлі; Коеф = привів ÷ закрив (>1.3 відкривач, <0.77 закривач).";
+  s4.getCell("A2").font = { size: 10, italic: true, color: { argb: _XLC.gray } };
+  s4.getCell("A2").alignment = { wrapText: true, vertical: "top" };
+  s4.getRow(2).height = 44;
+  const roleUk = { opener: "Відкривач", closer: "Закривач", balanced: "Збалансований" };
+  const ASSIST_COLS = [
+    { h: "Канал", key: "channel", w: 30, type: "text" },
+    { h: "Привів (клієнтів)", key: "led", w: 16, nf: _XNF.int, type: "int" },
+    { h: "Виручка привів", key: "led_rev", w: 16, nf: _XNF.money, type: "money" },
+    { h: "Закрив (клієнтів)", key: "closed", w: 16, nf: _XNF.int, type: "int" },
+    { h: "Виручка закрив", key: "closed_rev", w: 16, nf: _XNF.money, type: "money" },
+    { h: "Коеф", key: "coefTxt", w: 9, type: "text" },
+    { h: "Роль", key: "roleTxt", w: 16, type: "text" },
+  ];
+  const aRows = (assist.rows || []).map((r) => Object.assign({}, r, {
+    coefTxt: r.coef == null ? "∞" : r.coef.toFixed(2), roleTxt: roleUk[r.role] || r.role,
+  }));
+  _xTable(s4, 3, ASSIST_COLS, aRows, { dataBarKey: "led_rev" });
+
+  const buf = await wb.xlsx.writeBuffer();
+  const stamp = hasRange ? `${from}_${to}` : "vsya-istoriya";
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="reklama_${stamp}.xlsx"`);
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(200).send(Buffer.from(buf));
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -1524,6 +1772,7 @@ module.exports = async function handler(req, res) {
     if (type === "segments") return await handleSegments(req, res, supabase);
     if (type === "acquisition") return await handleAcquisition(req, res, supabase);
     if (type === "assist") return await handleAssist(req, res, supabase);
+    if (type === "report_excel") return await handleReportExcel(req, res, supabase);
     if (type === "opt_quality") return await handleOptQuality(req, res, supabase);
     if (type === "reorder_recs") return await handleReorderRecs(req, res, supabase);
     if (type === "reorder_log") return await handleReorderLog(req, res, supabase);
