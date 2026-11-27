@@ -781,6 +781,28 @@ const apiUrl = (path, extra) => {
   return path + tail + more;
 };
 
+// Експорт Excel-звіту по рекламі за вибраний період (з індикатором).
+async function exportReklamaExcel(from, to, btn) {
+  const orig = btn ? btn.innerHTML : null;
+  if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Готуємо…'; }
+  try {
+    const extra = (from && to) ? ('from=' + from + '&to=' + to) : '';
+    const r = await fetch(apiUrl('/api/report/excel', extra));
+    if (!r.ok) { let m = 'HTTP ' + r.status; try { m = (await r.json()).error || m; } catch (e) {} throw new Error(m); }
+    const blob = await r.blob();
+    const stamp = (from && to) ? (from + '_' + to) : 'vsya-istoriya';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'reklama_' + stamp + '.xlsx';
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+  } catch (e) {
+    alert('Не вдалося згенерувати Excel: ' + ((e && e.message) || e));
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+  }
+}
+
 let DATA = null;
 let SKU_DATA = null;
 let SKU_META = null;
@@ -2239,7 +2261,8 @@ function renderMarketingView() {
         <div class="hd-h1">Маркетинг (загальний)</div>
         <div class="hd-sub">лише сайт bijboom-opt.com.ua · ${mktRangeLabel()} · ${fmt((t.done||0)+(t.progress||0))} активних (без скасованих) · last-touch</div>
       </div>
-      <div class="hd-filters">
+      <div class="hd-filters" style="gap:8px">
+        <button class="hd-btn" onclick="exportReklamaExcel(MKT_FROM, MKT_TO, this)" title="Завантажити повний Excel-звіт по рекламі за вибраний період">⬇ Експорт в Excel</button>
         <button class="hd-btn" onclick="renderMarketingPage()">↺</button>
       </div>
     </div>
@@ -2465,7 +2488,8 @@ function renderCampaignsView() {
         <div class="hd-h1">Реклама — кампанії</div>
         <div class="hd-sub">Meta Ads + Google Ads · ${(ADS_FROM && ADS_TO) ? (mktDMY(ADS_FROM) + ' – ' + mktDMY(ADS_TO)) : 'Увесь час'} · ROAS/CPS лише по розмічених заказах</div>
       </div>
-      <div class="hd-filters">
+      <div class="hd-filters" style="gap:8px">
+        <button class="hd-btn" onclick="exportReklamaExcel(ADS_FROM, ADS_TO, this)" title="Завантажити повний Excel-звіт по рекламі за вибраний період">⬇ Експорт в Excel</button>
         <button class="hd-btn" onclick="renderCampaignsPage()">↺</button></div>
     </div>
     <div class="hd-daterow">
